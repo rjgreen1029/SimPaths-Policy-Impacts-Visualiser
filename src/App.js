@@ -5,16 +5,16 @@ import { parseCsvRow } from "./useAggregatedData";
 import { parseLocalFolder } from "./localFolderParser";
 
 const DOMAIN_SECTIONS = {
-  "Scenario 1": [
+  "Demographics": [
     "Highest Level of Education", "Ethnicity", "Partnership status",
     "Number of children", "Household Type"
   ],
-  "Scenario 2": [
+  "Income": [
     "Income Quintile", "Benefits Received", "Financial distress flag",
     "Equivalised yearly disposable income", "Gross personal employment income",
     "Capital Income", "Amount of benefits received per month"
   ],
-  "Scenario 3": [
+  "Health": [
     "Disability Status", "Self-Rated Health", "Psychological distress flag",
     "Psychological distress score", "Mental Component Summary (MCS)", "Physical Component Summary (PCS)", "Life Satisfaction Score",
     "Subjective wellbeing (GHQ)", "Need of social care", "Provided social care"
