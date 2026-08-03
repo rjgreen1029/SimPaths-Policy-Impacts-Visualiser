@@ -335,7 +335,7 @@ function drawBSKey(g,iW,iH,showBaseline,showScenario){
 function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
     isCategorical,yDomain,varValues,enabledVarVals,showBaseline,showScenario,
     width,small,onYearClick,selectedYear,
-    isStratified=false,stratValues=[],enabledStrats=new Set(),viewBy=""}){
+    isStratified=false,stratValues=[],enabledStrats=new Set(),viewBy="",showCI=true}){
   const mar=small?M_SM:M;
   const H=small?CHART_H_SM:CHART_H;
   const W=small?width:Math.min(width,MAX_W);
@@ -366,11 +366,22 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
 
     const lineFn=d3.line().defined(d=>!isNaN(d.mean_value)).x(d=>xScale(d.year)).y(d=>yScale(d.mean_value)).curve(d3.curveMonotoneX);
 
+    // If a series has no row at all for some year in allYears (as opposed to a row
+    // with a suppressed/NaN value), d3.line() has nothing to mark that x-position
+    // as "undefined" and will draw a straight connector bridging the gap. Filling
+    // in an explicit NaN point for every missing year makes .defined() break the
+    // line there too, so it stops before the gap and resumes after it instead of
+    // running straight through.
+    const densify=(pts)=>{
+      const byYear=new Map(pts.map(d=>[d.year,d]));
+      return allYears.map(yr=>byYear.get(yr)||{year:yr,mean_value:NaN,lower_ci:NaN,upper_ci:NaN});
+    };
+
     const buildSeriesList=(rows)=>{
       if (!isStratified||small){
         const grouped=d3.group(rows,d=>d.variable_value);
         return Array.from(grouped.entries()).map(([vv,pts])=>({
-          key:`vv:${vv}`,vv,sv:null,pts,colour:colourMap[vv]||GREY,
+          key:`vv:${vv}`,vv,sv:null,pts:densify(pts),colour:colourMap[vv]||GREY,
           symIdx:undefined,strokeW:2,
           isLit:allLit||highlighted.has(vv),
           label:addSpaces(stratLabel(vv)),
@@ -393,57 +404,70 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
             ||(!hasVarH&&hasStratH&&hS);     // only strat → all vars for that strat
           const symIdx=isCatStrat?si%SYMBOLS.length:undefined;
           const strokeW=isCatStrat?2:ORDINAL_WIDTHS[si%ORDINAL_WIDTHS.length];
-          series.push({key:`${sv}::${vv}`,vv,sv,pts,colour:colourMap[vv]||GREY,symIdx,strokeW,isLit,label:`${addSpaces(stratLabel(vv))} — ${addSpaces(stratLabel(sv))}`});
+          series.push({key:`${sv}::${vv}`,vv,sv,pts:densify(pts),colour:colourMap[vv]||GREY,symIdx,strokeW,isLit,label:`${addSpaces(stratLabel(vv))} — ${addSpaces(stratLabel(sv))}`});
         });
       });
       return series;
     };
 
-    const drawSeries=(rows,dashed,scenLabel)=>{
-      const series=buildSeriesList(rows);
-      // dim first so lit draws on top
-      [...series].sort((a,b)=>(a.isLit?1:-1)).forEach(({vv,sv,pts,colour,symIdx,strokeW,isLit,label})=>{
-        if (!enabledVarVals.has(vv)) return;
-        const fc=isLit?colour:GREY;
-        const opacity=isLit?1:0.18;
-        const sw=isLit?strokeW:(small?0.7:1);
-        const sorted=[...pts].sort((a,b)=>a.year-b.year);
-        if (!sorted.length) return;
+    const drawRibbon=(s,dashed)=>{
+      const {vv,pts,colour,isLit}=s;
+      if (!enabledVarVals.has(vv)||!isLit) return;
+      const sorted=[...pts].sort((a,b)=>a.year-b.year);
+      if (!sorted.some(d=>!isNaN(d.lower_ci))) return;
+      const area=d3.area().defined(d=>!isNaN(d.lower_ci)&&!isNaN(d.upper_ci)).x(d=>xScale(d.year)).y0(d=>yScale(d.lower_ci)).y1(d=>yScale(d.upper_ci)).curve(d3.curveMonotoneX);
+      const band=g.append("path").datum(sorted).attr("d",area).attr("fill",colour).attr("opacity",0.13).style("pointer-events","none");
+      // Scenario ribbons get a dashed outline (same solid/dashed convention as the lines) so overlapping baseline/scenario bands stay distinguishable
+      if (dashed) band.attr("stroke",colour).attr("stroke-width",1).attr("stroke-dasharray","3,3").attr("stroke-opacity",0.55);
+    };
 
-        // CI ribbon (baseline only, lit only)
-        if (!dashed&&isLit&&!small&&sorted.some(d=>!isNaN(d.lower_ci))){
-          const area=d3.area().defined(d=>!isNaN(d.lower_ci)&&!isNaN(d.upper_ci)).x(d=>xScale(d.year)).y0(d=>yScale(d.lower_ci)).y1(d=>yScale(d.upper_ci)).curve(d3.curveMonotoneX);
-          g.append("path").datum(sorted).attr("d",area).attr("fill",fc).attr("opacity",0.11).style("pointer-events","none");
+    const drawLine=(s,dashed)=>{
+      const {vv,pts,colour,isLit,strokeW}=s;
+      if (!enabledVarVals.has(vv)) return;
+      const fc=isLit?colour:GREY;
+      const opacity=isLit?1:0.18;
+      const sw=isLit?strokeW:(small?0.7:1);
+      const sorted=[...pts].sort((a,b)=>a.year-b.year);
+      if (!sorted.length) return;
+      g.append("path").datum(sorted).attr("d",lineFn).attr("fill","none").attr("stroke",fc)
+        .attr("stroke-width",sw).attr("stroke-dasharray",dashed?"6,4":"none").attr("opacity",opacity).style("pointer-events","none");
+    };
+
+    const drawDots=(s,scenLabel)=>{
+      const {vv,pts,colour,symIdx,isLit,label}=s;
+      if (!enabledVarVals.has(vv)) return;
+      const fc=isLit?colour:GREY;
+      const opacity=isLit?1:0.18;
+      const sorted=[...pts].sort((a,b)=>a.year-b.year);
+      // Always draw dots + always add an invisible hit area so tooltips work
+      // regardless of opacity, size, or baseline vs scenario
+      sorted.filter(d=>!isNaN(d.mean_value)).forEach(d=>{
+        const cx=xScale(d.year), cy=yScale(d.mean_value);
+        const ttHtml=`<strong>${label}</strong><br/>${scenLabel}: ${fmt(d.mean_value,isCategorical)}`+(!isNaN(d.lower_ci)?`<br/>95% CI: [${fmt(d.lower_ci,isCategorical)}, ${fmt(d.upper_ci,isCategorical)}]`:"")+`<br/>Year: ${d.year}${(!small&&onYearClick)?" · click to pin cross-section":""}`;
+        const dotR=small?(isLit?2.5:1.5):(isLit?3.5:2);
+        if (symIdx!==undefined&&!small){
+          const symPath=d3.symbol().type(SYMBOLS[symIdx]).size(isLit?52:28)();
+          g.append("path").attr("d",symPath).attr("transform",`translate(${cx},${cy})`)
+            .attr("fill",fc).attr("opacity",opacity).style("pointer-events","none");
+        } else {
+          g.append("circle").attr("cx",cx).attr("cy",cy).attr("r",dotR)
+            .attr("fill",fc).attr("opacity",opacity).style("pointer-events","none");
         }
-
-        g.append("path").datum(sorted).attr("d",lineFn).attr("fill","none").attr("stroke",fc)
-          .attr("stroke-width",sw).attr("stroke-dasharray",dashed?"6,4":"none").attr("opacity",opacity).style("pointer-events","none");
-
-        // Always draw dots + always add an invisible hit area so tooltips work
-        // regardless of opacity, size, or baseline vs scenario
-        sorted.filter(d=>!isNaN(d.mean_value)).forEach(d=>{
-          const cx=xScale(d.year), cy=yScale(d.mean_value);
-          const ttHtml=`<strong>${label}</strong><br/>${scenLabel}: ${fmt(d.mean_value,isCategorical)}`+(!isNaN(d.lower_ci)?`<br/>95% CI: [${fmt(d.lower_ci,isCategorical)}, ${fmt(d.upper_ci,isCategorical)}]`:"")+`<br/>Year: ${d.year}${(!small&&onYearClick)?" · click to pin cross-section":""}`;
-          const dotR=small?(isLit?2.5:1.5):(isLit?3.5:2);
-          if (symIdx!==undefined&&!small){
-            const symPath=d3.symbol().type(SYMBOLS[symIdx]).size(isLit?52:28)();
-            g.append("path").attr("d",symPath).attr("transform",`translate(${cx},${cy})`)
-              .attr("fill",fc).attr("opacity",opacity).style("pointer-events","none");
-          } else {
-            g.append("circle").attr("cx",cx).attr("cy",cy).attr("r",dotR)
-              .attr("fill",fc).attr("opacity",opacity).style("pointer-events","none");
-          }
-          // Invisible hit area — always present, covers both baseline and scenario dots
-          g.append("circle").attr("cx",cx).attr("cy",cy).attr("r",Math.max(8,dotR+5))
-            .attr("fill","transparent")
-            .style("cursor",(!small&&onYearClick)?"pointer":"default")
-            .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT)
-            .on("click",()=>{if(!small&&onYearClick) onYearClick(d.year);});
-        });
+        // Invisible hit area — always present, covers both baseline and scenario dots,
+        // and (since it's drawn in the topmost layer) is never covered by a CI ribbon
+        g.append("circle").attr("cx",cx).attr("cy",cy).attr("r",Math.max(8,dotR+5))
+          .attr("fill","transparent")
+          .style("cursor",(!small&&onYearClick)?"pointer":"default")
+          .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT)
+          .on("click",()=>{if(!small&&onYearClick) onYearClick(d.year);});
       });
     };
 
-    // Click strips BEFORE series so dots paint on top and catch mouse events first
+    const byLitOrder=(a,b)=>(a.isLit?1:-1); // dim first so lit draws on top within its layer
+    const baseSeries=showBaseline?buildSeriesList(baseData):[];
+    const scenSeries=showScenario?buildSeriesList(scenData):[];
+
+    // Click strips BEFORE everything else so dots paint on top and catch mouse events first
     if (onYearClick&&!small){
       allYears.forEach(yr=>{
         g.append("rect").attr("x",xScale(yr)-10).attr("y",0).attr("width",20).attr("height",iH)
@@ -453,13 +477,26 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
       });
     }
 
-    if (showBaseline) drawSeries(baseData,false,"Baseline");
-    if (showScenario) drawSeries(scenData,true,"Scenario");
+    // Layer 1 — CI ribbons for BOTH baseline and scenario, drawn first so they sit
+    // behind every trajectory line (and their pointer-events:none means they never
+    // block the dot hit-areas drawn in layer 3 anyway).
+    if (showCI&&!small){
+      [...baseSeries].sort(byLitOrder).forEach(s=>drawRibbon(s,false));
+      [...scenSeries].sort(byLitOrder).forEach(s=>drawRibbon(s,true));
+    }
+
+    // Layer 2 — trajectory lines, on top of all ribbons
+    [...baseSeries].sort(byLitOrder).forEach(s=>drawLine(s,false));
+    [...scenSeries].sort(byLitOrder).forEach(s=>drawLine(s,true));
+
+    // Layer 3 — dots + hit areas, topmost so tooltips always remain reachable
+    [...baseSeries].sort(byLitOrder).forEach(s=>drawDots(s,"Baseline"));
+    [...scenSeries].sort(byLitOrder).forEach(s=>drawDots(s,"Scenario"));
 
     // Baseline/scenario key at BOTTOM of plot, tagged pub-skip
     if (!small) drawBSKey(g,iW,iH,showBaseline,showScenario);
 
-  },[baseData,scenData,colourMap,highlighted,yDomain,W,H,isCategorical,enabledVarVals,small,selectedYear,onYearClick,showBaseline,showScenario,isStratified,stratValues,enabledStrats,varValues,isCatStrat]);
+  },[baseData,scenData,colourMap,highlighted,yDomain,W,H,isCategorical,enabledVarVals,small,selectedYear,onYearClick,showBaseline,showScenario,isStratified,stratValues,enabledStrats,varValues,isCatStrat,showCI]);
 
   return <svg ref={svgRef} style={{display:"block",overflow:"visible"}}/>;
 }
@@ -515,7 +552,7 @@ function StackedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
           const colour=colourMap[seg.vv]||GREY, fc=isLit?colour:GREY;
           const barY=yScale(seg.y1), barH=Math.abs(yScale(seg.y0)-yScale(seg.y1));
           const bh=Math.max(0.5,barH);
-          const ttHtml=`<strong>${addSpaces(stratLabel(seg.vv))}</strong><br/>${isBase?"Baseline":"Scenario"}: ${fmt(seg.val,true)}<br/>Year: ${yr}`;
+          const ttHtml=`<strong>${addSpaces(stratLabel(seg.vv))}</strong><br/>${isBase?"Baseline":"Scenario"}: ${fmt(seg.val,true)}`+(seg.row&&!isNaN(seg.row.lower_ci)?`<br/>95% CI: [${fmt(seg.row.lower_ci,true)}, ${fmt(seg.row.upper_ci,true)}]`:"")+`<br/>Year: ${yr}`;
           if (isBase){
             g.append("rect").attr("x",ox+bx).attr("y",barY).attr("width",bw).attr("height",bh)
               .attr("fill",fc).attr("opacity",isLit?0.88:0.18)
@@ -547,7 +584,7 @@ function StackedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
           const isLit=allLit||highlighted.has(seg.vv);
           const colour=colourMap[seg.vv]||GREY, fc=isLit?colour:GREY;
           const barY=yScale(seg.y1), barH=Math.abs(yScale(seg.y0)-yScale(seg.y1));
-          const ttHtml=`<strong>${addSpaces(stratLabel(seg.vv))}</strong><br/>Scenario: ${fmt(seg.val,true)}<br/>Year: ${yr}`;
+          const ttHtml=`<strong>${addSpaces(stratLabel(seg.vv))}</strong><br/>Scenario: ${fmt(seg.val,true)}`+(seg.row&&!isNaN(seg.row.lower_ci)?`<br/>95% CI: [${fmt(seg.row.lower_ci,true)}, ${fmt(seg.row.upper_ci,true)}]`:"")+`<br/>Year: ${yr}`;
           // Transparent overlay rect — painted last, always on top
           g.append("rect").attr("x",ox+bx).attr("y",barY).attr("width",bw).attr("height",Math.max(0.5,barH))
             .attr("fill","transparent")
@@ -679,6 +716,14 @@ function DeltaChart({svgRef,deltaData,colourMap,highlighted,isCategorical,
     g.append("line").attr("x1",0).attr("x2",iW).attr("y1",yScale(0)).attr("y2",yScale(0)).attr("stroke","#64748b").attr("stroke-width",1).attr("stroke-dasharray","4,3");
     const lineFn=d3.line().defined(d=>!isNaN(d.mean_value)).x(d=>xScale(d.year)).y(d=>yScale(d.mean_value)).curve(d3.curveMonotoneX);
 
+    // Same reasoning as LineChart: fill any year missing from a series with an
+    // explicit NaN point so .defined() breaks the line there instead of a
+    // straight connector bridging across the gap.
+    const densify=(pts)=>{
+      const byYear=new Map(pts.map(d=>[d.year,d]));
+      return allYears.map(yr=>byYear.get(yr)||{year:yr,mean_value:NaN,lower_ci:NaN,upper_ci:NaN});
+    };
+
     // Build series: stratified → strat×var combos; overall → just varVal
     const series=[];
     if (isStratified){
@@ -694,7 +739,7 @@ function DeltaChart({svgRef,deltaData,colourMap,highlighted,isCategorical,
           const isLit=allLit||(hasVarH&&hasStratH&&hV&&hS)||(hasVarH&&!hasStratH&&hV)||(!hasVarH&&hasStratH&&hS);
           const symIdx=isCatStrat?si%SYMBOLS.length:undefined;
           const strokeW=isCatStrat?2:ORDINAL_WIDTHS[si%ORDINAL_WIDTHS.length];
-          series.push({vv,sv,pts,isLit,colour:colourMap[vv]||GREY,symIdx,strokeW,label:`${addSpaces(stratLabel(vv))} — ${addSpaces(stratLabel(sv))}`});
+          series.push({vv,sv,pts:densify(pts),isLit,colour:colourMap[vv]||GREY,symIdx,strokeW,label:`${addSpaces(stratLabel(vv))} — ${addSpaces(stratLabel(sv))}`});
         });
       });
     } else {
@@ -702,7 +747,7 @@ function DeltaChart({svgRef,deltaData,colourMap,highlighted,isCategorical,
       grouped.forEach((pts,vv)=>{
         if (!enabledVarVals.has(vv)) return;
         const isLit=allLit||highlighted.has(vv);
-        series.push({vv,sv:null,pts,isLit,colour:colourMap[vv]||GREY,symIdx:undefined,strokeW:2,label:addSpaces(stratLabel(vv))});
+        series.push({vv,sv:null,pts:densify(pts),isLit,colour:colourMap[vv]||GREY,symIdx:undefined,strokeW:2,label:addSpaces(stratLabel(vv))});
       });
     }
 
@@ -946,6 +991,7 @@ export default function DashboardSection({parsedCache,targetVariable}){
   const [enabledVarVals,setEnabledVarVals]=useState(new Set());
   const [highlighted,   setHighlighted]   =useState(new Set());
   const [dataView,      setDataView]      =useState("both");
+  const [showCI,        setShowCI]        =useState(true);
 
   const lineRef=useRef(), barRef=useRef();
   const containerRef=useRef();
@@ -960,7 +1006,7 @@ export default function DashboardSection({parsedCache,targetVariable}){
   useEffect(()=>{
     setViewBy("Overall");setChartType("line");setDisplayMode("panels");
     setActiveTab("timeseries");setSelectedYear(null);
-    setEnabledStrats(new Set());setEnabledVarVals(new Set());setHighlighted(new Set());setDataView("both");
+    setEnabledStrats(new Set());setEnabledVarVals(new Set());setHighlighted(new Set());setDataView("both");setShowCI(true);
   },[targetVariable]);
 
   const combined     =useMemo(()=>[...baselineData,...scenarioData],[baselineData,scenarioData]);
@@ -1064,6 +1110,14 @@ export default function DashboardSection({parsedCache,targetVariable}){
                 <button style={togBtn(displayMode==="combined")} onClick={()=>setDisplayMode("combined")}>⊡ Combined</button>
               </div>
             )}
+            {/* CI band toggle — small, only relevant for the full-size line chart (not small-multiple panels) */}
+            {activeTab==="timeseries"&&chartType==="line"&&!(isStratified&&displayMode==="panels")&&(
+              <button onClick={()=>setShowCI(v=>!v)} title="Toggle 95% confidence interval bands"
+                style={{marginTop:3,alignSelf:"flex-start",padding:"3px 9px",borderRadius:5,fontSize:10,fontWeight:600,cursor:"pointer",lineHeight:1.6,
+                  border:showCI?`1px solid ${TEAL}`:"1px solid #ddd8ce",background:showCI?`${TEAL}18`:"#e2ddd5",color:showCI?TEAL:TEXT_S}}>
+                {showCI?"▮ 95% CI":"▯ 95% CI"}
+              </button>
+            )}
           </div>
 
           <div style={{display:"flex",flexDirection:"column",gap:3}}>
@@ -1161,7 +1215,8 @@ export default function DashboardSection({parsedCache,targetVariable}){
                   yDomain={combinedYDomain} varValues={varValues} enabledVarVals={enabledVarVals}
                   showBaseline={showBaseline} showScenario={showScenario}
                   width={isOverall?lineW:width} onYearClick={onYearClick} selectedYear={selectedYear}
-                  isStratified={isStratified} stratValues={stratValues} enabledStrats={enabledStrats} viewBy={viewBy}/>
+                  isStratified={isStratified} stratValues={stratValues} enabledStrats={enabledStrats} viewBy={viewBy}
+                  showCI={showCI}/>
               );
 
               const crossSection=(

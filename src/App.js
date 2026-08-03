@@ -9,22 +9,24 @@ const DOMAIN_SECTIONS = {
     "Highest Level of Education", "Ethnicity", "Partnership status",
     "Number of children", "Household Type"
   ],
+  "Activity status": ["Employment status", "Hours worked"],
   "Income": [
     "Income Quintile", "Benefits Received", "Financial distress flag",
     "Equivalised yearly disposable income", "Gross personal employment income",
     "Capital Income", "Amount of benefits received per month"
   ],
   "Health": [
-    "Disability Status", "Self-Rated Health", "Psychological distress flag",
+    "Self-Rated Health",  "Disability Status", "Psychological distress flag",
     "Psychological distress score", "Mental Component Summary (MCS)", "Physical Component Summary (PCS)", "Life Satisfaction Score",
     "Subjective wellbeing (GHQ)", "Need of social care", "Provided social care"
   ]
 };
 
 const DOMAIN_BLURBS = {
-  "Scenario 1": "Education intervention",
-  "Scenario 2": "Income intervention",
-  "Scenario 3": "Health intervention"
+  "Demographics": "Education, ethnicity, household make-up",
+  "Activity status": "Employment and working hours",
+  "Income": "Earnings, benefits, income quintiles",
+  "Health": "Disability, wellbeing, life satisfaction",
 };
 
 export const VARIABLE_DESCRIPTIONS = {
@@ -141,7 +143,7 @@ function App() {
   const AQUA = "#0f93a1";
   const CORAL    = "#ff6e51";
   const INDIGO   = "#5975f8";
-  const DOMAIN_COLORS = { "Scenario 1": TEAL, "Scenario 2": INDIGO, "Scenario 3": CORAL };
+  const DOMAIN_COLORS = { "Demographics": TEAL, "Activity status": AQUA, "Income": CORAL, "Health": INDIGO };
   const TEXT_DARK = "#1e293b";
   const TEXT_MID  = "#475569";
   const linkBtnStyle = { color: AQUA, textDecoration: "none", fontSize: "14px", padding: "10px 14px", background: `${AQUA}10`, borderRadius: "6px", border: `1px solid ${AQUA}30`, transition: "all 0.2s", display: "inline-flex", alignItems: "center", fontWeight: 500 };
@@ -269,8 +271,8 @@ function App() {
           <p style={{ margin: "0 0 8px", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600, color: TEAL }}>Learn More</p>
           <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
             <a href="https://simpaths.org/" target="_blank" rel="noopener noreferrer" style={smallLinkStyle}>About the Dataset</a>
-            <a href="#interpreting-results" style={smallLinkStyle}>Interpreting the Results</a>
-            <a href="#citation" style={smallLinkStyle}>How Do I Cite This?</a>
+            <a href="/interpreting-results.html" target="_blank" rel="noopener noreferrer" style={smallLinkStyle}>Interpreting the Results</a>
+            <a href="/citation.html" target="_blank" rel="noopener noreferrer" style={smallLinkStyle}>How Do I Cite This?</a>
           </div>
         </div>
 

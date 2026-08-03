@@ -130,7 +130,7 @@ const SEQ_RED    = ["#ff887d","#ff867d","#f6736a","#e35047","#be1b1b"];
 // 5-stop (Q1–Q5 or Poor–Excellent), centred on mid-grey
 // Diverging red → yellow → teal — evenly spaced 5 stops
 // Q1=dark-red, Q2=coral, Q3=yellow (neutral), Q4=teal, Q5=dark-teal
-const DIV_RED_TEAL = ["#e85547","#f9a882","#fee77e","#2ebfd8","#08829c"];
+const DIV_RED_TEAL = ["#d82413","#ed540c","#d8a90e","#1b9bb1","#055e71"];
 
 // ── Education: indigo ramp, starting visibly dark ─────────────────────────────
 // Low=mid-indigo, Medium=strong indigo, High=dark indigo  (InEducation stays grey)
@@ -148,7 +148,7 @@ const RAMPS = { teal:SEQ_TEAL, orange:SEQ_ORANGE, green:SEQ_GREEN, red:SEQ_RED, 
 
 const VARIABLE_PALETTE_REF = {
   "income quintile":   DIV_RED_TEAL,  // Q1(low)=red … Q5(high)=teal
-  "self-rated health": HEALTH_DIV,    // Excellent=teal … Poor=red
+  "self-rated health": [...DIV_RED_TEAL].reverse(),    // Excellent=teal … Poor=red
   "number of children":SEQ_GREEN,
   // household type & employment status → categorical (BRAND_QUAL), handled below
 };

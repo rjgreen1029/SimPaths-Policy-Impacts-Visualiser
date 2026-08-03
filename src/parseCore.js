@@ -137,19 +137,20 @@ export function processRunTexts(personText, benefitText, scenarioName, runId) {
   });
 
   // ── Person CSV → join + rename, single streaming pass ───────────────────────
-  let colIndex = null, stagingCols = null;
+  // colIndex/stagingCols come from COLUMN_MAP itself, not from whichever file's
+  // header happens to be scanned — a display variable may live only on the
+  // benefit file (Income Quintile, Household Type, Equivalised yearly disposable
+  // income, Amount of benefits received per month), only on the person file, or
+  // on both. mget() below already checks the benefit row before falling back to
+  // the person row, so as long as we always ask for every raw column, it doesn't
+  // matter which file actually has it.
+  const colIndex = [], stagingCols = [];
+  for (const [rawCol, display] of Object.entries(COLUMN_MAP)) {
+    (display.startsWith("_") ? stagingCols : colIndex).push([rawCol, display]);
+  }
   const runRows = [];
 
-  d3.csvParse(personText, (p, _i, columns) => {
-    if (colIndex === null) {
-      colIndex = []; stagingCols = [];
-      for (const h of columns) {
-        const display = COLUMN_MAP[h];
-        if (!display) continue;
-        (display.startsWith("_") ? stagingCols : colIndex).push([h, display]);
-      }
-    }
-
+  d3.csvParse(personText, (p) => {
     const yr   = p.time || p.Time || p.Year;
     const buId = p.idBu || p.idbu || p.id_BenefitUnit;
     const bRow = benefitMap.get(`${yr}_${buId}`) || EMPTY_ROW;
