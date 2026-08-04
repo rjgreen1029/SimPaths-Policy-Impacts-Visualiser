@@ -323,10 +323,8 @@ function moveTT(e){const t=getTooltip();const w=t.offsetWidth||220;t.style.left=
 /** Fades the tooltip out (on mouseout). */
 function hideTT(){const t=document.getElementById("smpaths-tt");if(t)t.style.opacity=0;}
 
-// Friendlier column headers for the three sample-size fields — matches the
-// naming the R aggregation script's own CSV export uses, so a file
-// downloaded from the dashboard and one produced by the R script read the
-// same way when opened in a spreadsheet.
+// Friendlier column headers for the three sample-size fields, applied when
+// downloading a CSV from the dashboard.
 const CSV_HEADER_RENAMES={total_sample:"Total Sample: Across Runs",min_sample:"Minimum Sample: Across Runs",mean_sample:"Average Sample: Across Runs"};
 
 /** Serialises `data` (an array of flat objects) to CSV and triggers a browser download — used by every chart's "↓ CSV" button. Column order follows the first row's key order; the three sample-size fields are relabelled via CSV_HEADER_RENAMES for readability. */

@@ -88,7 +88,7 @@ export const VARIABLE_DEFS = {
   "household type":      { type:"categorical", order:HOUSEHOLD_TYPE_ORDER },
   "employment status":   { type:"categorical", order:["Employed or self employed","Not employed","Retired","Student"] },
   "partnership status":  { type:"categorical", order:["Single","Partnered"] },
-  "uc benefits flag":   { type:"categorical", order:[] }, // raw/unrelabeled values, matching the R aggregation script — order unknown in advance, falls back to alphabetical
+  "uc benefits flag":   { type:"categorical", order:[] }, // raw/unrelabeled values — order unknown in advance, falls back to alphabetical
   "financial distress flag":  { type:"categorical", order:["Financially distressed","Not financially distressed"] },
   "need of social care":      { type:"categorical", order:["Needs social care","Does not need social care"] },
   "provided social care":     { type:"categorical", order:["Provides social care","Does not provide social care"] },
@@ -416,9 +416,9 @@ export function parseCsvRow(d) {
     stratifier_value: d.stratifier_value || d.Stratifier_Value || "Overall",
     metric_type:      d.metric_type      || d.Metric_Type      || "mean",
     n_runs:           +d.n_runs          || +d.N_Runs           || 1,
-    // Tolerates both the original snake_case column names AND the friendlier
-    // "Total Sample: Across Runs" / etc. headers the R aggregation script's
-    // export step now uses — works with either version of the CSV.
+    // Tolerates both the original snake_case column names and the
+    // friendlier "Total Sample: Across Runs" / etc. headers — works with
+    // either version of the CSV.
     total_sample:     +(d.total_sample   ?? d["Total Sample: Across Runs"])   || 0,
     min_sample:       +(d.min_sample     ?? d["Minimum Sample: Across Runs"]) || 0,
     mean_sample:      +(d.mean_sample    ?? d["Average Sample: Across Runs"]) || 0,

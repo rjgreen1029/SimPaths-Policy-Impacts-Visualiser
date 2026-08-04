@@ -22,12 +22,10 @@
  * performCrossRunAggregation(allRunMetrics) combines them into the final
  * rows the dashboard actually renders — cross-run mean, standard error-based
  * 95% CI, with small-sample estimates suppressed (total pooled sample below
- * 10 — see performCrossRunAggregation below) rather than shown. This
- * mirrors the reference R aggregation script (SimPathsAggFaster_v4.Rmd)
- * variable-for-variable and statistic-for-statistic, with the sole
- * exception of a handful of value-relabeling choices (Gender, Provided
- * social care, and the Number of Children bins) that the R script doesn't
- * apply but this dashboard intentionally keeps.
+ * 10 — see performCrossRunAggregation below) rather than shown. A handful of
+ * values are also relabelled for display (Gender, Provided social care, and
+ * the Number of Children bins) — see the relevant lookup tables and
+ * processRunTexts() below for the specifics.
  */
 
 import * as d3 from "d3";
@@ -48,8 +46,7 @@ export function binChildren(v) {
 }
 
 // ─── Lookup tables ────────────────────────────────────────────────────────────
-// Matches the R aggregation script's region_map exactly (UK region letter
-// codes only — R's script does not handle numeric region codes).
+// UK region letter codes only — numeric region codes aren't handled.
 export const REGION_MAP = {
   "UKC":"North East (England)","UKD":"North West (England)","UKE":"Yorkshire and The Humber",
   "UKF":"East Midlands (England)","UKG":"West Midlands (England)","UKH":"East of England",
@@ -67,11 +64,10 @@ export const PROV_SOCIAL_CARE_MAP= {"false":"Does not provide social care","0":"
  * knows about must have an entry here — see processRunTexts() below for how
  * this drives which raw columns get read out of the person/benefit CSVs.
  *
- * Matches the reference R aggregation script (SimPathsAggFaster_v4.Rmd)
- * variable-for-variable, including using "region" (not "i_demRgn") as the
- * raw Region column, and treating "yBenUCReceivedFlag" as its own standalone
- * "UC Benefits Flag" variable rather than combining it with a non-UC flag —
- * the R script has no equivalent combined "Benefits Received" concept.
+ * Two choices worth noting: Region is read from a raw "region" column (not
+ * "i_demRgn"), and "yBenUCReceivedFlag" is treated as its own standalone
+ * "UC Benefits Flag" variable rather than being combined with a non-UC flag
+ * into a broader "Benefits Received" concept.
  */
 export const COLUMN_MAP = {
   "eduHighestC4":"Highest Level of Education","demAge":"Age","demMaleFlag":"Gender",
@@ -275,10 +271,8 @@ export function aggregateSingleRun(rows, scenario, runId) {
     //   catAcc[varName] = {totalW, cats:{varVal:{sumW,n}}, strat:{stratName:{stratVal:{totalW,cats:{varVal:{sumW,n}}}}}}
     //     A missing variable or stratifier value is recoded to the literal
     //     string "Missing" and folded in as its own category/stratum, rather
-    //     than being excluded — this matches the R aggregation script, which
-    //     recodes NA → "Missing" before any share is computed, so shares are
-    //     always of the full sample (including missingness) rather than only
-    //     the non-missing subset.
+    //     than being excluded — so shares are always of the full sample
+    //     (including missingness) rather than only the non-missing subset.
     const numAcc = new Map();
     const catAcc = new Map();
 
@@ -396,10 +390,9 @@ export function aggregateSingleRun(rows, scenario, runId) {
  * Combines per-run metric rows (from one or more calls to
  * aggregateSingleRun, across however many runs were processed) into the
  * final rows the dashboard renders: cross-run mean, standard deviation, and
- * a 95% CI — matching the reference R aggregation script's methodology
- * exactly: the CI uses the standard ERROR of the mean (SD ÷ √n_runs), not
+ * a 95% CI. The CI uses the standard ERROR of the mean (SD ÷ √n_runs), not
  * the raw standard deviation across runs, and the suppression threshold is
- * the SMALLEST total_sample (summed across all runs) below 10 — not a
+ * the TOTAL pooled sample (summed across all runs) below 10 — not a
  * per-run minimum. Getting either of these wrong doesn't just look
  * different, it changes the actual width of the CI bands and which
  * estimates get shown vs. suppressed.
