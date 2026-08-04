@@ -1,3 +1,11 @@
+/**
+ * index.js — Application entry point.
+ *
+ * Mounts the React tree into the #root DOM node. The render order matters:
+ * <PasscodeGate> wraps <App>, so the dashboard itself is never mounted (and
+ * never fetches data) until the user has entered the correct passcode — see
+ * PasscodeGate.js for that logic and its important caveats.
+ */
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import './index.css';

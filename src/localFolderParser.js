@@ -1,11 +1,21 @@
-// localFolderParser.js
-// Directory scanning + file-handle discovery stays on the main thread (cheap:
-// no file content is read here). Actual CSV reading + parsing + aggregating is
-// dispatched to a worker pool so multiple runs are read and processed in
-// parallel across CPU cores, and each worker only ever holds one run's file
-// text in memory at a time — never the whole dataset at once. Falls back to
-// main-thread, one-run-at-a-time processing if Workers aren't supported
-// (e.g. file:// without COOP headers).
+/**
+ * localFolderParser.js — Entry point for "Visualise Your Own Data": turns a
+ * user-selected directory (via the File System Access API) into the same
+ * aggregated row shape the dashboard normally gets from the default CSV.
+ *
+ * Pipeline: discoverBranches → collect run folders → locateRunFiles (cheap,
+ * directory-listing only) → dispatchToWorkers (expensive — reads + parses +
+ * aggregates every run) → performCrossRunAggregation (combines all runs into
+ * final rows with cross-run means/SDs/95% CIs).
+ *
+ * Directory scanning + file-handle discovery stays on the main thread (cheap:
+ * no file content is read here). Actual CSV reading + parsing + aggregating is
+ * dispatched to a worker pool so multiple runs are read and processed in
+ * parallel across CPU cores, and each worker only ever holds one run's file
+ * text in memory at a time — never the whole dataset at once. Falls back to
+ * main-thread, one-run-at-a-time processing if Workers aren't supported
+ * (e.g. file:// without COOP headers).
+ */
 
 import { performCrossRunAggregation, processRunTexts } from "./parseCore.js";
 
@@ -14,6 +24,20 @@ const WORKER_COUNT = Math.min(navigator.hardwareConcurrency || 4, 8);
 const BATCH_SIZE = 2;
 
 // ─── Main entry point ─────────────────────────────────────────────────────────
+/**
+ * Parses a user-selected simulation output folder into aggregated dashboard
+ * rows (same shape as the default pre-aggregated CSV).
+ *
+ * Expects `directoryHandle` to contain "Baseline" and/or "Scenario"
+ * subfolders (case-insensitive), each containing one subfolder per model
+ * run. See parseCore.js's COLUMN_MAP for the expected raw column names.
+ *
+ * @param {FileSystemDirectoryHandle} directoryHandle - the folder the user picked
+ * @param {(msg: string) => void} onProgress - called with human-readable progress updates
+ * @returns {Promise<object[]>} final aggregated rows, ready for the dashboard
+ * @throws if no Baseline/Scenario folders, no runs, no valid person+benefit
+ *         CSV pairs, or no usable data rows are found at any stage
+ */
 export async function parseLocalFolder(directoryHandle, onProgress) {
   // 1. Discover branches (baseline / scenario)
   const branches = [];
@@ -66,6 +90,16 @@ export async function parseLocalFolder(directoryHandle, onProgress) {
 }
 
 // ─── File discovery (main thread, no file reads) ──────────────────────────────
+/**
+ * Finds the person + benefit CSV file handles for a single run, without
+ * reading any file content. Looks inside a "csv" subfolder if present,
+ * otherwise directly inside the run folder. Matching is by substring
+ * ("person" / "benefit" in the filename, case-insensitive) rather than an
+ * exact name, so this tolerates whatever naming convention the simulation
+ * output actually used.
+ *
+ * @returns {Promise<{personHandle, benefitHandle}|null>} null if either file is missing
+ */
 async function locateRunFiles({ runEntry }) {
   let targetDir = runEntry;
   for await (const sub of runEntry.values()) {
@@ -88,6 +122,19 @@ async function locateRunFiles({ runEntry }) {
 // worker reads, parses, and discards one run's text at a time (see
 // parseWorker.js), so peak memory stays bounded by roughly WORKER_COUNT runs'
 // worth of CSV text, rather than ALL runs' worth as before.
+/**
+ * Splits runHandles into batches of BATCH_SIZE, spins up a pool of up to
+ * WORKER_COUNT Web Workers, and keeps every worker continuously fed with the
+ * next unclaimed batch until all batches are processed (a simple work-stealing
+ * pool, not a fixed 1:1 batch-to-worker assignment). Falls back to
+ * mainThreadFallback() if Worker construction itself fails (e.g. some
+ * file://-without-COOP-headers setups).
+ *
+ * @param {object[]} runHandles - output of locateRunFiles(), one entry per run
+ * @param {(msg: string) => void} onProgress
+ * @param {number} total - total run count, for progress messages
+ * @returns {Promise<object[]>} combined per-run metrics from every worker
+ */
 async function dispatchToWorkers(runHandles, onProgress, total) {
   let useWorkers = true;
   try {
@@ -154,6 +201,13 @@ async function dispatchToWorkers(runHandles, onProgress, total) {
 // Reads and processes one run at a time, so only a single run's CSV text is
 // ever resident in memory even though there's no worker pool to spread the
 // work across.
+/**
+ * Serial, single-threaded equivalent of dispatchToWorkers() — used when Web
+ * Workers aren't available. Same output shape, just slower and without
+ * parallelism, since it processes one run at a time on the main thread.
+ *
+ * @returns {Promise<object[]>} combined per-run metrics
+ */
 async function mainThreadFallback(runHandles, onProgress, total) {
   const allMetrics = [];
   let i = 0;

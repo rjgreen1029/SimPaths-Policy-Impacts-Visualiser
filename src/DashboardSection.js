@@ -1,3 +1,28 @@
+/**
+ * DashboardSection.js — All chart rendering (D3, raw SVG) and the dashboard's
+ * data-view controls (chart type, stratify-by, view/layout, highlighting,
+ * filters, export). Everything the person sees below the intro card in
+ * App.js comes from this file.
+ *
+ * Rough map of what's in here, top to bottom:
+ *   - Layout / colour / font constants shared by every chart
+ *   - Small stateless helpers (label formatting, y-domain calc, hatch
+ *     patterns for Scenario bars, the shared floating tooltip singleton,
+ *     CSV/PNG export)
+ *   - Chart components: LineChart, StackedBarChart, GroupedBarChart,
+ *     DeltaChart — each owns its own D3 rendering via a ref + useEffect
+ *   - Layout wrappers: PanelChart/SmallMultiplesPanel (small-multiples grid),
+ *     CrossSectionPanel, DeltaSection
+ *   - DashboardSection (default export) — the top-level orchestrator. Owns
+ *     all UI state (which chart type/tab/stratifier/filters are active) and
+ *     decides which chart component(s) to render based on that state.
+ *
+ * Data flow: DashboardSection receives `parsedCache` (the full dataset) and
+ * `targetVariable` (current selection) as props from App.js, filters them
+ * via useAggregatedData() (see useAggregatedData.js) into baseline/scenario
+ * rows for just that variable, and passes those down to whichever chart
+ * component is currently relevant.
+ */
 import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import * as d3 from "d3";
 import {
@@ -7,8 +32,8 @@ import {
 } from "./useAggregatedData";
 
 // ─── Layout ───────────────────────────────────────────────────────────────────
-const CHART_H    = 380;
-const CHART_H_SM = 200;
+const CHART_H    = 380;  // full-size chart height (Overall view, stratified-combined)
+const CHART_H_SM = 200;  // small-multiple panel height
 const MAX_W      = 480;  // wide enough to use most of the container
 const PANEL_MIN_W= 280;
 const M     = { top:24, right:24, bottom:70, left:72 }; // extra bottom for key
@@ -32,25 +57,42 @@ const SYMBOLS = [
 const ORDINAL_WIDTHS = [1.5, 2.5, 3.5, 4.5];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+/** Inserts a space before each internal capital letter — e.g. "CoupleChildren" → "Couple Children" — for display when a raw code doesn't have a friendlier label in STRATIFIER_VALUE_LABELS. */
 function addSpaces(str){
   if (!str) return str;
   return str.replace(/([a-z])([A-Z])/g,"$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g,"$1 $2").trim();
 }
+/** Formats a value for display: percentage (1dp) for categorical/share metrics, plain 2dp number otherwise. Missing/NaN → em-dash. */
 function fmt(v,isCat){
   if (v==null||isNaN(v)) return "—";
   return isCat?`${(v*100).toFixed(1)}%`:d3.format(",.2f")(v);
 }
+/** Same as fmt() but for a Baseline→Scenario delta value: always shows an explicit +/- sign, and categorical deltas are shown in percentage points ("pp") rather than a bare percentage. Uses the same decimal precision as fmt() (1dp for percentages, 2dp for plain numbers) so a value reads identically whether it's shown as a level or a delta. */
 function fmtDelta(v,isCat){
   if (v==null||isNaN(v)) return "—";
   const s=v>=0?"+":"";
-  return isCat?`${s}${(v*100).toFixed(2)} pp`:`${s}${d3.format(",.2f")(v)}`;
+  return isCat?`${s}${(v*100).toFixed(1)} pp`:`${s}${d3.format(",.2f")(v)}`;
 }
+/** Formats a row's sample-size info for a tooltip, e.g. "Sample: 1,234 (12 runs)" — pooled total_sample across every contributing run, plus how many runs contributed. Returns "" (nothing to append) if the row has no usable sample info. */
+/** Formats a row's sample-size info for a tooltip, e.g. "Sample: 103 (avg across 12 runs)" — the average per-run sample size for that specific variable/stratifier/baseline-or-scenario slice, not the pooled total across runs. Returns "" if the row has no usable sample info. */
+function fmtSample(row){
+  if (!row||row.mean_sample==null||isNaN(row.mean_sample)) return "";
+  const n=row.n_runs;
+  return `<br/>Sample: ${Math.round(row.mean_sample).toLocaleString()}${n!=null?` (avg across ${n} run${n===1?"":"s"})`:""}`;
+}
+/** Delta-specific variant of fmtSample() — a Δ figure is a difference of two independent samples, so shows both sides' average per-run sample size rather than a single number. */
+function fmtDeltaSample(row){
+  if (!row||row.base_mean_sample==null||row.scen_mean_sample==null) return "";
+  return `<br/>Sample: Baseline ${Math.round(row.base_mean_sample).toLocaleString()} · Scenario ${Math.round(row.scen_mean_sample).toLocaleString()}`;
+}
+/** d3.extent() over a list of years, but guards the two degenerate cases: no years at all (→ [0,1]) and a single distinct year (→ that year ±1, so the axis isn't zero-width). */
 function safeYearDomain(yrs){
   const [y0,y1]=d3.extent(yrs);
   if (y0===undefined) return [0,1];
   if (y0===y1) return [y0-1,y1+1];
   return [y0,y1];
 }
+/** Computes a y-axis domain from a set of rows, padding by 10% above/below the range spanned by each point's CI (or its mean_value alone, for rows without a CI). Categorical/share axes are clamped to a max of 1 (100%) plus padding. */
 function buildYDomain(data,isCat){
   const v=data.filter(d=>!isNaN(d.mean_value));
   if (!v.length) return [0,1];
@@ -59,37 +101,24 @@ function buildYDomain(data,isCat){
   const pad=(hi-lo)*0.1||0.05;
   return [Math.min(lo-pad,0),isCat?Math.min(1,hi+pad):hi+pad];
 }
+/** Turns an arbitrary label into a filesystem-safe filename fragment (used for CSV/PNG download filenames). */
 function slugify(s){ return String(s||"").replace(/\W+/g,"_").toLowerCase(); }
 
-// Draw diagonal hatch lines directly into a rect area — no <defs> needed, survives SVG export.
-// Call instead of url(#pattern). g = d3 selection, x/y/w/h = rect bounds, colour = stroke.
-function drawHatch(g,x,y,w,h,colour,opacity=0.35,spacing=5){
-  if (w<=0||h<=0) return;
-  const hg=g.append("g").attr("clip-path","none").style("pointer-events","none");
-  // Clip to the bar rectangle
-  const uid=`hatch-clip-${Math.random().toString(36).slice(2,8)}`;
-  // We draw lines diagonally across the bounding box; clip via a nested g with overflow hidden is
-  // not reliable in SVG without clipPath, so just draw enough lines that they naturally stay inside.
-  // Use SVG clipPath — but this needs a defs. Instead use a rect mask approach:
-  // Simpler: just draw the stroke lines and mask with a rect of matching fill=background then lines on top.
-  // Actually simplest that works in serialised SVG: use a foreignObject-free approach:
-  // draw lines, clip to rect using explicit coord clamping.
-  const step=spacing;
-  const diag=w+h; // max diagonal
-  for (let offset=-h; offset<w+h; offset+=step){
-    const x1=x+Math.max(0,offset), y1=y+Math.max(0,-offset);
-    const x2=x+Math.min(w,offset+h), y2=y+Math.min(h,-offset+w+h-w);
-    // Simpler: parametric line across the box diagonal
-    const lx1=x+Math.max(0,offset);
-    const ly1=y+Math.max(0,-offset);
-    const lx2=x+Math.min(w,offset+h);
-    const ly2=y+Math.min(h,offset-0+h);
-    if (lx1>=lx2&&ly1>=ly2) continue;
-    hg.append("line").attr("x1",lx1).attr("y1",ly1).attr("x2",x+Math.min(w,offset+h)).attr("y2",y+Math.min(h,-offset+h))
-      .attr("stroke",colour).attr("stroke-width",1.2).attr("opacity",opacity);
-  }
-}
-// Simpler clip-based hatch that actually works — uses a rect clip path embedded inline
+/**
+ * Draws a diagonal hatch pattern clipped to a rectangle — this is how
+ * Scenario bars are visually distinguished from solid Baseline bars (the
+ * "full vs. hatched fill" half of the solid/dashed Baseline/Scenario visual
+ * convention used throughout the dashboard). Builds and reuses an inline
+ * SVG clipPath (in a lazily-created <defs>) rather than url(#pattern), so
+ * the hatching survives being serialised into a standalone PNG export.
+ *
+ * @param {d3.Selection} svgSel - the root <svg> selection (for the defs/clipPath)
+ * @param {d3.Selection} g - the group to draw the hatch lines into
+ * @param {number} x,y,w,h - the rectangle to hatch (bar bounds)
+ * @param {string} colour
+ * @param {number} [opacity]
+ * @param {number} [spacing] - gap between hatch lines in px
+ */
 function drawHatchClipped(svgSel,g,x,y,w,h,colour,opacity=0.4,spacing=6){
   if (w<=0||h<=0) return;
   // Create a clipPath in the SVG defs (reuse if exists by id)
@@ -110,6 +139,7 @@ function drawHatchClipped(svgSel,g,x,y,w,h,colour,opacity=0.4,spacing=6){
 }
 
 // Draw a symbol at (cx,cy)
+/** Appends one D3 symbol shape (circle/square/diamond/etc.) at (cx,cy) — used for stratifier markers on line charts when the stratifier is categorical (so each stratum gets a distinct shape, not just a colour). */
 function appendSymbol(g, symbolType, cx, cy, size, fill, opacity){
   const symPath = d3.symbol().type(symbolType).size(size)();
   g.append("path").attr("d",symPath).attr("transform",`translate(${cx},${cy})`)
@@ -117,8 +147,27 @@ function appendSymbol(g, symbolType, cx, cy, size, fill, opacity){
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   PUBLICATION PNG
+   PUBLICATION PNG — the "↓ PNG" export button rebuilds a standalone, clean
+   copy of the chart (title + legend baked in as real SVG text, not screenshot)
+   rather than exporting the live interactive chart element directly.
 ─────────────────────────────────────────────────────────────────────────────── */
+/**
+ * Clones a live chart's <svg> element into a new, self-contained "publication"
+ * SVG: white background, a title, and the variable/stratifier legends drawn
+ * as real text (not just visible on hover like the live tooltip). Elements
+ * tagged with the "pub-skip" class (e.g. click-hit-areas, in-chart controls)
+ * are stripped from the clone since they have no meaning in a static export.
+ *
+ * @param {SVGSVGElement} chartSvgEl - the live chart's root <svg> DOM node
+ * @param {object} opts
+ * @param {string} opts.title
+ * @param {{label,color}[]} opts.legendEntries - variable-value legend entries
+ * @param {{label,symPath,sw}[]} [opts.stratLegendEntries] - stratifier legend entries, if stratified
+ * @param {boolean} opts.showBaseline
+ * @param {boolean} opts.showScenario
+ * @param {Set<string>} opts.highlighted - currently-highlighted values, to fade non-highlighted legend rows
+ * @returns {SVGSVGElement|null} the new standalone SVG, or null if chartSvgEl was falsy
+ */
 function buildPublicationSvg(chartSvgEl,{title,legendEntries,stratLegendEntries,showBaseline,showScenario,highlighted}){
   if (!chartSvgEl) return null;
   const cW=chartSvgEl.width.baseVal.value||500;
@@ -210,6 +259,18 @@ function buildPublicationSvg(chartSvgEl,{title,legendEntries,stratLegendEntries,
   return svg;
 }
 
+/**
+ * Rasterizes the standalone publication SVG (from buildPublicationSvg) to a
+ * 2x-scaled PNG and triggers a browser download. Draws the SVG into an
+ * Image via a base64 data URI (avoids canvas tainting/CORS issues that a
+ * blob URL can hit), then onto a white-backed <canvas>. Falls back to
+ * downloading the raw SVG file directly if PNG rasterization fails for any
+ * reason (e.g. a browser that taints the canvas anyway).
+ *
+ * @param {SVGSVGElement} svgEl - the live chart's <svg> element
+ * @param {string} filename
+ * @param {object} pubProps - forwarded to buildPublicationSvg (title/legend/etc.)
+ */
 function downloadPublicationPng(svgEl,filename,pubProps){
   if (!svgEl) return;
   const pub=buildPublicationSvg(svgEl,pubProps); if (!pub) return;
@@ -238,6 +299,7 @@ function downloadPublicationPng(svgEl,filename,pubProps){
   img.src=dataUrl;
 }
 
+/** Small reusable "↓ PNG" button — wraps downloadPublicationPng() with a chart's svgRef/filename/legend props. `small` shrinks it for use inside small-multiple panels. */
 function DownloadBtn({svgRef,filename,pubProps,small=false}){
   return <button onClick={()=>downloadPublicationPng(svgRef?.current,filename,pubProps||{})}
     title="Download publication-ready PNG"
@@ -245,50 +307,85 @@ function DownloadBtn({svgRef,filename,pubProps,small=false}){
 }
 
 // ─── Tooltip ──────────────────────────────────────────────────────────────────
+// A single shared floating tooltip <div> (not one per chart) — every chart
+// calls showTT/moveTT/hideTT on hover rather than rendering its own tooltip
+// element, since only one can ever be visible at a time anyway.
+/** Lazily creates (once) and returns the shared tooltip DOM node, appended directly to <body> so it isn't clipped by any chart's overflow/positioning. */
 function getTooltip(){
   let el=document.getElementById("smpaths-tt");
   if (!el){ el=document.createElement("div"); el.id="smpaths-tt"; Object.assign(el.style,{position:"fixed",pointerEvents:"none",zIndex:9999,background:"rgba(15,23,42,0.93)",color:"#f8fafc",padding:"9px 13px",borderRadius:"8px",fontSize:"13px",lineHeight:"1.65",maxWidth:"240px",boxShadow:"0 4px 20px rgba(0,0,0,0.3)",opacity:0,transition:"opacity 0.1s ease",fontFamily:"system-ui,sans-serif"}); document.body.appendChild(el); }
   return el;
 }
+/** Sets the tooltip's HTML content and fades it in, positioned at the given mouse event's location. */
 function showTT(html,e){const t=getTooltip();t.innerHTML=html;t.style.opacity=1;moveTT(e);}
+/** Repositions the tooltip to follow the mouse, flipping to the left of the cursor if it would otherwise overflow the right edge of the viewport. */
 function moveTT(e){const t=getTooltip();const w=t.offsetWidth||220;t.style.left=(e.clientX+14+w>window.innerWidth?e.clientX-w-14:e.clientX+14)+"px";t.style.top=(e.clientY-20)+"px";}
+/** Fades the tooltip out (on mouseout). */
 function hideTT(){const t=document.getElementById("smpaths-tt");if(t)t.style.opacity=0;}
 
+// Friendlier column headers for the three sample-size fields — matches the
+// naming the R aggregation script's own CSV export uses, so a file
+// downloaded from the dashboard and one produced by the R script read the
+// same way when opened in a spreadsheet.
+const CSV_HEADER_RENAMES={total_sample:"Total Sample: Across Runs",min_sample:"Minimum Sample: Across Runs",mean_sample:"Average Sample: Across Runs"};
+
+/** Serialises `data` (an array of flat objects) to CSV and triggers a browser download — used by every chart's "↓ CSV" button. Column order follows the first row's key order; the three sample-size fields are relabelled via CSV_HEADER_RENAMES for readability. */
 function exportCsv(data,filename){
   if (!data?.length) return;
   const keys=Object.keys(data[0]);
-  const rows=[keys.join(","),...data.map(d=>keys.map(k=>JSON.stringify(d[k]??"")).join(","))];
+  const header=keys.map(k=>CSV_HEADER_RENAMES[k]||k);
+  const rows=[header.join(","),...data.map(d=>keys.map(k=>JSON.stringify(d[k]??"")).join(","))];
   const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([rows.join("\n")],{type:"text/csv"})); a.download=filename; a.click(); URL.revokeObjectURL(a.href);
 }
 
+/** Placeholder shown instead of a chart/panel when its underlying sample is too small to display reliably (see parseCore.js's min_sample<100 suppression rule). */
 function SmallSampleOverlay(){
   return <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(239,236,228,0.85)",borderRadius:8,zIndex:5,padding:16,textAlign:"center"}}>
     <p style={{margin:0,fontSize:12,color:TEXT_M,fontStyle:"italic"}}>Sample too small — suppressed.</p>
   </div>;
 }
 
+/**
+ * Renders one row of clickable legend swatches (used for both the main
+ * variable-value legend and, when stratified, a second row for stratifier
+ * values). Clicking an entry toggles it in/out of the `highlighted` set,
+ * which fades every non-matching series across all charts on the page.
+ *
+ * @param {string} [label] - row label, e.g. "Groups:" or "Stratifier:"
+ * @param {{label,color,symIdx,sw}[]} entries
+ * @param {Set<string>} highlighted
+ * @param {(label:string)=>void} onToggle
+ * @param {boolean} [showSymbols] - draw each entry's D3 symbol shape instead of a plain colour swatch (used for stratifier legends)
+ * @param {object} [stratDef] - stratifier definition, currently unused inside but kept for future symbol-shape lookups
+ */
 function LegendRow({label,entries,highlighted,onToggle,showSymbols=false,stratDef=null}){
   if (!entries?.length) return null;
   const allLit=highlighted.size===0;
   return (
     <div style={{marginBottom:4}}>
-      {label&&<span style={{fontSize:11,fontWeight:700,color:TEXT_S,textTransform:"uppercase",letterSpacing:"0.04em",marginRight:8}}>{label}</span>}
-      <div style={{display:"flex",flexWrap:"wrap",gap:"4px 8px"}}>
+      {label&&<span style={{fontSize:12,fontWeight:700,color:TEXT_S,textTransform:"uppercase",letterSpacing:"0.04em",marginRight:10}}>{label}</span>}
+      <div style={{display:"flex",flexWrap:"wrap",gap:"6px 10px"}}>
         {entries.map(({label:lbl,color,symIdx,sw},i)=>{
           const isH=highlighted.has(lbl), active=allLit||isH;
+          const swatchColour=color||TEXT_M;
           return (
-            <button key={lbl} onClick={()=>onToggle(lbl)} style={{display:"flex",alignItems:"center",gap:5,background:"none",border:"none",cursor:"pointer",padding:"2px 5px",borderRadius:5,outline:isH?`2px solid ${color||TEXT_M}`:"2px solid transparent",transition:"outline 0.1s"}}>
+            <button key={lbl} onClick={()=>onToggle(lbl)} style={{
+              display:"flex",alignItems:"center",gap:7,cursor:"pointer",padding:"7px 13px",borderRadius:20,
+              border:`1.5px solid ${isH?swatchColour:"#ddd8ce"}`,
+              background:isH?`${swatchColour}18`:"#fff",
+              transition:"all 0.15s",
+            }}>
               {showSymbols&&symIdx!==undefined
-                ? <svg width="12" height="12"><path d={d3.symbol().type(SYMBOLS[symIdx%SYMBOLS.length]).size(48)()} transform="translate(6,6)" fill={active?TEXT_M:GREY} opacity={active?1:0.35}/></svg>
+                ? <svg width="14" height="14"><path d={d3.symbol().type(SYMBOLS[symIdx%SYMBOLS.length]).size(64)()} transform="translate(7,7)" fill={active?TEXT_M:GREY} opacity={active?1:0.4}/></svg>
                 : sw!==undefined
-                  ? <svg width="20" height="10"><line x1="0" y1="5" x2="20" y2="5" stroke={active?TEXT_M:GREY} strokeWidth={sw} opacity={active?1:0.35}/></svg>
-                  : <span style={{width:11,height:11,borderRadius:3,background:active?color:GREY,flexShrink:0,display:"inline-block",transition:"background 0.15s"}}/>
+                  ? <svg width="22" height="12"><line x1="0" y1="6" x2="22" y2="6" stroke={active?TEXT_M:GREY} strokeWidth={sw} opacity={active?1:0.4}/></svg>
+                  : <span style={{width:13,height:13,borderRadius:4,background:active?color:GREY,flexShrink:0,display:"inline-block",transition:"background 0.15s"}}/>
               }
-              <span style={{fontSize:13,color:active?TEXT_D:TEXT_S,fontWeight:active?500:400}}>{addSpaces(stratLabel(lbl))}</span>
+              <span style={{fontSize:14,color:active?TEXT_D:TEXT_S,fontWeight:active?600:500}}>{addSpaces(stratLabel(lbl))}</span>
             </button>
           );
         })}
-        {highlighted.size>0&&<button onClick={()=>onToggle(null)} style={{fontSize:12,color:TEXT_S,background:"none",border:"none",cursor:"pointer",padding:"2px 5px",textDecoration:"underline"}}>Clear all</button>}
+        {highlighted.size>0&&<button onClick={()=>onToggle(null)} style={{fontSize:13,fontWeight:600,color:TEAL,background:"none",border:"none",cursor:"pointer",padding:"7px 10px",textDecoration:"underline"}}>Clear all</button>}
       </div>
     </div>
   );
@@ -297,14 +394,16 @@ function LegendRow({label,entries,highlighted,onToggle,showSymbols=false,stratDe
 /* ─────────────────────────────────────────────────────────────────────────────
    AXES
 ─────────────────────────────────────────────────────────────────────────────── */
+/** Draws the shared time (year) x-axis: gridline-free tick marks, thinning to ~6 ticks for wide year ranges (rather than one tick per year), plus an "Year" axis label (omitted for small-multiple panels). */
 function applyTimeXAxis(g,xScale,iH,small,allYears){
   const xTicks=allYears.length<=8?allYears:d3.ticks(allYears[0],allYears[allYears.length-1],6).filter(t=>t%1===0);
   g.append("g").attr("transform",`translate(0,${iH})`).call(d3.axisBottom(xScale).tickValues(xTicks).tickFormat(d3.format("d")).tickSize(3))
     .call(ax=>{ax.select(".domain").remove();ax.selectAll("text").style("font-size",small?"9px":FONT_SZ).style("fill",TEXT_S).style("font-family",PUB_FONT);ax.selectAll(".tick line").style("stroke","#e2ddd5");});
   if (!small) g.append("text").attr("x",xScale.range()[1]/2).attr("y",iH+44).attr("text-anchor","middle").style("font-size",FONT_SZ).style("fill",TEXT_M).style("font-family",PUB_FONT).text("Year");
 }
+/** Draws the shared value y-axis: dashed horizontal gridlines, percentage formatting for categorical/share charts vs. plain numbers otherwise, plus an axis label (omitted for small-multiple panels, or overridden via `yLabelText`). Tick precision matches fmt() exactly (1dp for percentages, 2dp for plain numbers) so a value reads identically whether it's read off the axis or a tooltip. */
 function applyYAxis(g,yScale,iW,iH,isCat,small,yLabelText){
-  g.append("g").call(d3.axisLeft(yScale).ticks(5).tickFormat(v=>isCat?`${(v*100).toFixed(0)}%`:d3.format(",.1f")(v)).tickSize(-iW))
+  g.append("g").call(d3.axisLeft(yScale).ticks(5).tickFormat(v=>isCat?`${(v*100).toFixed(1)}%`:d3.format(",.2f")(v)).tickSize(-iW))
     .call(ax=>{ax.select(".domain").remove();ax.selectAll("text").style("font-size",small?"9px":FONT_SZ).style("fill",TEXT_S).style("font-family",PUB_FONT);ax.selectAll(".tick line").style("stroke","#f0ece4").style("stroke-dasharray","3,3");});
   if (!small){
     const lbl=yLabelText||(isCat?"Share (%)":"Mean value");
@@ -312,7 +411,7 @@ function applyYAxis(g,yScale,iW,iH,isCat,small,yLabelText){
   }
 }
 
-// Draw in-chart baseline/scenario key at the BOTTOM of the plot area (not top) — tagged pub-skip since it's duplicated in the PNG legend
+/** Draws the small "— Baseline / ┄ Scenario" key at the bottom of a line/delta chart's plot area, explaining the solid-vs-dashed visual convention. Tagged "pub-skip" since the PNG export builds its own, more detailed legend instead of duplicating this compact in-chart one. */
 function drawBSKey(g,iW,iH,showBaseline,showScenario){
   if (!showBaseline&&!showScenario) return;
   const skip=g.append("g").attr("class","pub-skip");
@@ -332,10 +431,64 @@ function drawBSKey(g,iW,iH,showBaseline,showScenario){
    LINE CHART
    Combined stratified mode: colour=varVal, symbol OR width cue=stratVal.
 ═════════════════════════════════════════════════════════════════════════════ */
+/**
+ * The dashboard's main time-series chart. Used both full-size (Overall view,
+ * and the stratified "Combined" layout) and shrunk down (`small=true`, via
+ * PanelChart) for small-multiple panels — the same component, not two
+ * separate implementations, so behaviour stays identical at both sizes.
+ *
+ * Rendering happens imperatively via D3 inside a useEffect keyed on the full
+ * prop list, rebuilding the SVG from scratch on every relevant change (rather
+ * than a React-driven incremental D3 update) — simpler to reason about at
+ * this chart's complexity, at the cost of a full redraw per change.
+ *
+ * Draw order (see the three labelled "Layer" passes inside the effect): all
+ * CI ribbons first (both Baseline and Scenario), then all trajectory lines,
+ * then all dots + invisible hit-areas last — so CI shading never visually
+ * sits on top of a line, and hit-areas are always reachable for tooltips
+ * regardless of what's drawn under them.
+ *
+ * Missing years: if a series has no row at all for some year (as opposed to
+ * a row present with a suppressed/NaN value), an explicit NaN placeholder is
+ * synthesised for that year (see the `densify` helper inside) so d3's
+ * `.defined()` breaks the line there rather than drawing a straight
+ * connector across the gap. This requires knowing the FULL set of years that
+ * are real for this variable — see `allYears` below: when this chart is one
+ * panel of a small-multiples grid, `baseData`/`scenData` are already scoped
+ * to a single stratum, and that stratum alone might have zero rows (not
+ * just suppressed ones) for some year that other strata do have data for.
+ * Deriving the year list from just this panel's own data would silently
+ * drop that year from the x-axis entirely (losing its tick label too, not
+ * just breaking the line) — so callers should pass the dataset's global,
+ * variable-wide year list explicitly rather than relying on the fallback.
+ *
+ * @param {object} props
+ * @param {React.RefObject<SVGSVGElement>} props.svgRef
+ * @param {object[]} props.baseData - Baseline rows for the current variable (+ stratifier, if any)
+ * @param {object[]} props.scenData - Scenario rows, same shape
+ * @param {Object<string,string>} props.colourMap - value → colour (see buildColourMap)
+ * @param {Set<string>} props.highlighted - currently-highlighted variable/stratifier values
+ * @param {boolean} props.isCategorical
+ * @param {[number,number]} props.yDomain
+ * @param {string[]} props.varValues - this variable's possible values, in display order
+ * @param {Set<string>} props.enabledVarVals - which values are toggled on (via filters)
+ * @param {boolean} props.showBaseline
+ * @param {boolean} props.showScenario
+ * @param {number} props.width
+ * @param {boolean} [props.small] - render at small-multiple panel size
+ * @param {(year:number)=>void} [props.onYearClick] - pins a year for the cross-section view
+ * @param {number|null} [props.selectedYear] - currently-pinned year, drawn as a vertical indicator
+ * @param {boolean} [props.isStratified]
+ * @param {string[]} [props.stratValues] - stratifier's possible values, if stratified
+ * @param {Set<string>} [props.enabledStrats] - which stratum values are toggled on
+ * @param {string} [props.viewBy] - active stratifier name
+ * @param {boolean} [props.showCI] - whether to draw the 95% CI ribbons (small toggle button in the controls row)
+ * @param {number[]} [props.allYears] - the FULL year range for this variable, across every stratum — pass this explicitly (from the top-level DashboardSection) rather than relying on the local fallback whenever baseData/scenData might be scoped to a single stratum (i.e. always, for small-multiple panels)
+ */
 function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
     isCategorical,yDomain,varValues,enabledVarVals,showBaseline,showScenario,
     width,small,onYearClick,selectedYear,
-    isStratified=false,stratValues=[],enabledStrats=new Set(),viewBy="",showCI=true}){
+    isStratified=false,stratValues=[],enabledStrats=new Set(),viewBy="",showCI=true,allYears:allYearsProp}){
   const mar=small?M_SM:M;
   const H=small?CHART_H_SM:CHART_H;
   const W=small?width:Math.min(width,MAX_W);
@@ -350,7 +503,10 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
     svg.attr("width",W).attr("height",H);
     const g=svg.append("g").attr("transform",`translate(${mar.left},${mar.top})`);
 
-    const allYears=[...new Set([...baseData,...scenData].map(d=>d.year))].filter(Boolean).sort((a,b)=>a-b);
+    // Prefer the caller-supplied global year list (see allYears prop above);
+    // only fall back to deriving it from this instance's own baseData/scenData
+    // when no explicit list was passed in.
+    const allYears=allYearsProp&&allYearsProp.length?allYearsProp:[...new Set([...baseData,...scenData].map(d=>d.year))].filter(Boolean).sort((a,b)=>a-b);
     const xScale=d3.scaleLinear().domain(safeYearDomain(allYears)).range([0,iW]);
     const yScale=d3.scaleLinear().domain(yDomain).range([iH,0]).clamp(true);
     applyTimeXAxis(g,xScale,iH,small,allYears);
@@ -443,7 +599,7 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
       // regardless of opacity, size, or baseline vs scenario
       sorted.filter(d=>!isNaN(d.mean_value)).forEach(d=>{
         const cx=xScale(d.year), cy=yScale(d.mean_value);
-        const ttHtml=`<strong>${label}</strong><br/>${scenLabel}: ${fmt(d.mean_value,isCategorical)}`+(!isNaN(d.lower_ci)?`<br/>95% CI: [${fmt(d.lower_ci,isCategorical)}, ${fmt(d.upper_ci,isCategorical)}]`:"")+`<br/>Year: ${d.year}${(!small&&onYearClick)?" · click to pin cross-section":""}`;
+        const ttHtml=`<strong>${label}</strong><br/>${scenLabel}: ${fmt(d.mean_value,isCategorical)}`+(!isNaN(d.lower_ci)?`<br/>95% CI: [${fmt(d.lower_ci,isCategorical)}, ${fmt(d.upper_ci,isCategorical)}]`:"")+fmtSample(d)+`<br/>Year: ${d.year}${(!small&&onYearClick)?" · click to filter a cross-section":""}`;
         const dotR=small?(isLit?2.5:1.5):(isLit?3.5:2);
         if (symIdx!==undefined&&!small){
           const symPath=d3.symbol().type(SYMBOLS[symIdx]).size(isLit?52:28)();
@@ -505,8 +661,23 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
    STACKED BAR CHART
    Scenario: slightly transparent solid fill + hatch overlay + border
 ═════════════════════════════════════════════════════════════════════════════ */
+/**
+ * Stacked composition-over-time chart for categorical variables (each
+ * year's stack of segments sums to 100%). Baseline is a solid-filled stack;
+ * Scenario is the same stack drawn with reduced opacity plus a diagonal
+ * hatch overlay (via drawHatchClipped) — the "full vs. hatched fill" half
+ * of the dashboard's Baseline/Scenario visual convention, since a stacked
+ * bar chart has no natural "dashed line" equivalent.
+ *
+ * Not used for numeric variables — those get a solid teal LineChart instead
+ * (a stacked bar of a single numeric mean wouldn't mean anything).
+ *
+ * @param {object} props - see LineChart's JSDoc for shared prop meanings (svgRef, baseData, scenData, colourMap, highlighted, isCategorical, varValues, enabledVarVals, showBaseline, showScenario, width, small)
+ * @param {string} [props.patId] - unique id fragment for this chart's hatch-pattern clipPath ids, so multiple stacked bar charts on the page (e.g. small multiples) don't collide
+ * @param {number[]} [props.allYears] - global year range across every stratum — see LineChart's JSDoc for why this matters for small-multiple panels specifically
+ */
 function StackedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
-    isCategorical,varValues,enabledVarVals,showBaseline,showScenario,width,small,patId=""}){
+    isCategorical,varValues,enabledVarVals,showBaseline,showScenario,width,small,patId="",allYears:allYearsProp}){
   const mar=small?M_SM:M;
   const H=small?CHART_H_SM:CHART_H;
   const W=small?width:Math.min(width,MAX_W);
@@ -522,7 +693,7 @@ function StackedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
     if (!filteredVV.length) return;
     const innerKeys=[]; if (showBaseline) innerKeys.push("baseline"); if (showScenario) innerKeys.push("scenario");
     if (!innerKeys.length) return;
-    const allYears=[...new Set([...baseData,...scenData].map(d=>d.year))].filter(Boolean).sort((a,b)=>a-b);
+    const allYears=allYearsProp&&allYearsProp.length?allYearsProp:[...new Set([...baseData,...scenData].map(d=>d.year))].filter(Boolean).sort((a,b)=>a-b);
     const buildStack=(rows)=>allYears.map(yr=>{
       const yearRows=rows.filter(d=>d.year===yr&&filteredVV.includes(d.variable_value));
       let acc=0;
@@ -552,7 +723,7 @@ function StackedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
           const colour=colourMap[seg.vv]||GREY, fc=isLit?colour:GREY;
           const barY=yScale(seg.y1), barH=Math.abs(yScale(seg.y0)-yScale(seg.y1));
           const bh=Math.max(0.5,barH);
-          const ttHtml=`<strong>${addSpaces(stratLabel(seg.vv))}</strong><br/>${isBase?"Baseline":"Scenario"}: ${fmt(seg.val,true)}`+(seg.row&&!isNaN(seg.row.lower_ci)?`<br/>95% CI: [${fmt(seg.row.lower_ci,true)}, ${fmt(seg.row.upper_ci,true)}]`:"")+`<br/>Year: ${yr}`;
+          const ttHtml=`<strong>${addSpaces(stratLabel(seg.vv))}</strong><br/>${isBase?"Baseline":"Scenario"}: ${fmt(seg.val,true)}`+(seg.row&&!isNaN(seg.row.lower_ci)?`<br/>95% CI: [${fmt(seg.row.lower_ci,true)}, ${fmt(seg.row.upper_ci,true)}]`:"")+fmtSample(seg.row)+`<br/>Year: ${yr}`;
           if (isBase){
             g.append("rect").attr("x",ox+bx).attr("y",barY).attr("width",bw).attr("height",bh)
               .attr("fill",fc).attr("opacity",isLit?0.88:0.18)
@@ -584,7 +755,7 @@ function StackedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
           const isLit=allLit||highlighted.has(seg.vv);
           const colour=colourMap[seg.vv]||GREY, fc=isLit?colour:GREY;
           const barY=yScale(seg.y1), barH=Math.abs(yScale(seg.y0)-yScale(seg.y1));
-          const ttHtml=`<strong>${addSpaces(stratLabel(seg.vv))}</strong><br/>Scenario: ${fmt(seg.val,true)}`+(seg.row&&!isNaN(seg.row.lower_ci)?`<br/>95% CI: [${fmt(seg.row.lower_ci,true)}, ${fmt(seg.row.upper_ci,true)}]`:"")+`<br/>Year: ${yr}`;
+          const ttHtml=`<strong>${addSpaces(stratLabel(seg.vv))}</strong><br/>Scenario: ${fmt(seg.val,true)}`+(seg.row&&!isNaN(seg.row.lower_ci)?`<br/>95% CI: [${fmt(seg.row.lower_ci,true)}, ${fmt(seg.row.upper_ci,true)}]`:"")+fmtSample(seg.row)+`<br/>Year: ${yr}`;
           // Transparent overlay rect — painted last, always on top
           g.append("rect").attr("x",ox+bx).attr("y",barY).attr("width",bw).attr("height",Math.max(0.5,barH))
             .attr("fill","transparent")
@@ -600,6 +771,21 @@ function StackedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
 /* ═════════════════════════════════════════════════════════════════════════════
    GROUPED BAR CHART — cross-section
 ═════════════════════════════════════════════════════════════════════════════ */
+/**
+ * Baseline-vs-Scenario comparison at a single point in time (either one
+ * pinned year, or averaged across all years — see CrossSectionPanel/
+ * averageAcrossYears). One group of bars per variable value (or, if
+ * stratified, per stratum), with a Baseline bar and a Scenario bar
+ * side-by-side in each group, plus error-bar whiskers showing the 95% CI —
+ * this is also where the 95% CI first appears in a bar-chart tooltip (see
+ * the ttHtml construction inside), which StackedBarChart's tooltips were
+ * later brought in line with.
+ *
+ * @param {object} props - see LineChart/StackedBarChart JSDoc for shared prop meanings
+ * @param {[number,number]} props.yDomain
+ * @param {number|"Average"} [props.year] - which year's cross-section to show
+ * @param {string} [props.patId] - unique hatch-pattern id fragment, as in StackedBarChart
+ */
 function GroupedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
     isCategorical,yDomain,varValues,enabledVarVals,showBaseline,showScenario,width,small,year,patId=""}){
   const mar=small?M_SM:M;
@@ -643,7 +829,7 @@ function GroupedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
         const row=getRow(rows,vv); if (!row) return;
         const bx=xInner(key), barY=yScale(row.mean_value), barH=Math.abs(y0-barY);
         const lbl=isBase?"Baseline":"Scenario";
-        const ttHtml=`<strong>${addSpaces(stratLabel(vv))}</strong><br/>${lbl}: ${fmt(row.mean_value,isCategorical)}`+(!isNaN(row.lower_ci)?`<br/>95% CI: [${fmt(row.lower_ci,isCategorical)}, ${fmt(row.upper_ci,isCategorical)}]`:"")+(year?`<br/>Year: ${year}`:"");
+        const ttHtml=`<strong>${addSpaces(stratLabel(vv))}</strong><br/>${lbl}: ${fmt(row.mean_value,isCategorical)}`+(!isNaN(row.lower_ci)?`<br/>95% CI: [${fmt(row.lower_ci,isCategorical)}, ${fmt(row.upper_ci,isCategorical)}]`:"")+fmtSample(row)+(year?`<br/>Year: ${year}`:"");
         if (isBase){
           g.append("rect").attr("x",ox+bx).attr("y",Math.min(y0,barY)).attr("width",bw).attr("height",Math.max(1,barH)).attr("fill",fc).attr("opacity",isLit?0.85:0.18).attr("rx",2).on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
         } else {
@@ -674,7 +860,7 @@ function GroupedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
         if (!sRow||isNaN(sRow.mean_value)) return;
         const barY=yScale(sRow.mean_value), y0loc=yScale(Math.max(0,yDomain[0]>0?yDomain[0]:0));
         const barH=Math.abs(y0loc-barY);
-        const ttHtml=`<strong>${addSpaces(stratLabel(vv))}</strong><br/>Scenario: ${fmt(sRow.mean_value,isCategorical)}`+(!isNaN(sRow.lower_ci)?`<br/>95% CI: [${fmt(sRow.lower_ci,isCategorical)}, ${fmt(sRow.upper_ci,isCategorical)}]`:"")+( year?`<br/>Year: ${year}`:"");
+        const ttHtml=`<strong>${addSpaces(stratLabel(vv))}</strong><br/>Scenario: ${fmt(sRow.mean_value,isCategorical)}`+(!isNaN(sRow.lower_ci)?`<br/>95% CI: [${fmt(sRow.lower_ci,isCategorical)}, ${fmt(sRow.upper_ci,isCategorical)}]`:"")+fmtSample(sRow)+( year?`<br/>Year: ${year}`:"");
         g.append("rect").attr("x",ox+bx).attr("y",Math.min(y0loc,barY)).attr("width",bw).attr("height",Math.max(1,barH))
           .attr("fill","transparent")
           .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
@@ -688,8 +874,21 @@ function GroupedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
 /* ═════════════════════════════════════════════════════════════════════════════
    DELTA CHART
 ═════════════════════════════════════════════════════════════════════════════ */
-// DeltaChart — shows stratifier × variable combos like the combined line chart.
-// Colour = variable_value. Shape/width cue = stratifier_value.
+/**
+ * The Δ Baseline → Scenario line chart: plots (Scenario − Baseline) over
+ * time directly, rather than making the reader compare two separate lines
+ * themselves. Zero is "no effect"; consistently above/below zero means the
+ * Scenario increases/decreases that outcome relative to Baseline.
+ *
+ * Shares the LineChart's colour=variable_value, symbol/width=stratifier_value
+ * convention when stratified, and the same "densify missing years so the
+ * line breaks rather than bridges a gap" + "CI ribbons drawn behind all
+ * lines" approach — see LineChart's JSDoc for the fuller explanation of both.
+ *
+ * @param {object} props
+ * @param {object[]} props.deltaData - pre-computed delta rows (Scenario minus Baseline), not raw baseline/scenario rows
+ * @param {object} ...rest - see LineChart's JSDoc for the remaining shared props (colourMap, highlighted, isCategorical, varValues, enabledVarVals, stratValues, enabledStrats, viewBy, width)
+ */
 function DeltaChart({svgRef,deltaData,colourMap,highlighted,isCategorical,
     varValues,enabledVarVals,stratValues=[],enabledStrats=new Set(),viewBy="",width}){
   const H=CHART_H, W=Math.min(width,MAX_W);
@@ -704,9 +903,18 @@ function DeltaChart({svgRef,deltaData,colourMap,highlighted,isCategorical,
     if (iW<10||!deltaData?.length) return;
     svg.attr("width",W).attr("height",H);
     const g=svg.append("g").attr("transform",`translate(${M.left},${M.top})`);
-    const filtered=deltaData.filter(d=>!isNaN(d.mean_value)&&enabledVarVals.has(d.variable_value)&&(isStratified?enabledStrats.has(d.stratifier_value):true));
-    if (!filtered.length) return;
-    const allYears=[...new Set(filtered.map(d=>d.year))].sort((a,b)=>a-b);
+    // "raw" = every row in scope regardless of whether the delta is valid —
+    // this is what allYears must be built from, so a year isn't dropped from
+    // the x-axis entirely just because EVERY series happens to be suppressed
+    // that year (which "filtered" alone can't tell apart from "this year
+    // never existed"). "filtered" (valid-only) is still what feeds the
+    // y-domain and each series' own points — densify() below re-inserts a
+    // NaN placeholder for any year a given series is missing from filtered,
+    // using allYears as the source of truth for which years are real.
+    const raw=deltaData.filter(d=>enabledVarVals.has(d.variable_value)&&(isStratified?enabledStrats.has(d.stratifier_value):true));
+    if (!raw.length) return;
+    const filtered=raw.filter(d=>!isNaN(d.mean_value));
+    const allYears=[...new Set(raw.map(d=>d.year))].sort((a,b)=>a-b);
     const vals=filtered.flatMap(d=>[isNaN(d.lower_ci)?d.mean_value:d.lower_ci,isNaN(d.upper_ci)?d.mean_value:d.upper_ci]).filter(v=>!isNaN(v));
     const yMax=Math.max(Math.abs(d3.min(vals)||0),Math.abs(d3.max(vals)||0.1))*1.15;
     const xScale=d3.scaleLinear().domain(safeYearDomain(allYears)).range([0,iW]);
@@ -768,7 +976,7 @@ function DeltaChart({svgRef,deltaData,colourMap,highlighted,isCategorical,
       g.append("path").datum(sorted).attr("d",lineFn).attr("fill","none").attr("stroke",fc).attr("stroke-width",sw).attr("opacity",opacity).style("pointer-events","none");
       sorted.filter(d=>!isNaN(d.mean_value)).forEach(d=>{
         const cx=xScale(d.year), cy=yScale(d.mean_value);
-        const ttHtml=`<strong>${label}</strong><br/>Δ: ${fmtDelta(d.mean_value,isCategorical)}`+(!isNaN(d.lower_ci)?`<br/>95% CI: [${fmtDelta(d.lower_ci,isCategorical)}, ${fmtDelta(d.upper_ci,isCategorical)}]`:"")+`<br/>Year: ${d.year}`;
+        const ttHtml=`<strong>${label}</strong><br/>Δ: ${fmtDelta(d.mean_value,isCategorical)}`+(!isNaN(d.lower_ci)?`<br/>95% CI: [${fmtDelta(d.lower_ci,isCategorical)}, ${fmtDelta(d.upper_ci,isCategorical)}]`:"")+fmtDeltaSample(d)+`<br/>Year: ${d.year}`;
         if (symIdx!==undefined){
           const sp=d3.symbol().type(SYMBOLS[symIdx]).size(isLit?48:24)();
           g.append("path").attr("d",sp).attr("transform",`translate(${cx},${cy})`).attr("fill",fc).attr("opacity",opacity)
@@ -786,10 +994,11 @@ function DeltaChart({svgRef,deltaData,colourMap,highlighted,isCategorical,
 /* ═════════════════════════════════════════════════════════════════════════════
    PANEL CHART wrapper
 ═════════════════════════════════════════════════════════════════════════════ */
+/** Thin wrapper that forces `small:true` sizing and picks StackedBarChart vs. LineChart based on `chartType` — this is what each cell of the small-multiples grid actually renders. `allYears` is the global year range (see LineChart's JSDoc) — required here specifically since each panel's own baseData/scenData is already scoped to a single stratum. */
 function PanelChart({baseData,scenData,colourMap,highlighted,isCategorical,yDomain,
-    varValues,enabledVarVals,showBaseline,showScenario,width,chartType,panelId}){
+    varValues,enabledVarVals,showBaseline,showScenario,width,chartType,panelId,allYears}){
   const svgRef=useRef();
-  const props={svgRef,baseData,scenData,colourMap,highlighted,isCategorical,varValues,enabledVarVals,showBaseline,showScenario,width,small:true};
+  const props={svgRef,baseData,scenData,colourMap,highlighted,isCategorical,varValues,enabledVarVals,showBaseline,showScenario,width,small:true,allYears};
   if (chartType==="bar") return <StackedBarChart {...props} patId={panelId}/>;
   return <LineChart {...props} yDomain={yDomain}/>;
 }
@@ -797,12 +1006,27 @@ function PanelChart({baseData,scenData,colourMap,highlighted,isCategorical,yDoma
 /* ═════════════════════════════════════════════════════════════════════════════
    SMALL MULTIPLES PANEL — per-panel and download-all
 ═════════════════════════════════════════════════════════════════════════════ */
+/**
+ * Lays out one PanelChart per enabled stratum value in a responsive grid
+ * (column count adapts to available width via PANEL_MIN_W), each in its own
+ * card with its own download buttons, plus "download all panels" PNG/CSV
+ * buttons at the top. A stratum whose data is entirely suppressed (every
+ * point NaN) renders SmallSampleOverlay instead of an empty/broken chart.
+ *
+ * @param {object[]} props.allBaseData,props.allScenData - the FULL unfiltered baseline/scenario rows (not just enabled values), used only for the "download all" CSV export so it isn't scoped to the visible panels alone
+ * @param {(stratValue:string)=>object} props.pubPropsFactory - builds the buildPublicationSvg() props for one panel's PNG export, given its stratum value
+ */
 function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighted,
     isCategorical,varValues,enabledVarVals,enabledStrats,showBaseline,showScenario,
     chartType,width,pubPropsFactory,targetVariable,allBaseData,allScenData}){
   const cols=Math.max(1,Math.min(stratValues.length,Math.floor(width/PANEL_MIN_W)));
   const panelW=Math.floor((width-(cols-1)*12)/cols);
   const yDomain=useMemo(()=>buildYDomain([...baseData,...scenData],isCategorical),[baseData,scenData,isCategorical]);
+  // Global year range across ALL strata combined — computed here, before any
+  // per-stratum filtering below, and passed to every panel so a panel's own
+  // (possibly empty-for-some-year) stratum can't silently drop that year
+  // from its x-axis. See LineChart's JSDoc for the full reasoning.
+  const allYears=useMemo(()=>[...new Set([...baseData,...scenData].map(d=>d.year))].filter(Boolean).sort((a,b)=>a-b),[baseData,scenData]);
   const visible=stratValues.filter(sv=>enabledStrats.has(sv));
   const panelSvgRefs=useRef({});
 
@@ -851,7 +1075,7 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
                 <PanelChart baseData={bR} scenData={sR} colourMap={colourMap} highlighted={highlighted}
                   isCategorical={isCategorical} yDomain={yDomain} varValues={varValues}
                   enabledVarVals={enabledVarVals} showBaseline={showBaseline} showScenario={showScenario}
-                  width={panelW-24} chartType={chartType} panelId={`p_${slugify(sv)}`}/>
+                  width={panelW-24} chartType={chartType} panelId={`p_${slugify(sv)}`} allYears={allYears}/>
               }
             </div>
           );
@@ -864,6 +1088,16 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
 /* ═════════════════════════════════════════════════════════════════════════════
    CROSS-SECTION PANEL — with download buttons
 ═════════════════════════════════════════════════════════════════════════════ */
+/**
+ * Wraps GroupedBarChart with its own filtering (by pinned year, or averaged
+ * across all years) and download controls — this is what actually renders
+ * for the "Cross-section" tab. When stratified, renders one GroupedBarChart
+ * per enabled stratum value instead of a single chart, similar in spirit to
+ * SmallMultiplesPanel but for the grouped-bar comparison rather than lines.
+ *
+ * @param {number|null} props.year - the pinned year (from clicking a point on the line chart), used unless isAverage
+ * @param {boolean} props.isAverage - true when showing the "averaged across all years" cross-section instead of one specific year
+ */
 function CrossSectionPanel({baseData,scenData,colourMap,highlighted,isCategorical,
     varValues,enabledVarVals,enabledStrats,viewBy,showBaseline,showScenario,
     width,year,isAverage,pubPropsFactory,targetVariable}){
@@ -939,6 +1173,12 @@ function CrossSectionPanel({baseData,scenData,colourMap,highlighted,isCategorica
 /* ═════════════════════════════════════════════════════════════════════════════
    DELTA SECTION
 ═════════════════════════════════════════════════════════════════════════════ */
+/**
+ * Wraps DeltaChart with its own baseline/scenario row-pairing (computing
+ * Scenario − Baseline per matching year/variable_value/stratifier_value
+ * combination), legend, and download controls — renders for the "Δ
+ * Baseline → Scenario" tab.
+ */
 function DeltaSection({baseData,scenData,colourMap,highlighted,isCategorical,
     varValues,enabledVarVals,enabledStrats,viewBy,width,legendEntries,stratValues=[]}){
   const svgRef=useRef();
@@ -946,15 +1186,28 @@ function DeltaSection({baseData,scenData,colourMap,highlighted,isCategorical,
   const filtB=useMemo(()=>baseData.filter(d=>enabledVarVals.has(d.variable_value)&&(isStratified?enabledStrats.has(d.stratifier_value):d.stratifier_value==="Overall")),[baseData,enabledVarVals,enabledStrats,isStratified]);
   const filtS=useMemo(()=>scenData.filter(d=>enabledVarVals.has(d.variable_value)&&(isStratified?enabledStrats.has(d.stratifier_value):d.stratifier_value==="Overall")),[scenData,enabledVarVals,enabledStrats,isStratified]);
   const deltaData=useMemo(()=>{
+    // Union of both sides' keys — a year/combo missing from EITHER side still
+    // needs to exist in the output (with a NaN delta) so the chart's x-axis
+    // knows that year is real; dropping the row entirely (as opposed to
+    // keeping it with mean_value:NaN) would make the year disappear from the
+    // axis rather than just breaking the line at that point — exactly the
+    // "line quietly bridges the gap" bug this is meant to avoid.
     const bMap=new Map();
     filtB.forEach(d=>bMap.set(`${d.year}||${d.variable_value}||${d.stratifier_value}`,d));
-    return filtS.map(s=>{
-      const b=bMap.get(`${s.year}||${s.variable_value}||${s.stratifier_value}`);
-      if (!b||isNaN(s.mean_value)||isNaN(b.mean_value)) return null;
-      return {...s,mean_value:s.mean_value-b.mean_value,
-        lower_ci:(!isNaN(s.lower_ci)&&!isNaN(b.upper_ci))?s.lower_ci-b.upper_ci:NaN,
-        upper_ci:(!isNaN(s.upper_ci)&&!isNaN(b.lower_ci))?s.upper_ci-b.lower_ci:NaN};
-    }).filter(Boolean);
+    const sMap=new Map();
+    filtS.forEach(d=>sMap.set(`${d.year}||${d.variable_value}||${d.stratifier_value}`,d));
+    const allKeys=new Set([...bMap.keys(),...sMap.keys()]);
+    return Array.from(allKeys).map(key=>{
+      const b=bMap.get(key), s=sMap.get(key);
+      const meta=s||b; // whichever side has the row supplies year/variable_value/stratifier_value/etc.
+      const valid=b&&s&&!isNaN(s.mean_value)&&!isNaN(b.mean_value);
+      return {...meta,
+        mean_value: valid?s.mean_value-b.mean_value:NaN,
+        lower_ci:  valid&&!isNaN(s.lower_ci)&&!isNaN(b.upper_ci)?s.lower_ci-b.upper_ci:NaN,
+        upper_ci:  valid&&!isNaN(s.upper_ci)&&!isNaN(b.lower_ci)?s.upper_ci-b.lower_ci:NaN,
+        base_mean_sample:b?.mean_sample, base_n_runs:b?.n_runs,
+        scen_mean_sample:s?.mean_sample, scen_n_runs:s?.n_runs};
+    });
   },[filtB,filtS]);
   const hasDelta=deltaData.some(d=>!isNaN(d.mean_value));
   const varLabel=addSpaces(filtB[0]?.variable||"");
@@ -980,6 +1233,37 @@ function DeltaSection({baseData,scenData,colourMap,highlighted,isCategorical,
 /* ═════════════════════════════════════════════════════════════════════════════
    MAIN DashboardSection
 ═════════════════════════════════════════════════════════════════════════════ */
+/**
+ * Top-level orchestrator for everything below the intro card. Owns all UI
+ * state — which stratifier/chart type/tab/layout is active, which values
+ * are filtered in, which are highlighted, whether CI bands are shown — and
+ * decides, based on that state, which chart component(s) from above to
+ * actually render (LineChart directly, or via SmallMultiplesPanel;
+ * StackedBarChart directly or via panels; CrossSectionPanel; DeltaSection).
+ *
+ * Receives the full dataset + current variable selection from App.js via
+ * props, and does its own filtering down to just that variable's rows via
+ * useAggregatedData() — App.js itself never touches chart-level data shape.
+ *
+ * Key state:
+ *   - viewBy: current stratifier ("Overall" = not stratified)
+ *   - chartType: "line" | "bar"
+ *   - displayMode: "panels" (small multiples) | "combined" (one chart)
+ *   - activeTab: "timeseries" | "crosssection" | "delta"
+ *   - selectedYear: year pinned via clicking a line-chart point, drives the cross-section tab
+ *   - enabledStrats / enabledVarVals: which values are currently toggled on via filters
+ *   - highlighted: values currently spotlighted via clicking a legend entry
+ *   - dataView: "both" | "baseline" | "scenario" — which series to actually draw
+ *   - showCI: whether the 95% CI ribbons are shown on line charts
+ *
+ * Most of this state resets to its default whenever `targetVariable` changes
+ * (see the useEffect keyed on it below), so switching variables doesn't
+ * carry over filters/highlights that may no longer make sense for the new
+ * variable's set of values.
+ *
+ * @param {object[]} parsedCache - full dataset (all variables/scenarios), from App.js
+ * @param {string} targetVariable - currently-selected variable to visualise
+ */
 export default function DashboardSection({parsedCache,targetVariable}){
   const {baselineData,scenarioData}=useAggregatedData(parsedCache,targetVariable);
   const [viewBy,        setViewBy]        =useState("Overall");
@@ -1069,125 +1353,179 @@ export default function DashboardSection({parsedCache,targetVariable}){
   const combinedScenTime=useMemo(()=>isStratified?scenTime.filter(d=>enabledStrats.has(d.stratifier_value)):scenTime,[scenTime,isStratified,enabledStrats]);
   const combinedYDomain =useMemo(()=>buildYDomain([...combinedBaseTime,...combinedScenTime],isCategorical),[combinedBaseTime,combinedScenTime,isCategorical]);
 
-  // Style helpers
-  const tabStyle=t=>({padding:"9px 20px",borderRadius:7,fontSize:14,fontWeight:600,cursor:"pointer",border:activeTab===t?`1.5px solid ${TEAL}`:"1.5px solid #ddd8ce",background:activeTab===t?`${TEAL}18`:"#e2ddd5",color:activeTab===t?TEAL:TEXT_S});
-  const togBtn=active=>({padding:"8px 18px",borderRadius:6,fontSize:14,fontWeight:600,cursor:"pointer",border:"none",background:active?"#fff":"transparent",color:active?TEAL:TEXT_S});
-  const dvBtn=dv=>({padding:"8px 18px",borderRadius:6,fontSize:14,fontWeight:600,cursor:"pointer",border:"none",background:dataView===dv?"#fff":"transparent",color:dataView===dv?TEAL:TEXT_S});
+  // Style helpers — a single flat toolbar rather than boxed cards: inline
+  // labels next to each control, thin dividers between logical groups,
+  // moderate (not oversized) touch targets.
+  const controlLabel={fontSize:12,fontWeight:700,color:TEAL,textTransform:"uppercase",letterSpacing:"0.04em",whiteSpace:"nowrap"};
+  const divider={width:1,alignSelf:"stretch",background:"#ddd8ce",flexShrink:0};
+  const segGroup={display:"flex",gap:2,background:"#eae6de",borderRadius:8,padding:3};
+  const tabStyle=t=>({padding:"9px 18px",borderRadius:7,fontSize:14,fontWeight:600,cursor:"pointer",border:activeTab===t?`1.5px solid ${TEAL}`:"1.5px solid #ddd8ce",background:activeTab===t?`${TEAL}18`:"#eae6de",color:activeTab===t?TEAL:TEXT_S});
+  const togBtn=active=>({padding:"8px 16px",borderRadius:6,fontSize:13.5,fontWeight:600,cursor:"pointer",border:"none",background:active?"#fff":"transparent",color:active?TEAL:TEXT_S,boxShadow:active?"0 1px 2px rgba(0,0,0,0.08)":"none",transition:"all 0.15s"});
+  const dvBtn=dv=>({padding:"8px 16px",borderRadius:6,fontSize:13.5,fontWeight:600,cursor:"pointer",border:"none",background:dataView===dv?"#fff":"transparent",color:dataView===dv?TEAL:TEXT_S,boxShadow:dataView===dv?"0 1px 2px rgba(0,0,0,0.08)":"none",transition:"all 0.15s"});
 
   const crossTitle=selectedYear===null?"Average across all years":`Year ${selectedYear}`;
+
+  // Left-sidebar (Filter Variables / Stratifiers / Highlight) visibility —
+  // same conditions each section already used individually, just checked
+  // up front so we know whether to reserve sidebar width for the charts.
+  const showFilterVars  =isCategorical&&varValues.length>1;
+  const showStratFilters=isStratified&&stratValues.length>0;
+  const showHighlight   =!(activeTab==="timeseries"&&chartType==="bar");
+  const hasSidebar       =showFilterVars||showStratFilters||showHighlight;
+  const SIDEBAR_W=190;
+  // Charts size themselves off this instead of the raw container width
+  // whenever the sidebar is actually taking up horizontal space.
+  const chartAreaWidth=hasSidebar?Math.max(240,width-SIDEBAR_W-20):width;
 
   return (
     <div ref={containerRef} style={{width:"100%",maxWidth:"100%",overflowX:"hidden"}}>
 
-      {/* ── Controls + filters + legend — compact single block ── */}
-      <div style={{marginBottom:10,display:"flex",flexDirection:"column",gap:6}}>
+      {/* ── Controls + filters + legend — flat toolbar, no boxes ── */}
+      <div style={{marginBottom:14,display:"flex",flexDirection:"column",gap:10,paddingBottom:10,borderBottom:"1px solid #e2ddd5"}}>
 
-        {/* Row 1: four labelled control groups */}
-        <div style={{display:"flex",gap:16,alignItems:"flex-end",flexWrap:"wrap"}}>
-          <div style={{display:"flex",flexDirection:"column",gap:2}}>
-            <span style={{fontSize:10,fontWeight:700,color:TEXT_S,textTransform:"uppercase",letterSpacing:"0.05em"}}>Stratify by</span>
-            <select value={viewBy} onChange={e=>{setViewBy(e.target.value);setHighlighted(new Set());}}
-              style={{padding:"8px 12px",borderRadius:6,border:"1px solid #ddd8ce",fontSize:14,color:TEXT_D,background:"#efece4",height:38,boxSizing:"border-box"}}>
-              {["Overall","Age","Gender","Household Type","Disability Status","Region","Ethnicity","Income Quintile"].map(o=><option key={o} value={o}>{o}</option>)}
-            </select>
+        {/* Row 1: Stratify by, on its own — keeps the second row free for
+            Chart type / View / Layout / CI / Compare to stay on one line */}
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <span style={controlLabel}>Stratify by</span>
+          <select value={viewBy} onChange={e=>{setViewBy(e.target.value);setHighlighted(new Set());}}
+            style={{padding:"8px 12px",borderRadius:7,border:"1px solid #ddd8ce",fontSize:14,color:TEXT_D,background:"#eae6de",height:38,boxSizing:"border-box",cursor:"pointer",fontWeight:500}}>
+            {["Overall","Age","Gender","Household Type","Disability Status","Region","Ethnicity","Income Quintile"].map(o=><option key={o} value={o}>{o}</option>)}
+          </select>
+        </div>
+
+        {/* Row 2: everything else — inline labels, thin dividers between
+            logical groups, no boxed cards */}
+        <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",rowGap:8}}>
+
+          <span style={controlLabel}>Chart type</span>
+          <div style={segGroup}>
+            <button style={togBtn(chartType==="line"&&activeTab==="timeseries")} onClick={()=>{setChartType("line");setActiveTab("timeseries");}}>〜 Line</button>
+            {isCategorical&&<button style={togBtn(chartType==="bar"&&activeTab==="timeseries")} onClick={()=>{setChartType("bar");setActiveTab("timeseries");}}>▦ Stacked</button>}
           </div>
-          <div style={{display:"flex",flexDirection:"column",gap:3}}>
-            <span style={{fontSize:10,fontWeight:700,color:TEXT_S,textTransform:"uppercase",letterSpacing:"0.05em"}}>Chart type</span>
-            <div style={{display:"flex",gap:2,background:"#e2ddd5",borderRadius:7,padding:3,height:38,boxSizing:"border-box",alignItems:"center"}}>
-              <button style={togBtn(chartType==="line"&&activeTab==="timeseries")} onClick={()=>{setChartType("line");setActiveTab("timeseries");}}>〜 Line</button>
-              {isCategorical&&<button style={togBtn(chartType==="bar"&&activeTab==="timeseries")} onClick={()=>{setChartType("bar");setActiveTab("timeseries");}}>▦ Stacked</button>}
-            </div>
-            {/* View data — directly under Chart type */}
-            <div style={{display:"flex",gap:2,background:"#e2ddd5",borderRadius:7,padding:3,marginTop:3}}>
-              <button style={dvBtn("both")}     onClick={()=>setDataView("both")}>Both</button>
-              <button style={dvBtn("baseline")} onClick={()=>setDataView("baseline")}>Baseline</button>
-              <button style={dvBtn("scenario")} onClick={()=>setDataView("scenario")}>Scenario</button>
-            </div>
-            {/* Layout — only when stratified + line + time series */}
-            {activeTab==="timeseries"&&isStratified&&chartType==="line"&&(
-              <div style={{display:"flex",gap:2,background:"#e2ddd5",borderRadius:7,padding:3,marginTop:3}}>
+
+          <span style={controlLabel}>View</span>
+          <div style={segGroup}>
+            <button style={dvBtn("both")}     onClick={()=>setDataView("both")}>Both</button>
+            <button style={dvBtn("baseline")} onClick={()=>setDataView("baseline")}>Baseline</button>
+            <button style={dvBtn("scenario")} onClick={()=>setDataView("scenario")}>Scenario</button>
+          </div>
+
+          {/* Layout — only when stratified + line + time series */}
+          {activeTab==="timeseries"&&isStratified&&chartType==="line"&&(
+            <>
+              <span style={controlLabel}>Layout</span>
+              <div style={segGroup}>
                 <button style={togBtn(displayMode==="panels")}   onClick={()=>setDisplayMode("panels")}>⊞ Panels</button>
                 <button style={togBtn(displayMode==="combined")} onClick={()=>setDisplayMode("combined")}>⊡ Combined</button>
               </div>
-            )}
-            {/* CI band toggle — small, only relevant for the full-size line chart (not small-multiple panels) */}
-            {activeTab==="timeseries"&&chartType==="line"&&!(isStratified&&displayMode==="panels")&&(
-              <button onClick={()=>setShowCI(v=>!v)} title="Toggle 95% confidence interval bands"
-                style={{marginTop:3,alignSelf:"flex-start",padding:"3px 9px",borderRadius:5,fontSize:10,fontWeight:600,cursor:"pointer",lineHeight:1.6,
-                  border:showCI?`1px solid ${TEAL}`:"1px solid #ddd8ce",background:showCI?`${TEAL}18`:"#e2ddd5",color:showCI?TEAL:TEXT_S}}>
-                {showCI?"▮ 95% CI":"▯ 95% CI"}
-              </button>
-            )}
-          </div>
+            </>
+          )}
 
-          <div style={{display:"flex",flexDirection:"column",gap:3}}>
-            <span style={{fontSize:10,fontWeight:700,color:TEXT_S,textTransform:"uppercase",letterSpacing:"0.05em"}}>Compare</span>
-            <button style={{...tabStyle("delta"),height:38,boxSizing:"border-box",lineHeight:1,padding:"0 18px",fontSize:14}}
-              onClick={()=>setActiveTab("delta")}>Δ Baseline → Scenario</button>
-          </div>
+          {/* CI band toggle — small, only relevant for the full-size line chart (not small-multiple panels) */}
+          {activeTab==="timeseries"&&chartType==="line"&&!(isStratified&&displayMode==="panels")&&(
+            <button onClick={()=>setShowCI(v=>!v)} title="Toggle 95% confidence interval bands"
+              style={{padding:"7px 12px",borderRadius:6,fontSize:12.5,fontWeight:600,cursor:"pointer",lineHeight:1.6,
+                border:showCI?`1px solid ${TEAL}`:"1px solid #ddd8ce",background:showCI?`${TEAL}18`:"#eae6de",color:showCI?TEAL:TEXT_S}}>
+              {showCI?"▮ 95% CI":"▯ 95% CI"}
+            </button>
+          )}
+
+          <div style={divider}/>
+
+          <span style={controlLabel}>Compare</span>
+          <button style={{...tabStyle("delta"),height:38,boxSizing:"border-box",lineHeight:1}}
+            onClick={()=>setActiveTab("delta")}>Δ Baseline → Scenario</button>
         </div>
+      </div>
 
+      {/* ── Sidebar (Filter Variables / Stratifiers / Highlight) + chart content ── */}
+      <div style={{display:"flex",gap:20,alignItems:"flex-start"}}>
 
-        {/* Filters — variable values first, then stratifiers */}
-        {(isCategorical&&varValues.length>1||isStratified&&stratValues.length>0)&&(
-          <div style={{display:"flex",flexDirection:"column",gap:3,padding:"5px 10px",background:"#eae6de",borderRadius:6}}>
-            {isCategorical&&varValues.length>1&&(
-              <div style={{display:"flex",flexWrap:"wrap",gap:"2px 10px",alignItems:"center"}}>
-                <span style={{fontSize:10,fontWeight:700,color:TEXT_S,textTransform:"uppercase",letterSpacing:"0.04em",marginRight:2,flexShrink:0}}>Variable values:</span>
-                {varValues.map(vv=>(
-                  <label key={vv} style={{display:"flex",alignItems:"center",gap:3,cursor:"pointer",userSelect:"none"}}>
-                    <input type="checkbox" checked={enabledVarVals.has(vv)} onChange={()=>onToggleVarVal(vv)} style={{accentColor:colourMap[vv]||TEAL,width:11,height:11,cursor:"pointer"}}/>
-                    <span style={{fontSize:12,color:enabledVarVals.has(vv)?TEXT_D:TEXT_S}}>{addSpaces(stratLabel(vv))}</span>
-                  </label>
-                ))}
-                <button onClick={()=>setEnabledVarVals(new Set(varValues))} style={{fontSize:11,color:TEAL,background:"none",border:"none",cursor:"pointer",padding:"0 2px"}}>All</button>
-                <button onClick={()=>setEnabledVarVals(new Set())} style={{fontSize:11,color:TEXT_S,background:"none",border:"none",cursor:"pointer",padding:"0 2px"}}>None</button>
+        {hasSidebar&&(
+          <div style={{width:SIDEBAR_W,flexShrink:0,display:"flex",flexDirection:"column",gap:18}}>
+
+            {showFilterVars&&(
+              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                <span style={controlLabel}>Filter Variables</span>
+                <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                  {varValues.map(vv=>{
+                    const isOn=enabledVarVals.has(vv);
+                    const c=colourMap[vv]||TEAL;
+                    return (
+                      <button key={vv} onClick={()=>onToggleVarVal(vv)} style={{
+                        display:"flex",alignItems:"center",gap:7,cursor:"pointer",padding:"7px 12px",borderRadius:18,width:"100%",boxSizing:"border-box",
+                        border:`1.5px solid ${isOn?c:"#ddd8ce"}`,background:isOn?`${c}18`:"transparent",transition:"all 0.15s",
+                      }}>
+                        <span style={{width:9,height:9,borderRadius:"50%",background:isOn?c:"#c7c1b6",flexShrink:0}}/>
+                        <span style={{fontSize:13,fontWeight:isOn?600:500,color:isOn?TEXT_D:TEXT_S,textAlign:"left"}}>{addSpaces(stratLabel(vv))}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{display:"flex",gap:10}}>
+                  <button onClick={()=>setEnabledVarVals(new Set(varValues))} style={{fontSize:12,fontWeight:600,color:TEAL,background:"none",border:"none",cursor:"pointer",padding:0,textDecoration:"underline"}}>All</button>
+                  <button onClick={()=>setEnabledVarVals(new Set())} style={{fontSize:12,fontWeight:600,color:TEXT_S,background:"none",border:"none",cursor:"pointer",padding:0,textDecoration:"underline"}}>None</button>
+                </div>
               </div>
             )}
-            {isStratified&&stratValues.length>0&&(
-              <div style={{display:"flex",flexWrap:"wrap",gap:"2px 10px",alignItems:"center"}}>
-                <span style={{fontSize:10,fontWeight:700,color:TEXT_S,textTransform:"uppercase",letterSpacing:"0.04em",marginRight:2,flexShrink:0}}>Stratifiers:</span>
-                {stratValues.map(sv=>(
-                  <label key={sv} style={{display:"flex",alignItems:"center",gap:3,cursor:"pointer",userSelect:"none"}}>
-                    <input type="checkbox" checked={enabledStrats.has(sv)} onChange={()=>onToggleStrat(sv)} style={{accentColor:TEAL,width:11,height:11,cursor:"pointer"}}/>
-                    <span style={{fontSize:12,color:enabledStrats.has(sv)?TEXT_D:TEXT_S}}>{addSpaces(stratLabel(sv))}</span>
-                  </label>
-                ))}
-                <button onClick={()=>setEnabledStrats(new Set(stratValues))} style={{fontSize:11,color:TEAL,background:"none",border:"none",cursor:"pointer",padding:"0 2px"}}>All</button>
-                <button onClick={()=>setEnabledStrats(new Set())} style={{fontSize:11,color:TEXT_S,background:"none",border:"none",cursor:"pointer",padding:"0 2px"}}>None</button>
+
+            {showStratFilters&&(
+              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                <span style={controlLabel}>Stratifiers</span>
+                <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                  {stratValues.map(sv=>{
+                    const isOn=enabledStrats.has(sv);
+                    return (
+                      <button key={sv} onClick={()=>onToggleStrat(sv)} style={{
+                        display:"flex",alignItems:"center",gap:7,cursor:"pointer",padding:"7px 12px",borderRadius:18,width:"100%",boxSizing:"border-box",
+                        border:`1.5px solid ${isOn?TEAL:"#ddd8ce"}`,background:isOn?`${TEAL}18`:"transparent",transition:"all 0.15s",
+                      }}>
+                        <span style={{fontSize:13,fontWeight:isOn?600:500,color:isOn?TEXT_D:TEXT_S,textAlign:"left"}}>{addSpaces(stratLabel(sv))}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{display:"flex",gap:10}}>
+                  <button onClick={()=>setEnabledStrats(new Set(stratValues))} style={{fontSize:12,fontWeight:600,color:TEAL,background:"none",border:"none",cursor:"pointer",padding:0,textDecoration:"underline"}}>All</button>
+                  <button onClick={()=>setEnabledStrats(new Set())} style={{fontSize:12,fontWeight:600,color:TEXT_S,background:"none",border:"none",cursor:"pointer",padding:0,textDecoration:"underline"}}>None</button>
+                </div>
+              </div>
+            )}
+
+            {showHighlight&&(
+              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                <span style={controlLabel}>
+                  {highlighted.size>0?"Highlighting:":"Highlight variables"}
+                </span>
+                <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                  <LegendRow label={null} entries={legendEntries} highlighted={highlighted} onToggle={onHighlight}/>
+                </div>
+                {stratLegendEntries.length>0&&(
+                  <>
+                    <span style={{...controlLabel,marginTop:4,paddingTop:8,borderTop:"1px solid #e2ddd5"}}>Stratifier</span>
+                    <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                      <LegendRow label={null} entries={stratLegendEntries} highlighted={highlighted} onToggle={onHighlight} showSymbols={isCatStrat}/>
+                    </div>
+                  </>
+                )}
+                {showBaseline&&showScenario&&(
+                  <div style={{display:"flex",flexDirection:"column",gap:6,marginTop:4,paddingTop:8,borderTop:"1px solid #e2ddd5"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <svg width="20" height="9"><line x1="0" y1="4" x2="20" y2="4" stroke={TEXT_M} strokeWidth="2.5"/></svg>
+                      <span style={{fontSize:12.5,color:TEXT_S,fontWeight:500}}>Baseline</span>
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <svg width="20" height="9"><line x1="0" y1="4" x2="20" y2="4" stroke={TEXT_M} strokeWidth="2.5" strokeDasharray="4,3"/></svg>
+                      <span style={{fontSize:12.5,color:TEXT_S,fontWeight:500}}>Scenario</span>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
         )}
 
-        {/* Legend + highlight — hidden for stacked bar mode */}
-        {!(activeTab==="timeseries"&&chartType==="bar")&&<div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:"4px 12px"}}>
-          <span style={{fontSize:11,fontWeight:700,color:TEXT_S,textTransform:"uppercase",letterSpacing:"0.04em",flexShrink:0}}>
-            {highlighted.size>0?"Highlighting:":"Highlight by variable"}
-          </span>
-          <LegendRow label={null} entries={legendEntries} highlighted={highlighted} onToggle={onHighlight}/>
-          {stratLegendEntries.length>0&&(
-            <>
-              <span style={{fontSize:11,fontWeight:700,color:TEXT_S,textTransform:"uppercase",letterSpacing:"0.04em",flexShrink:0,paddingLeft:6,borderLeft:"1px solid #ddd8ce"}}>
-                Stratifier
-              </span>
-              <LegendRow label={null} entries={stratLegendEntries} highlighted={highlighted} onToggle={onHighlight} showSymbols={isCatStrat}/>
-            </>
-          )}
-          {showBaseline&&showScenario&&(
-            <div style={{display:"flex",gap:10,alignItems:"center",paddingLeft:6,borderLeft:"1px solid #ddd8ce",flexShrink:0}}>
-              <div style={{display:"flex",alignItems:"center",gap:4}}>
-                <svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" stroke={TEXT_M} strokeWidth="2"/></svg>
-                <span style={{fontSize:11,color:TEXT_S}}>Baseline</span>
-              </div>
-              <div style={{display:"flex",alignItems:"center",gap:4}}>
-                <svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" stroke={TEXT_M} strokeWidth="2" strokeDasharray="4,3"/></svg>
-                <span style={{fontSize:11,color:TEXT_S}}>Scenario</span>
-              </div>
-            </div>
-          )}
-        </div>}
-      </div>
+        <div style={{flex:1,minWidth:0}}>
 
       {/* ════════ TIME SERIES ════════ */}
       {activeTab==="timeseries"&&(
@@ -1202,8 +1540,8 @@ export default function DashboardSection({parsedCache,targetVariable}){
               const isOverall=!isStratified;
               const isPanels=isStratified&&displayMode==="panels";
               // Widths for side-by-side (overall only)
-              const lineW   = isOverall ? Math.round(width*0.62) : width;
-              const crossW  = isOverall ? Math.max(200, width - lineW - 20) : width;
+              const lineW   = isOverall ? Math.round(chartAreaWidth*0.62) : chartAreaWidth;
+              const crossW  = isOverall ? Math.max(200, chartAreaWidth - lineW - 20) : chartAreaWidth;
 
               const crossSectionTitle=selectedYear===null
                 ?<span>Average across all years <span style={{fontSize:11,color:TEXT_S,fontWeight:400}}>(click a point to pin a year)</span></span>
@@ -1214,9 +1552,9 @@ export default function DashboardSection({parsedCache,targetVariable}){
                   colourMap={colourMap} highlighted={highlighted} isCategorical={isCategorical}
                   yDomain={combinedYDomain} varValues={varValues} enabledVarVals={enabledVarVals}
                   showBaseline={showBaseline} showScenario={showScenario}
-                  width={isOverall?lineW:width} onYearClick={onYearClick} selectedYear={selectedYear}
+                  width={isOverall?lineW:chartAreaWidth} onYearClick={onYearClick} selectedYear={selectedYear}
                   isStratified={isStratified} stratValues={stratValues} enabledStrats={enabledStrats} viewBy={viewBy}
-                  showCI={showCI}/>
+                  showCI={showCI} allYears={allYears}/>
               );
 
               const crossSection=(
@@ -1225,7 +1563,7 @@ export default function DashboardSection({parsedCache,targetVariable}){
                   varValues={varValues} enabledVarVals={enabledVarVals}
                   enabledStrats={enabledStrats} viewBy={viewBy}
                   showBaseline={showBaseline} showScenario={showScenario}
-                  width={isOverall?crossW:width} year={selectedYear} isAverage={selectedYear===null}
+                  width={isOverall?crossW:chartAreaWidth} year={selectedYear} isAverage={selectedYear===null}
                   pubPropsFactory={pubPropsFactory} targetVariable={targetVariable}/>
               );
 
@@ -1236,7 +1574,7 @@ export default function DashboardSection({parsedCache,targetVariable}){
                     ?<SmallMultiplesPanel baseData={baseTime} scenData={scenTime} stratValues={stratValues}
                         colourMap={colourMap} highlighted={highlighted} isCategorical={isCategorical}
                         varValues={varValues} enabledVarVals={enabledVarVals} enabledStrats={enabledStrats}
-                        showBaseline={showBaseline} showScenario={showScenario} chartType="line" width={width}
+                        showBaseline={showBaseline} showScenario={showScenario} chartType="line" width={chartAreaWidth}
                         pubPropsFactory={pubPropsFactory} targetVariable={targetVariable}
                         allBaseData={baseTime} allScenData={scenTime}/>
                     /* Overall or combined-stratified */
@@ -1249,7 +1587,7 @@ export default function DashboardSection({parsedCache,targetVariable}){
                             {lineChart}
                             <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
                               <DownloadBtn svgRef={lineRef} filename="time_series.png" pubProps={pubProps(`${varLabel} over time`)}/>
-                              <button onClick={()=>exportCsv([...baselineData,...scenarioData],`${slugify(varLabel)}_time_series.csv`)}
+                              <button onClick={()=>exportCsv([...baselineData,...scenarioData].filter(d=>d.stratifier==="Overall"),`${slugify(varLabel)}_time_series.csv`)}
                                 style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ CSV</button>
                             </div>
                           </div>
@@ -1284,7 +1622,7 @@ export default function DashboardSection({parsedCache,targetVariable}){
                   ?<SmallMultiplesPanel baseData={baseTime} scenData={scenTime} stratValues={stratValues}
                       colourMap={colourMap} highlighted={highlighted} isCategorical={isCategorical}
                       varValues={varValues} enabledVarVals={enabledVarVals} enabledStrats={enabledStrats}
-                      showBaseline={showBaseline} showScenario={showScenario} chartType="bar" width={width}
+                      showBaseline={showBaseline} showScenario={showScenario} chartType="bar" width={chartAreaWidth}
                       pubPropsFactory={pubPropsFactory} targetVariable={targetVariable}
                       allBaseData={baseTime} allScenData={scenTime}/>
                   :<div style={{display:"flex",flexDirection:"column",gap:4}}>
@@ -1292,10 +1630,10 @@ export default function DashboardSection({parsedCache,targetVariable}){
                       colourMap={colourMap} highlighted={highlighted} isCategorical={isCategorical}
                       varValues={varValues} enabledVarVals={enabledVarVals}
                       showBaseline={showBaseline} showScenario={showScenario}
-                      width={width} patId="ts"/>
+                      width={chartAreaWidth} patId="ts" allYears={allYears}/>
                     <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
                       <DownloadBtn svgRef={barRef} filename="stacked_bar.png" pubProps={pubProps(`${varLabel} by year — stacked`)}/>
-                      <button onClick={()=>exportCsv([...baselineData,...scenarioData],`${slugify(varLabel)}_stacked.csv`)}
+                      <button onClick={()=>exportCsv([...baselineData,...scenarioData].filter(d=>d.stratifier==="Overall"),`${slugify(varLabel)}_stacked.csv`)}
                         style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ CSV</button>
                     </div>
                   </div>
@@ -1310,8 +1648,10 @@ export default function DashboardSection({parsedCache,targetVariable}){
         <DeltaSection baseData={baselineData} scenData={scenarioData}
           colourMap={colourMap} highlighted={highlighted} isCategorical={isCategorical}
           varValues={varValues} enabledVarVals={enabledVarVals}
-          enabledStrats={enabledStrats} viewBy={viewBy} width={width} legendEntries={legendEntries} stratValues={stratValues}/>
+          enabledStrats={enabledStrats} viewBy={viewBy} width={chartAreaWidth} legendEntries={legendEntries} stratValues={stratValues}/>
       )}
+        </div>
+      </div>
     </div>
   );
 }
