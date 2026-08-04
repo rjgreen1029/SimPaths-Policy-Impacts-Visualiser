@@ -1,0 +1,1269 @@
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import * as d3 from "d3";
+import { useAggregatedData, uniqueValues, stratLabel, buildColourMap, getShadedColour, VARIABLE_COLOR_MAP, NUMERIC_COLOUR} from "./useAggregatedData";
+
+const MARGIN     = { top: 24, right: 24, bottom: 56, left: 72 };
+const MARGIN_BAR = { top: 24, right: 24, bottom: 100, left: 72 };
+const CHART_H    = 360;
+
+// ─── Camel-case / PascalCase → spaced words ──────────────────────────────────
+function addSpaces(str) {
+  if (!str) return str;
+  // Insert space before uppercase letters preceded by lowercase
+  return str
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    // Insert space before a run of uppercase followed by lowercase
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .trim();
+}
+
+// ─── Tooltip singleton ────────────────────────────────────────────────────────
+function createTooltip() {
+  let el = document.getElementById("simpaths-tt");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "simpaths-tt";
+    Object.assign(el.style, {
+      position: "fixed", pointerEvents: "none", zIndex: 9999,
+      background: "rgba(15,23,42,0.93)", color: "#f8fafc",
+      padding: "10px 14px", borderRadius: "8px", fontSize: "12px",
+      lineHeight: "1.65", maxWidth: "240px",
+      boxShadow: "0 4px 20px rgba(0,0,0,0.35)",
+      opacity: 0, transition: "opacity 0.12s ease",
+      fontFamily: "'Work Sans', sans-serif"
+    });
+    document.body.appendChild(el);
+  }
+  return el;
+}
+function showTooltip(html, event) {
+  const el = createTooltip();
+  el.innerHTML = html;
+  el.style.opacity = 1;
+  moveTooltip(event);
+}
+function moveTooltip(event) {
+  const el = createTooltip();
+  const pad = 14, w = el.offsetWidth || 220;
+  el.style.left = (event.clientX + pad + w > window.innerWidth ? event.clientX - w - pad : event.clientX + pad) + "px";
+  el.style.top  = (event.clientY - 20) + "px";
+}
+function hideTooltip() {
+  const el = document.getElementById("simpaths-tt");
+  if (el) el.style.opacity = 0;
+}
+
+// ─── Formatters ───────────────────────────────────────────────────────────────
+const fmtPct   = d => `${(d * 100).toFixed(1)}%`;
+const fmtNum   = d => d3.format(",.2f")(d);
+const fmtVal   = (v, isCat) => (v === null || v === undefined || (typeof v === "number" && isNaN(v))) ? "—"
+  : isCat ? fmtPct(v) : fmtNum(v);
+const fmtDelta = (v, isCat) => {
+  if (v === null || v === undefined || isNaN(v)) return "—";
+  const sign = v >= 0 ? "+" : "";
+  return isCat ? `${sign}${(v * 100).toFixed(2)} pp` : `${sign}${d3.format(",.2f")(v)}`;
+};
+
+// ─── Low-run warning badge ────────────────────────────────────────────────────
+function LowRunBadge({ avgRuns }) {
+  if (!avgRuns || avgRuns >= 5) return null;
+  return (
+    <span title={`Average ${avgRuns.toFixed(1)} simulation run(s) in baseline — CIs may be unreliable`} style={{
+      display: "inline-block", marginLeft: 6, padding: "1px 8px", fontSize: 10,
+      fontWeight: 600, borderRadius: 10, background: "#fef3c7", color: "#92400e",
+      verticalAlign: "middle", cursor: "help"
+    }}>
+      ⚠ avg {avgRuns.toFixed(1)} run{avgRuns !== 1 ? "s" : ""} (baseline)
+    </span>
+  );
+}
+
+// ─── Side legend ──────────────────────────────────────────────────────────────
+function SideLegend({ entries, title }) {
+  if (!entries || !entries.length) return null;
+  return (
+          <div style={{
+        display: "flex",
+        flexDirection: "column",   // key change
+        gap: 6,
+        minWidth: 140,
+        maxWidth: "100%",          // allows wrapping inside card
+        paddingLeft: 16,
+        borderLeft: "2px solid #e2ddd5"
+      }}>
+      {title && (
+        <span style={{ fontSize: 10, color: "#64748b", fontWeight: 700,  letterSpacing: "0.05em",   alignSelf: "center" }}>
+          {title}
+        </span>
+      )}
+      <div style={{
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+      gap: "6px 14px",
+      width: "100%"
+    }}>
+        {entries.map(({ label, color }) => (
+          <div
+          key={label}
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 6,
+            minWidth: 0   // CRITICAL: allows shrinking inside grid
+          }}
+        >
+            <div style={{
+              width: 10,
+              height: 10,
+              borderRadius: 2,
+              background: color,
+              flexShrink: 0
+            }} />
+
+            <span style={{
+            fontSize: 11,
+            color: "#475569",
+            lineHeight: 1.3,
+            whiteSpace: "normal",     // allow wrapping inside cell
+            overflowWrap: "break-word"
+          }}>
+              {addSpaces(stratLabel(label))}
+            </span>
+          </div>
+        ))}
+      </div>
+      </div>
+  );
+}
+
+// ─── Subgroup + variable value checkboxes ─────────────────────────────────────
+function FilterCheckboxes({ label, values, enabled, onToggle, colourMap }) {
+  if (!values || !values.length) return null;
+  return (
+    <div style={{
+      background: "#e2ddd5", border: "1px solid #ddd8ce", borderRadius: 8,
+      padding: "9px 14px", display: "flex", flexWrap: "wrap", gap: "5px 16px", alignItems: "center"
+    }}>
+      <span style={{ fontSize: 10, color: "#64748b", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", marginRight: 4 }}>
+        {label}:
+      </span>
+      {values.map(sv => {
+        const checked = enabled.has(sv);
+        const color   = colourMap[sv] || "#777";
+        return (
+          <label key={sv} style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", userSelect: "none" }}>
+            <input
+              type="checkbox" checked={checked} onChange={() => onToggle(sv)}
+              style={{ accentColor: color, width: 13, height: 13, cursor: "pointer" }}
+            />
+            <span style={{ fontSize: 12, color: checked ? "#1e293b" : "#94a3b8", fontWeight: checked ? 500 : 400, transition: "color 0.15s" }}>
+              {addSpaces(stratLabel(sv))}
+            </span>
+          </label>
+        );
+      })}
+      <button onClick={() => values.forEach(sv => !enabled.has(sv) && onToggle(sv))}
+        style={{ fontSize: 11, color: "#14687c", background: "none", border: "none", cursor: "pointer", padding: "2px 6px", borderRadius: 4, fontWeight: 600 }}>
+        All
+      </button>
+      <button onClick={() => values.forEach(sv => enabled.has(sv) && onToggle(sv))}
+        style={{ fontSize: 11, color: "#64748b", background: "none", border: "none", cursor: "pointer", padding: "2px 6px", borderRadius: 4, fontWeight: 600 }}>
+        None
+      </button>
+    </div>
+  );
+}
+
+// ─── PNG Download helper ──────────────────────────────────────────────────────
+function downloadSvgAsPng(svgEl, filename) {
+  if (!svgEl) return;
+  const serializer = new XMLSerializer();
+  const svgStr = serializer.serializeToString(svgEl);
+  const svgBlob = new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(svgBlob);
+  const img = new Image();
+  img.onload = () => {
+    const canvas = document.createElement("canvas");
+    const scale = 2; // retina
+    canvas.width  = svgEl.width.baseVal.value  * scale;
+    canvas.height = svgEl.height.baseVal.value * scale;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.scale(scale, scale);
+    ctx.drawImage(img, 0, 0);
+    URL.revokeObjectURL(url);
+    const a = document.createElement("a");
+    a.href = canvas.toDataURL("image/png");
+    a.download = filename;
+    a.click();
+  };
+  img.src = url;
+}
+
+// ─── CSV export helper ────────────────────────────────────────────────────────
+function exportCsv(data, filename) {
+  if (!data || !data.length) return;
+  const cols = Object.keys(data[0]);
+  const rows = [cols.join(","), ...data.map(r => cols.map(c => JSON.stringify(r[c] ?? "")).join(","))];
+  const blob = new Blob([rows.join("\n")], { type: "text/csv" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ─── Highlight stat box: highest / lowest ─────────────────────────────────────
+function HighLowPanel({ data, isCategorical, viewBy, enabledVarVals, enabledStrats, targetVariable }) {
+  const rows = useMemo(() => {
+    if (!data || !data.length) return null;
+    const filtered = data.filter(d =>
+      !isNaN(d.mean_value) &&
+      (viewBy === "Overall" ? d.stratifier_value === "Overall" : enabledStrats.has(d.stratifier_value)) &&
+      enabledVarVals.has(d.variable_value)
+    );
+    if (!filtered.length) return null;
+    const byGroup = d3.group(filtered, d => isCategorical
+      ? `${addSpaces(d.variable_value)} ${viewBy !== "Overall" ? `(${addSpaces(stratLabel(d.stratifier_value))})` : ""}`.trim()
+      : addSpaces(stratLabel(d.stratifier_value))
+    );
+    const means = Array.from(byGroup, ([label, rows]) => ({
+      label, value: d3.mean(rows, r => r.mean_value)
+    })).filter(x => !isNaN(x.value));
+    if (!means.length) return null;
+    const sorted = [...means].sort((a, b) => b.value - a.value);
+    return { highest: sorted[0], lowest: sorted[sorted.length - 1] };
+  }, [data, isCategorical, viewBy, enabledVarVals, enabledStrats]);
+
+  if (!rows) return null;
+
+  const fmt = v => isCategorical ? fmtPct(v) : fmtNum(v);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 170, maxWidth: 200 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+        Group Highlights
+      </div>
+      <div style={{ background: "#dcfce7", borderRadius: 8, padding: "10px 12px" }}>
+        <div style={{ fontSize: 10, color: "#166534", fontWeight: 700, marginBottom: 3 }}>▲ Highest</div>
+        <div style={{ fontSize: 12, color: "#14532d", fontWeight: 600, lineHeight: 1.4 }}>{rows.highest.label}</div>
+        <div style={{ fontSize: 14, color: "#166534", fontWeight: 700, marginTop: 2 }}>{fmt(rows.highest.value)}</div>
+      </div>
+      <div style={{ background: "#fee2e2", borderRadius: 8, padding: "10px 12px" }}>
+        <div style={{ fontSize: 10, color: "#991b1b", fontWeight: 700, marginBottom: 3 }}>▼ Lowest</div>
+        <div style={{ fontSize: 12, color: "#7f1d1d", fontWeight: 600, lineHeight: 1.4 }}>{rows.lowest.label}</div>
+        <div style={{ fontSize: 14, color: "#991b1b", fontWeight: 700, marginTop: 2 }}>{fmt(rows.lowest.value)}</div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Small sample overlay ─────────────────────────────────────────────────────
+function SmallSampleOverlay() {
+  return (
+    <div style={{
+      position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
+      background: "rgba(239,236,228,0.85)", borderRadius: 8, zIndex: 5, padding: 24, textAlign: "center"
+    }}>
+      <div style={{ maxWidth: 280 }}>
+        <div style={{ fontSize: 22, marginBottom: 8 }}>🔍</div>
+        <p style={{ margin: 0, fontSize: 13, color: "#475569", lineHeight: 1.6, fontStyle: "italic" }}>
+          Data is not shown — sample size is too small for reliable estimates.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ─── Chart card wrapper ───────────────────────────────────────────────────────
+// line 244 — add style to destructured props and spread it
+function ChartCard({ title, accent, children, small, onExport, onDownloadPng, svgRef, noData, style }) {
+  return (
+    <div style={{
+      flex: "1 1 0", background: "#f8f4ef", borderRadius: 12,
+      padding: small ? 16 : 20, border: "1px solid #f2eee7",
+      boxShadow: "0 1px 3px rgba(0,0,0,0.05)", position: "relative",
+      ...style   // ← add this
+    }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12,  gap: 6 }}>
+        <h4 style={{ margin: 0, fontSize: 12, color: accent, fontWeight: 700, letterSpacing: "0.01em" }}>{title}</h4>
+        <div style={{ display: "flex", gap: 6 }}>
+          {onDownloadPng && !noData && (
+            <button onClick={onDownloadPng} title="Download as PNG" style={{
+              fontSize: 10, color: "#64748b", background: "#f2eee7", border: "1px solid #c8c2b7",
+              borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontWeight: 500
+            }}>
+              ↓ PNG
+            </button>
+          )}
+          {onExport && !noData && (
+            <button onClick={onExport} title="Download as CSV" style={{
+              fontSize: 10, color: "#64748b", background: "#e6e4e0", border: "1px solid #c8c2b7",
+              borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontWeight: 500
+            }}>
+              ↓ CSV
+            </button>
+          )}
+        </div>
+      </div>
+      {noData ? (
+        <div style={{
+          height: CHART_H, display: "flex", alignItems: "center", justifyContent: "center",
+          color: "#94a3b8", fontSize: 13, fontStyle: "italic", flexDirection: "column", gap: 8
+        }}>
+          <span style={{ fontSize: 28 }}></span>
+          No data
+        </div>
+      ) : children}
+    </div>
+  );
+}
+
+// ─── Main DashboardSection ────────────────────────────────────────────────────
+export default function DashboardSection({ parsedCache, targetVariable }) {
+  const { baselineData, scenarioData } = useAggregatedData(parsedCache, targetVariable);
+  const [viewBy,        setViewBy]        = useState("Overall");
+  const [selectedYear,  setSelectedYear]  = useState(null);
+  const [enabledStrats, setEnabledStrats] = useState(new Set());
+  const [enabledVarVals, setEnabledVarVals] = useState(new Set());
+  const [activeTab,     setActiveTab]     = useState("timelines");
+  const [showOverallBars, setShowOverallBars] = useState(false);
+  const [timelineView,  setTimelineView]  = useState("line"); // "line" | "stacked"
+
+  // Refs for PNG export
+  const baseLineRef  = useRef();
+  const scenLineRef  = useRef();
+  const baseDeltaRef = useRef();
+
+  const containerRef = useRef();
+  const [width, setWidth] = useState(1000);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const ro = new ResizeObserver(entries => {
+      if (entries[0]) setWidth(entries[0].contentRect.width);
+    });
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    setViewBy("Overall");
+    setSelectedYear(null);
+    setEnabledStrats(new Set());
+    setEnabledVarVals(new Set());
+    setActiveTab("timelines");
+    setShowOverallBars(false);
+    setTimelineView("line");
+  }, [targetVariable]);
+
+  const combined      = useMemo(() => [...baselineData, ...scenarioData], [baselineData, scenarioData]);
+  const isCategorical = useMemo(() => combined.some(d => d.metric_type === "share"), [combined]);
+  const varValues     = useMemo(() => uniqueValues(combined, "variable_value"), [combined]);
+  const stratValues   = useMemo(() => uniqueValues(combined.filter(d => d.stratifier === viewBy), "stratifier_value"), [combined, viewBy]);
+  const colourMap     = useMemo(() => buildColourMap(viewBy, stratValues), [viewBy, stratValues]);
+  // Colour map for variable values (for "Overall" mode)
+  const varColourMap  = useMemo(() => buildColourMap("variable_value", varValues), [varValues]);
+
+  useEffect(() => { setEnabledStrats(new Set(stratValues)); }, [stratValues]);
+  useEffect(() => { setEnabledVarVals(new Set(varValues)); }, [varValues]);
+
+  const onToggleStrat = useCallback(sv => {
+    setEnabledStrats(prev => { const n = new Set(prev); n.has(sv) ? n.delete(sv) : n.add(sv); return n; });
+  }, []);
+  const onToggleVarVal = useCallback(vv => {
+    setEnabledVarVals(prev => { const n = new Set(prev); n.has(vv) ? n.delete(vv) : n.add(vv); return n; });
+  }, []);
+
+  const baseTime = useMemo(() => baselineData.filter(d => d.stratifier === viewBy), [baselineData, viewBy]);
+  const scenTime = useMemo(() => scenarioData.filter(d => d.stratifier === viewBy), [scenarioData, viewBy]);
+  const baseBar  = useMemo(() => baselineData.filter(d => d.stratifier === viewBy && d.year === selectedYear), [baselineData, viewBy, selectedYear]);
+  const scenBar  = useMemo(() => scenarioData.filter(d => d.stratifier === viewBy && d.year === selectedYear), [scenarioData, viewBy, selectedYear]);
+
+  // For "Overall" cross-section bars (use selectedYear if set, else latest year)
+  const latestYear     = useMemo(() => d3.max(combined, d => d.year), [combined]);
+  const overallBarYear = selectedYear || latestYear;
+  const overallBaseBar = useMemo(() => baselineData.filter(d => d.stratifier === "Overall" && d.year === overallBarYear), [baselineData, overallBarYear]);
+  const overallScenBar = useMemo(() => scenarioData.filter(d => d.stratifier === "Overall" && d.year === overallBarYear), [scenarioData, overallBarYear]);
+
+  const deltaData = useMemo(() => {
+    const baseMap = new Map();
+    baseTime.forEach(d => baseMap.set(`${d.year}||${d.variable_value}||${d.stratifier_value}`, d));
+    return scenTime.map(s => {
+      const b = baseMap.get(`${s.year}||${s.variable_value}||${s.stratifier_value}`);
+      if (!b || isNaN(s.mean_value) || isNaN(b.mean_value)) return null;
+      return {
+        ...s,
+        mean_value: s.mean_value - b.mean_value,
+        lower_ci: (!isNaN(s.lower_ci) && !isNaN(b.upper_ci)) ? s.lower_ci - b.upper_ci : NaN,
+        upper_ci: (!isNaN(s.upper_ci) && !isNaN(b.lower_ci)) ? s.upper_ci - b.lower_ci : NaN,
+        n: s.n
+      };
+    }).filter(Boolean);
+  }, [baseTime, scenTime]);
+
+const sharedYDomain = useMemo(() => {
+  const filtered = combined.filter(d => {
+    if (isNaN(d.mean_value)) return false;
+    if (viewBy !== "Overall" && !enabledStrats.has(d.stratifier_value)) return false;
+    if (!enabledVarVals.has(d.variable_value)) return false;
+    return true;
+  });
+
+  const maxVal = d3.max(filtered, d => isNaN(d.upper_ci) ? d.mean_value : d.upper_ci) || 1;
+  const minVal = d3.min(filtered, d => isNaN(d.lower_ci) ? d.mean_value : d.lower_ci) || 0;
+  const padding = (maxVal - minVal) * 0.10;
+
+  return [minVal - padding, isCategorical ? Math.min(1, maxVal + padding) : maxVal + padding];
+}, [combined, isCategorical, viewBy, enabledStrats, enabledVarVals]);
+
+  if (!combined.length) return (
+    <div style={{ color: "#94a3b8", padding: 32, textAlign: "center", fontSize: 14 }}>
+      No records found for <strong>"{targetVariable}"</strong>.
+    </div>
+  );
+
+  // Average n_runs in baseline only
+  const baselineRunsData = combined.filter(d => d.scenario === "baseline" && d.stratifier === viewBy);
+  const avgRuns = baselineRunsData.length
+    ? d3.mean(baselineRunsData, d => d.n_runs)
+    : null;
+  const SIDE_PANEL_W = 220;
+  const halfWidth = Math.max(200, Math.floor((width - SIDE_PANEL_W - 16 - 40 - 20*2) / 2));  // ← NEW, keep this
+  const isStratified = viewBy !== "Overall";
+
+  // Legend entries: if stratified → strat colours; else → variable value colours (blue palette)
+  const legendEntries = isStratified
+    ? stratValues.filter(sv => enabledStrats.has(sv)).map(sv => ({ label: sv, color: colourMap[sv] || "#777" }))
+    : varValues.filter(vv => enabledVarVals.has(vv)).map((vv, i) => ({
+        label: vv,
+        color: isCategorical ? (BLUE_PALETTE[i % BLUE_PALETTE.length]) : getShadedColour("#2196F3", i)
+      }));
+
+  const tabStyle = t => ({
+    padding: "5px 14px", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer",
+    border: activeTab === t ? "1.5px solid #14687c" : "1.5px solid #ddd8ce",
+    background: activeTab === t ? "#14687c18" : "#e2ddd5",
+    color: activeTab === t ? "#14687c" : "#64748b"
+  });
+
+  const hasBaseTime = baseTime.some(d => !isNaN(d.mean_value));
+  const hasScenTime = scenTime.some(d => !isNaN(d.mean_value));
+  const hasDelta    = deltaData.some(d => !isNaN(d.mean_value));
+
+  return (
+    <div ref={containerRef} style={{ width: "100%" }}>
+
+      {/* Controls row */}
+      <div style={{ display: "flex", gap: 12, marginBottom: 14, alignItems: "center", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "#475569" }}>Stratify by:</label>
+          <select value={viewBy} onChange={e => { setViewBy(e.target.value); setSelectedYear(null); }}
+            style={{ padding: "5px 10px", borderRadius: 6, border: "1px solid #ddd8ce", fontSize: 12, color: "#1e293b", background: "#efece4" }}>
+            {["Overall", "Age", "Gender", "Household Type", "Disability Status", "Region", "Ethnicity", "Income Quintile"].map(opt => (
+              <option key={opt} value={opt}>{opt}</option>
+            ))}
+          </select>
+        </div>
+
+        <div style={{ display: "flex", gap: 6 }}>
+          <button style={tabStyle("timelines")} onClick={() => setActiveTab("timelines")}> Time Series</button>
+        </div>
+
+        {activeTab === "timelines" && isCategorical && (
+          <div style={{ display: "flex", gap: 4, background: "#e2ddd5", borderRadius: 7, padding: 3 }}>
+            <button
+              onClick={() => setTimelineView("line")}
+              style={{
+                padding: "4px 12px", borderRadius: 5, fontSize: 12, fontWeight: 600, cursor: "pointer", border: "none",
+                background: timelineView === "line" ? "#fff" : "transparent",
+                color: timelineView === "line" ? "#14687c" : "#64748b",
+                boxShadow: timelineView === "line" ? "0 1px 3px rgba(0,0,0,0.1)" : "none"
+              }}>
+              〜 Line Chart
+            </button>
+            <button
+              onClick={() => setTimelineView("stacked")}
+              style={{
+                padding: "4px 12px", borderRadius: 5, fontSize: 12, fontWeight: 600, cursor: "pointer", border: "none",
+                background: timelineView === "stacked" ? "#fff" : "transparent",
+                color: timelineView === "stacked" ? "#14687c" : "#64748b",
+                boxShadow: timelineView === "stacked" ? "0 1px 3px rgba(0,0,0,0.1)" : "none"
+              }}>
+              ▦ Stacked Barplot
+            </button>
+          </div>
+        )}
+
+         <div style={{ display: "flex", gap: 6 }}>
+          <button style={tabStyle("delta")}     onClick={() => setActiveTab("delta")}>Δ Scenario − Baseline</button>
+        </div>
+
+        {selectedYear && (
+          <div style={{ fontSize: 12, background: "#14687c15", color: "#14687c", padding: "4px 12px", borderRadius: 20, fontWeight: 500 }}>
+            Cross-section: {selectedYear}
+            <span style={{ cursor: "pointer", marginLeft: 8, color: "#ff5d51", fontWeight: 700 }} onClick={() => setSelectedYear(null)}>✕</span>
+          </div>
+        )}
+
+        {avgRuns !== null && avgRuns < 5 && <LowRunBadge avgRuns={avgRuns} />}
+      </div>
+
+      {/* Subgroup filter checkboxes */}
+      {isStratified && stratValues.length > 0 && (
+        <div style={{ marginBottom: 10 }}>
+          <FilterCheckboxes label="Show subgroups" values={stratValues} enabled={enabledStrats} onToggle={onToggleStrat} colourMap={colourMap} />
+        </div>
+      )}
+      {/* Variable value filter checkboxes (always shown for categorical) */}
+      {isCategorical && varValues.length > 1 && (
+        <div style={{ marginBottom: 14 }}>
+          <FilterCheckboxes label="Show categories" values={varValues} enabled={enabledVarVals} onToggle={onToggleVarVal}
+            colourMap={Object.fromEntries(varValues.map((vv, i) => [vv, BLUE_PALETTE[i % BLUE_PALETTE.length]]))} />
+        </div>
+      )}
+
+      {/* ── Tab: Timelines ── */}
+      {activeTab === "timelines" && (
+        <>
+          {/* Timeline charts + side panels */}
+          <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
+            <div style={{ flex: 1, display: "flex", gap: 20, flexWrap: "wrap", minWidth: 0 }}>
+
+              <ChartCard style={{ flex: 1, minWidth: 0 }} title="Baseline Run Trajectory" accent="#2d3748"
+                svgRef={baseLineRef}
+                onExport={() => exportCsv(baseTime, `baseline_${targetVariable}.csv`)}
+                onDownloadPng={() => downloadSvgAsPng(baseLineRef.current, `baseline_${targetVariable}.png`)}
+                noData={!hasBaseTime}>
+                   {legendEntries.length > 0 && (
+                <SideLegend entries={legendEntries} title={isStratified ? viewBy : "Legend"} />
+              )}
+                {hasBaseTime && (timelineView === "stacked" && isCategorical ? (
+                  <StackedBarChart
+                    svgRef={baseLineRef}
+                    data={baseTime} width={halfWidth} isCategorical={isCategorical}
+                    varValues={varValues} colourMap={colourMap} viewBy={viewBy}
+                    selectedYear={selectedYear} onYearSelect={setSelectedYear}
+                    enabledStrats={enabledStrats} enabledVarVals={enabledVarVals}
+                    targetVariable={targetVariable}
+                  />
+                ) : (
+                  <LineChart
+                    svgRef={baseLineRef}
+                    data={baseTime} width={halfWidth} isCategorical={isCategorical} yDomain={sharedYDomain}
+                    varValues={varValues} colourMap={colourMap} viewBy={viewBy}
+                    selectedYear={selectedYear} onYearSelect={setSelectedYear}
+                    enabledStrats={enabledStrats} enabledVarVals={enabledVarVals}
+                    targetVariable={targetVariable}
+                  />
+                ))}
+              </ChartCard>
+
+              <ChartCard style={{ flex: 1, minWidth: 0 }} title="Policy Scenario Trajectory" accent="#14687c"
+                svgRef={scenLineRef}
+                onExport={() => exportCsv(scenTime, `scenario_${targetVariable}.csv`)}
+                onDownloadPng={() => downloadSvgAsPng(scenLineRef.current, `scenario_${targetVariable}.png`)}
+                noData={!hasScenTime}>
+                   {legendEntries.length > 0 && (
+                <SideLegend entries={legendEntries} title={isStratified ? viewBy : "Legend"} />
+              )}
+                {hasScenTime && (timelineView === "stacked" && isCategorical ? (
+                  <StackedBarChart
+                    svgRef={scenLineRef}
+                    data={scenTime} width={halfWidth} isCategorical={isCategorical}
+                    varValues={varValues} colourMap={colourMap} viewBy={viewBy}
+                    selectedYear={selectedYear} onYearSelect={setSelectedYear}
+                    enabledStrats={enabledStrats} enabledVarVals={enabledVarVals}
+                    targetVariable={targetVariable}
+                  />
+                ) : (
+                  <LineChart
+                    svgRef={scenLineRef}
+                    data={scenTime} width={halfWidth} isCategorical={isCategorical} yDomain={sharedYDomain}
+                    varValues={varValues} colourMap={colourMap} viewBy={viewBy}
+                    selectedYear={selectedYear} onYearSelect={setSelectedYear}
+                    enabledStrats={enabledStrats} enabledVarVals={enabledVarVals}
+                    targetVariable={targetVariable}
+                  />
+                ))}
+              </ChartCard>
+            </div>
+
+            {/* Side panel: legend + high/low */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 16, paddingTop: 4 }}>
+             
+              <HighLowPanel
+                data={baseTime} isCategorical={isCategorical} viewBy={viewBy}
+                enabledVarVals={enabledVarVals} enabledStrats={enabledStrats}
+                targetVariable={targetVariable}
+              />
+            </div>
+          </div>
+
+          {/* Overall share bar toggle */}
+          {!isStratified && isCategorical && (
+            <div style={{ marginBottom: 16 }}>
+              <button onClick={() => setShowOverallBars(v => !v)} style={{
+                fontSize: 12, color: "#14687c", background: "#14687c12",
+                border: "1px solid #14687c40", borderRadius: 6, padding: "5px 14px",
+                cursor: "pointer", fontWeight: 600
+              }}>
+                {showOverallBars ? "▲ Hide" : "▼ Show"} Overall Share Bar Charts ({overallBarYear})
+              </button>
+            </div>
+          )}
+
+          {/* Overall share bar charts */}
+          {!isStratified && isCategorical && showOverallBars && (
+            <div style={{ flex: 1, display: "flex", gap: 20, flexWrap: "wrap", minWidth: 0 }}>
+              <ChartCard style={{ flex: 1, minWidth: 0 }}  title={`Baseline Overall Share (${overallBarYear})`} accent="#2d3748" small
+                noData={!overallBaseBar.some(d => !isNaN(d.mean_value))}>
+                <OverallBarChart
+                  data={overallBaseBar} width={halfWidth} isCategorical={isCategorical} yDomain={sharedYDomain}
+                  varValues={varValues} enabledVarVals={enabledVarVals}
+                />
+              </ChartCard>
+              <ChartCard title={`Scenario Overall Share (${overallBarYear})`} accent="#14687c" small
+                noData={!overallScenBar.some(d => !isNaN(d.mean_value))}>
+                <OverallBarChart
+                  data={overallScenBar} width={halfWidth} isCategorical={isCategorical} yDomain={sharedYDomain}
+                  varValues={varValues} enabledVarVals={enabledVarVals}
+                />
+              </ChartCard>
+            </div>
+          )}
+
+          {/* Stratified cross-section bars */}
+          {isStratified && selectedYear && (
+            <div style={{ flex: 1, display: "flex", gap: 20, flexWrap: "wrap", minWidth: 0 }}>
+              <ChartCard style={{ flex: 1, minWidth: 0 }}  title={`Baseline Group Composition (${selectedYear})`} accent="#2d3748" small
+                onExport={() => exportCsv(baseBar, `baseline_${targetVariable}_${selectedYear}.csv`)}
+                noData={!baseBar.some(d => !isNaN(d.mean_value))}>
+                {baseBar.some(d => !isNaN(d.mean_value)) && (
+                  <BarChart
+                    data={baseBar} width={halfWidth} isCategorical={isCategorical} yDomain={sharedYDomain}
+                    varValues={varValues} stratValues={stratValues.filter(sv => enabledStrats.has(sv))}
+                    colourMap={colourMap} enabledVarVals={enabledVarVals}
+                  />
+                )}
+              </ChartCard>
+              <ChartCard title={`Scenario Group Composition (${selectedYear})`} accent="#14687c" small
+                onExport={() => exportCsv(scenBar, `scenario_${targetVariable}_${selectedYear}.csv`)}
+                noData={!scenBar.some(d => !isNaN(d.mean_value))}>
+                {scenBar.some(d => !isNaN(d.mean_value)) && (
+                  <BarChart
+                    data={scenBar} width={halfWidth} isCategorical={isCategorical} yDomain={sharedYDomain}
+                    varValues={varValues} stratValues={stratValues.filter(sv => enabledStrats.has(sv))}
+                    colourMap={colourMap} enabledVarVals={enabledVarVals}
+                  />
+                )}
+              </ChartCard>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── Tab: Delta ── */}
+      {activeTab === "delta" && (
+        <div style={{ display: "flex", gap: 16 }}>
+          <ChartCard title="Δ Policy Effect: Scenario − Baseline" accent="#ff5d51"
+            svgRef={baseDeltaRef}
+            onExport={() => exportCsv(deltaData, `delta_${targetVariable}.csv`)}
+            onDownloadPng={() => downloadSvgAsPng(baseDeltaRef.current, `delta_${targetVariable}.png`)}
+            noData={!hasDelta}
+            style={{ flex: 1 }}>
+            {hasDelta && (
+              <>
+                <p style={{ margin: "0 0 12px", fontSize: 12, color: "#64748b", lineHeight: 1.5 }}>
+                  Difference between scenario and baseline  values. 
+                  <strong>Positive</strong> values indicate the policy
+                  scenario produces a <strong>higher</strong> value than baseline. 
+                  <strong> Negative </strong>values indicate the policy
+                  scenario produces a <strong>lower</strong> value than baseline. <br/>
+                           </p>
+                <DeltaChart
+                  svgRef={baseDeltaRef}
+                  data={deltaData} width={width - 200} isCategorical={isCategorical}
+                  varValues={varValues} colourMap={colourMap} viewBy={viewBy}
+                  enabledStrats={enabledStrats} enabledVarVals={enabledVarVals}
+                  targetVariable={targetVariable}
+                />
+                 {legendEntries.length > 0 && (
+                <SideLegend entries={legendEntries} title={isStratified ? viewBy : "Legend"} />
+              )}
+              </>
+            )}
+          </ChartCard>
+          {hasDelta && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 16, paddingTop: 4 }}>
+             
+              <HighLowPanel
+                data={deltaData} isCategorical={isCategorical} viewBy={viewBy}
+                enabledVarVals={enabledVarVals} enabledStrats={enabledStrats}
+                targetVariable={targetVariable}
+              />
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Blue palette for Overall (categorical) ───────────────────────────────────
+const BLUE_PALETTE = [
+  "#1565C0", "#1976D2", "#1E88E5", "#2196F3", "#42A5F5",
+  "#64B5F6", "#90CAF9", "#BBDEFB", "#0D47A1", "#0288D1"
+];
+
+// ─── Stacked Bar Chart (timeseries, categorical shares per year) ──────────────
+function StackedBarChart({ svgRef, data, width, isCategorical, varValues, colourMap, viewBy, selectedYear, onYearSelect, enabledStrats, enabledVarVals, targetVariable }) {
+  const innerRef = useRef();
+  const ref = svgRef || innerRef;
+  const innerW = Math.max(80, width - MARGIN_BAR.left - MARGIN_BAR.right);
+  const innerH = CHART_H - MARGIN_BAR.top - MARGIN_BAR.bottom;
+
+  useEffect(() => {
+    if (!data.length || width < 100) return;
+    const svg = d3.select(ref.current);
+    svg.selectAll("*").remove();
+
+    const years = uniqueValues(data, "year");
+    const filteredVarVals = varValues.filter(vv => enabledVarVals.has(vv));
+
+    // Build stacked data: one bar per (year × stratifier_value), stacked by variable_value
+    // For Overall viewBy: one bar per year. For stratified: grouped bars per year, one stack per strat.
+    const visibleStrats = viewBy === "Overall"
+      ? ["Overall"]
+      : uniqueValues(data.filter(d => enabledStrats.has(d.stratifier_value)), "stratifier_value");
+
+    // Group: year → stratifier_value → variable_value → mean_value
+    const nested = d3.group(data, d => d.year, d => d.stratifier_value);
+
+    // x scales
+    const xYear  = d3.scaleBand().domain(years).range([0, innerW]).padding(0.18);
+    const xStrat = d3.scaleBand().domain(visibleStrats).range([0, xYear.bandwidth()]).padding(0.06);
+    const yScale = d3.scaleLinear().domain([0, 1]).range([innerH, 0]);
+
+    const g = svg.append("g").attr("transform", `translate(${MARGIN_BAR.left},${MARGIN_BAR.top})`);
+
+    // Grid
+    g.append("g").attr("opacity", 0.08)
+      .call(d3.axisLeft(yScale).tickSize(-innerW).tickFormat(""))
+      .select(".domain").remove();
+
+    // Selected year highlight
+    if (selectedYear) {
+      g.append("rect")
+        .attr("x", xYear(selectedYear) - 2).attr("y", 0)
+        .attr("width", xYear.bandwidth() + 4).attr("height", innerH)
+        .attr("fill", "#ff5d51").attr("opacity", 0.07).attr("rx", 3);
+    }
+
+    // X axis (years)
+    g.append("g").attr("transform", `translate(0,${innerH})`)
+      .call(d3.axisBottom(xYear).tickFormat(d3.format("d")))
+      .call(ax => { ax.select(".domain").attr("stroke", "#ddd8ce"); ax.selectAll("text").style("font-size", "11px").style("fill", "#64748b"); });
+
+    // Y axis
+    g.append("g")
+      .call(d3.axisLeft(yScale).tickFormat(d => fmtPct(d)))
+      .call(ax => { ax.select(".domain").attr("stroke", "#ddd8ce"); ax.selectAll("text").style("font-size", "11px").style("fill", "#64748b"); });
+
+    addXAxisLabel(g, innerH, innerW, "Year");
+    addYAxisLabel(g, innerH, "Share (%)");
+
+    years.forEach(yr => {
+      const yearData = nested.get(yr) || new Map();
+      const yearG = g.append("g").attr("transform", `translate(${xYear(yr)},0)`);
+
+      visibleStrats.forEach(sVal => {
+        const stratData = yearData.get(sVal) || [];
+        const baseColor = viewBy === "Overall"
+          ? "#2196F3"
+          : (colourMap[sVal] || "#607D8B");
+
+        let cumulative = 0;
+        filteredVarVals.forEach((vVal, vIdx) => {
+          const row = stratData.find(d => d.variable_value === vVal);
+          const val = (row && !isNaN(row.mean_value)) ? row.mean_value : 0;
+          if (val <= 0) { cumulative += val; return; }
+
+          const color = isCategorical
+            ? BLUE_PALETTE[vIdx % BLUE_PALETTE.length]
+            : getShadedColour(baseColor, vIdx);
+
+          const barX = xStrat(sVal);
+          const barW = xStrat.bandwidth();
+          const barY = yScale(cumulative + val);
+          const barH = Math.max(0, yScale(cumulative) - barY);
+
+          yearG.append("rect")
+            .attr("x", barX).attr("y", barY).attr("width", barW).attr("height", barH)
+            .attr("fill", color).attr("rx", 1)
+            .on("mouseenter", function(event) {
+              d3.select(this).attr("opacity", 0.75);
+              const stratPart = viewBy !== "Overall"
+                ? `<div><span style="color:#94a3b8">${viewBy}:</span> ${addSpaces(stratLabel(sVal))}</div>` : "";
+              showTooltip(
+                `<div style="font-weight:700;font-size:13px;margin-bottom:4px">${yr}</div>
+                 <div><span style="color:#94a3b8">Category:</span> ${addSpaces(vVal)}</div>
+                 ${stratPart}
+                 <div><span style="color:#94a3b8">Share:</span> <strong>${fmtPct(val)}</strong></div>`,
+                event
+              );
+            })
+            .on("mousemove", moveTooltip)
+            .on("mouseleave", function() { d3.select(this).attr("opacity", 1); hideTooltip(); });
+
+          cumulative += val;
+        });
+      });
+
+      // Clickable overlay for year selection
+      yearG.append("rect")
+        .attr("x", 0).attr("y", 0).attr("width", xYear.bandwidth()).attr("height", innerH)
+        .attr("fill", "transparent").style("cursor", "pointer")
+        .on("click", () => { hideTooltip(); onYearSelect(yr === selectedYear ? null : yr); });
+    });
+
+  }, [data, width, viewBy, selectedYear, colourMap, varValues, isCategorical, innerW, innerH, onYearSelect, enabledStrats, enabledVarVals]);
+
+  const allSuppressed = data.filter(d => enabledVarVals.has(d.variable_value)).every(d => isNaN(d.mean_value));
+
+  return (
+    <div style={{ position: "relative" }}>
+      <svg ref={ref} width={width} height={CHART_H} style={{ overflow: "visible" }} />
+      {allSuppressed && <SmallSampleOverlay />}
+    </div>
+  );
+}
+
+// ─── Axis label helpers ───────────────────────────────────────────────────────
+function addXAxisLabel(g, innerH, innerW, label) {
+  g.append("text")
+    .attr("x", innerW / 2).attr("y", innerH + 46)
+    .attr("text-anchor", "middle").attr("fill", "#64748b")
+    .style("font-size", "11px")
+    .text(label);
+}
+function addYAxisLabel(g, innerH, label) {
+  g.append("text")
+    .attr("transform", `rotate(-90)`)
+    .attr("x", -innerH / 2).attr("y", -54)
+    .attr("text-anchor", "middle").attr("fill", "#64748b")
+    .style("font-size", "11px")
+    .text(label);
+}
+
+function LineChart({ svgRef, data, width, isCategorical, yDomain, varValues, colourMap, viewBy, selectedYear, onYearSelect, enabledStrats, enabledVarVals, targetVariable }) {
+  const innerRef = useRef();
+  const ref = svgRef || innerRef;
+  const innerW = Math.max(80, width - MARGIN.left - MARGIN.right);
+  const innerH = CHART_H - MARGIN.top - MARGIN.bottom;
+
+  useEffect(() => {
+    if (!data.length || width < 100) return;
+    const svg = d3.select(ref.current);
+    svg.selectAll("*").remove();
+
+    const visibleData = data.filter(d => {
+      if (viewBy !== "Overall" && !enabledStrats.has(d.stratifier_value)) return false;
+      if (!enabledVarVals.has(d.variable_value)) return false;
+      return true;
+    });
+    const allSuppressed = visibleData.length > 0 && visibleData.every(d => isNaN(d.mean_value));
+
+    const years  = uniqueValues(data, "year");
+    const xScale = d3.scaleLinear().domain(d3.extent(years)).range([0, innerW]);
+  // with this:
+  const visibleValues = data
+    .filter(d => {
+      if (viewBy !== "Overall" && !enabledStrats.has(d.stratifier_value)) return false;
+      if (!enabledVarVals.has(d.variable_value)) return false;
+      return !isNaN(d.mean_value);
+    })
+    .flatMap(d => [
+      d.mean_value,
+      isNaN(d.lower_ci) ? null : d.lower_ci,
+      isNaN(d.upper_ci) ? null : d.upper_ci,
+    ])
+    .filter(v => v !== null);
+
+  const dynamicMin = visibleValues.length ? d3.min(visibleValues) : 0;
+  const dynamicMax = visibleValues.length ? d3.max(visibleValues) : 1;
+
+  // add a little padding so dots aren't flush with the axis edges
+  const padding = (dynamicMax - dynamicMin) * 0.1 || 0.1;
+
+  const yScale = d3.scaleLinear()
+  .domain([dynamicMin - padding, dynamicMax + padding])
+  .range([innerH, 0]);    const g      = svg.append("g").attr("transform", `translate(${MARGIN.left},${MARGIN.top})`);
+
+    // Grid
+    g.append("g").attr("opacity", 0.08)
+      .call(d3.axisLeft(yScale).tickSize(-innerW).tickFormat(""))
+      .select(".domain").remove();
+
+    if (selectedYear) {
+      g.append("rect")
+        .attr("x", xScale(selectedYear) - 14).attr("y", 0).attr("width", 28).attr("height", innerH)
+        .attr("fill", "#ff5d51").attr("opacity", 0.07).attr("rx", 3);
+    }
+
+    // Axes
+    g.append("g").attr("transform", `translate(0,${innerH})`)
+      .call(d3.axisBottom(xScale).tickValues(years).tickFormat(d3.format("d")))
+      .call(ax => { ax.select(".domain").attr("stroke", "#ddd8ce"); ax.selectAll("text").style("font-size", "11px").style("fill", "#64748b"); });
+
+    g.append("g")
+      .call(d3.axisLeft(yScale).tickFormat(d => isCategorical ? fmtPct(d) : d3.format(",.0f")(d)))
+      .call(ax => { ax.select(".domain").attr("stroke", "#ddd8ce"); ax.selectAll("text").style("font-size", "11px").style("fill", "#64748b"); });
+
+    addXAxisLabel(g, innerH, innerW, "Year");
+    addYAxisLabel(g, innerH, isCategorical ? "Share (%)" : targetVariable);
+
+    if (!allSuppressed) {
+      d3.group(data, d => `${d.variable_value}||${d.stratifier_value}`).forEach((rows, key) => {
+        const [vVal, sVal] = key.split("||");
+        if (viewBy !== "Overall" && !enabledStrats.has(sVal)) return;
+        if (!enabledVarVals.has(vVal)) return;
+
+        let color;
+        if (viewBy === "Overall" && isCategorical) {
+          const idx = varValues.indexOf(vVal);
+          color = BLUE_PALETTE[idx % BLUE_PALETTE.length];
+        } else if (viewBy === "Overall") {
+          color = getShadedColour("#2196F3", varValues.indexOf(vVal));
+        } else {
+          color = getShadedColour(colourMap[sVal] || "#607D8B", varValues.indexOf(vVal));
+        }
+
+        const sorted = rows.filter(d => !isNaN(d.mean_value)).sort((a, b) => a.year - b.year);
+        if (!sorted.length) return;
+
+        if (sorted.some(d => !isNaN(d.lower_ci))) {
+          g.append("path").datum(sorted).attr("fill", color).attr("opacity", 0.09)
+            .attr("d", d3.area()
+              .x(d => xScale(d.year))
+              .y0(d => yScale(Math.max(0, isNaN(d.lower_ci) ? d.mean_value : d.lower_ci)))
+              .y1(d => yScale(isNaN(d.upper_ci) ? d.mean_value : d.upper_ci)));
+        }
+
+        g.append("path").datum(sorted).attr("fill", "none").attr("stroke", color)
+          .attr("stroke-width", 2.2).attr("stroke-linejoin", "round")
+          .attr("d", d3.line().x(d => xScale(d.year)).y(d => yScale(d.mean_value)));
+
+        g.selectAll(null).data(sorted).enter().append("circle")
+          .attr("cx", d => xScale(d.year)).attr("cy", d => yScale(d.mean_value))
+          .attr("r", 4).attr("fill", color).attr("stroke", "#efece4").attr("stroke-width", 1.5)
+          .style("cursor", "pointer")
+          .on("mouseenter", function(event, d) {
+            d3.select(this).attr("r", 6);
+             const samplePart = d.min_sample < 100
+              ? `<div style="color:#ef4444;font-size:15px;margin-top:2px">⚠ Min sample &lt;100</div>` : "";
+            const stratPart  = viewBy !== "Overall"
+              ? `<div><span style="color:#94a3b8">${viewBy}:</span> ${addSpaces(stratLabel(sVal))}</div>` : "";
+            const catPart    = isCategorical
+              ? `<div><span style="color:#94a3b8">Category:</span> ${addSpaces(vVal)}</div>` : "";
+            const ciPart     = !isNaN(d.lower_ci)
+              ? `<div><span style="color:#94a3b8"> Data Spread: ${fmtVal(d.lower_ci, isCategorical)} – ${fmtVal(d.upper_ci, isCategorical)}</div>` : "";
+            const numPart    = d.mean_sample
+              ? `<div><span style="color:#94a3b8"> Sample size: </span> ${(d.mean_sample)}</div>` : "";
+            const runPart    = `<div style="margin-top:3px;color:${d.n_runs < 5 ? "#f59e0b" : "#94a3b8"};font-size:10px">Runs: ${d.n_runs ?? "—"}${d.n_runs < 5 ? " ⚠" : ""}</div>`;
+           
+            showTooltip(
+              `<div style="font-weight:700;margin-bottom:4px;font-size:13px">${d.year}</div>
+               ${samplePart}${catPart}${stratPart}${numPart}
+               <div><span style="color:#94a3b8">Value:</span> <strong>${fmtVal(d.mean_value, isCategorical)}</strong></div>
+               ${ciPart}${runPart}`, event);
+          })
+          .on("mousemove", moveTooltip)
+          .on("mouseleave", function() { d3.select(this).attr("r", 4); hideTooltip(); });
+      });
+    }
+
+  }, [data, width, viewBy, selectedYear, colourMap, varValues, isCategorical, yDomain, innerW, innerH, onYearSelect, enabledStrats, enabledVarVals]);
+
+  const allSuppressed = data.filter(d => enabledVarVals.has(d.variable_value)).every(d => isNaN(d.mean_value));
+
+  return (
+    <div style={{ position: "relative" }}>
+      <svg ref={ref} width={width} height={CHART_H} style={{ overflow: "visible" }} />
+      {allSuppressed && <SmallSampleOverlay />}
+    </div>
+  );
+}
+
+
+// ─── Delta Chart ──────────────────────────────────────────────────────────────
+function DeltaChart({ svgRef, data, width, isCategorical, varValues, colourMap, viewBy, enabledStrats, enabledVarVals, targetVariable }) {
+  const innerRef = useRef();
+  const ref = svgRef || innerRef;
+  const innerW = Math.max(80, width - MARGIN.left - MARGIN.right);
+  const innerH = CHART_H - MARGIN.top - MARGIN.bottom;
+
+  useEffect(() => {
+    if (!data.length || width < 100) return;
+    const svg = d3.select(ref.current);
+    svg.selectAll("*").remove();
+
+    const years  = uniqueValues(data, "year");
+    const allVals = data.flatMap(d => [d.mean_value, d.lower_ci, d.upper_ci].filter(v => !isNaN(v)));
+    const extent  = d3.extent(allVals);
+    const absMax  = Math.max(Math.abs(extent[0] || 0), Math.abs(extent[1] || 0)) * 1.1 || 0.1;
+
+    const xScale = d3.scaleLinear().domain(d3.extent(years)).range([0, innerW]);
+    const yScale = d3.scaleLinear().domain([-absMax, absMax]).range([innerH, 0]).nice();
+    const g      = svg.append("g").attr("transform", `translate(${MARGIN.left},${MARGIN.top})`);
+
+    g.append("g").attr("opacity", 0.08)
+      .call(d3.axisLeft(yScale).tickSize(-innerW).tickFormat(""))
+      .select(".domain").remove();
+
+    g.append("line")
+      .attr("x1", 0).attr("x2", innerW)
+      .attr("y1", yScale(0)).attr("y2", yScale(0))
+      .attr("stroke", "#94a3b8").attr("stroke-width", 1.2)
+      .attr("stroke-dasharray", "4,3");
+
+    g.append("g").attr("transform", `translate(0,${innerH})`)
+      .call(d3.axisBottom(xScale).tickValues(years).tickFormat(d3.format("d")))
+      .call(ax => { ax.select(".domain").attr("stroke", "#ddd8ce"); ax.selectAll("text").style("font-size", "11px").style("fill", "#64748b"); });
+
+    g.append("g")
+      .call(d3.axisLeft(yScale).tickFormat(d => isCategorical ? fmtPct(d) : d3.format(",.2f")(d)))
+      .call(ax => { ax.select(".domain").attr("stroke", "#ddd8ce"); ax.selectAll("text").style("font-size", "11px").style("fill", "#64748b"); });
+
+    addXAxisLabel(g, innerH, innerW, "Year");
+    addYAxisLabel(g, innerH, isCategorical ? "Δ Percentage Points" : `Δ ${targetVariable}`);
+
+    d3.group(data, d => `${d.variable_value}||${d.stratifier_value}`).forEach((rows, key) => {
+      const [vVal, sVal] = key.split("||");
+      if (viewBy !== "Overall" && !enabledStrats.has(sVal)) return;
+      if (!enabledVarVals.has(vVal)) return;
+
+      // Use same colour logic as line charts
+      let color;
+      if (viewBy === "Overall" && isCategorical) {
+        color = BLUE_PALETTE[varValues.indexOf(vVal) % BLUE_PALETTE.length];
+      } else if (viewBy === "Overall") {
+        color = getShadedColour("#2196F3", varValues.indexOf(vVal));
+      } else {
+        color = getShadedColour(colourMap[sVal] || "#607D8B", varValues.indexOf(vVal));
+      }
+
+      const sorted = rows.filter(d => !isNaN(d.mean_value)).sort((a, b) => a.year - b.year);
+      if (!sorted.length) return;
+
+      if (sorted.some(d => !isNaN(d.lower_ci))) {
+        g.append("path").datum(sorted).attr("fill", color).attr("opacity", 0.1)
+          .attr("d", d3.area()
+            .x(d => xScale(d.year))
+            .y0(d => yScale(isNaN(d.lower_ci) ? d.mean_value : d.lower_ci))
+            .y1(d => yScale(isNaN(d.upper_ci) ? d.mean_value : d.upper_ci)));
+      }
+
+      g.append("path").datum(sorted).attr("fill", "none").attr("stroke", color)
+        .attr("stroke-width", 2.2).attr("stroke-linejoin", "round")
+        .attr("d", d3.line().x(d => xScale(d.year)).y(d => yScale(d.mean_value)));
+
+      g.selectAll(null).data(sorted).enter().append("circle")
+        .attr("cx", d => xScale(d.year)).attr("cy", d => yScale(d.mean_value))
+        .attr("r", 4).attr("fill", color).attr("stroke", "#efece4").attr("stroke-width", 1.5)
+        .style("cursor", "default")
+        .on("mouseenter", function(event, d) {
+          d3.select(this).attr("r", 6);
+          const stratPart = viewBy !== "Overall" ? `<div><span style="color:#94a3b8">${viewBy}:</span> ${addSpaces(stratLabel(sVal))}</div>` : "";
+          const catPart   = isCategorical ? `<div><span style="color:#94a3b8">Category:</span> ${addSpaces(vVal)}</div>` : "";
+          const ciPart    = !isNaN(d.lower_ci)
+              ? `<div style="margin-top:4px;color:#94a3b8;font-size:11px"> Data spread of diff: ${fmtDelta(d.lower_ci, isCategorical)} – ${fmtDelta(d.upper_ci, isCategorical)}</div>` : "";
+          showTooltip(
+            `<div style="font-weight:700;margin-bottom:4px;font-size:13px">${d.year}</div>
+             ${catPart}${stratPart}
+             <div><span style="color:#94a3b8">Δ Value:</span> <strong>${fmtDelta(d.mean_value, isCategorical)}</strong></div>
+             ${ciPart}`, event);
+        })
+        .on("mousemove", moveTooltip)
+        .on("mouseleave", function() { d3.select(this).attr("r", 4); hideTooltip(); });
+    });
+
+  }, [data, width, viewBy, colourMap, varValues, isCategorical, innerW, innerH, enabledStrats, enabledVarVals]);
+
+  return <svg ref={ref} width={width} height={CHART_H} style={{ overflow: "visible" }} />;
+}
+
+// ─── Overall (Overall stratifier) Bar Chart for categorical shares ─────────────
+function OverallBarChart({ data, width, isCategorical, yDomain, varValues, enabledVarVals }) {
+  const svgRef = useRef();
+  const innerW = Math.max(80, width - MARGIN_BAR.left - MARGIN_BAR.right);
+  const innerH = CHART_H - MARGIN_BAR.top - MARGIN_BAR.bottom;
+
+  const filteredVarValues = varValues.filter(vv => enabledVarVals.has(vv));
+  const displayData = data.filter(d => d.stratifier_value === "Overall" && enabledVarVals.has(d.variable_value));
+  const allSuppressed = displayData.length > 0 && displayData.every(d => isNaN(d.mean_value));
+
+  useEffect(() => {
+    if (!data.length || width < 100) return;
+    const svg = d3.select(svgRef.current);
+    svg.selectAll("*").remove();
+
+    if (filteredVarValues.length === 0) return;
+
+    const xScale = d3.scaleBand().domain(filteredVarValues).range([0, innerW]).padding(0.28);
+    const yScale = d3.scaleLinear().domain(yDomain).range([innerH, 0]);
+    const g      = svg.append("g").attr("transform", `translate(${MARGIN_BAR.left},${MARGIN_BAR.top})`);
+
+    g.append("g").attr("opacity", 0.08)
+      .call(d3.axisLeft(yScale).tickSize(-innerW).tickFormat(""))
+      .select(".domain").remove();
+
+    g.append("g").attr("transform", `translate(0,${innerH})`)
+      .call(d3.axisBottom(xScale).tickFormat(v => addSpaces(v)))
+      .call(ax => { ax.select(".domain").attr("stroke", "#ddd8ce"); ax.selectAll("text").attr("transform", "rotate(-22)").attr("text-anchor", "end").style("font-size", "10px").style("fill", "#64748b"); });
+
+    g.append("g")
+      .call(d3.axisLeft(yScale).tickFormat(d => fmtPct(d)))
+      .call(ax => { ax.select(".domain").attr("stroke", "#ddd8ce"); ax.selectAll("text").style("font-size", "11px").style("fill", "#64748b"); });
+
+    addXAxisLabel(g, innerH, innerW, "Category");
+    addYAxisLabel(g, innerH, "Share (%)");
+
+    filteredVarValues.forEach((vv, i) => {
+      const d = displayData.find(r => r.variable_value === vv);
+      if (!d || isNaN(d.mean_value)) return;
+
+      const color = BLUE_PALETTE[i % BLUE_PALETTE.length];
+      const barX  = xScale(vv), barW = xScale.bandwidth();
+      const barY  = yScale(d.mean_value), barH = Math.max(0, innerH - barY);
+
+      g.append("rect")
+        .attr("x", barX).attr("y", barY).attr("width", barW).attr("height", barH)
+        .attr("fill", color).attr("rx", 3)
+        .on("mouseenter", function(event) {
+          d3.select(this).attr("opacity", 0.78);
+          const ciPart = !isNaN(d.lower_ci)
+            ? `<div style="margin-top:4px;color:#94a3b8;font-size:11px"> Data spread: ${fmtPct(d.lower_ci)} – ${fmtPct(d.upper_ci)}</div>` : "";
+          showTooltip(
+            `<div style="font-weight:700;margin-bottom:4px">${addSpaces(vv)}</div>
+             <div><span style="color:#94a3b8">Share:</span> <strong>${fmtPct(d.mean_value)}</strong></div>
+             ${ciPart}`, event);
+        })
+        .on("mousemove", moveTooltip)
+        .on("mouseleave", function() { d3.select(this).attr("opacity", 1); hideTooltip(); });
+
+      if (!isNaN(d.lower_ci)) {
+        const mid = barX + barW / 2;
+        g.append("line")
+          .attr("x1", mid).attr("x2", mid)
+          .attr("y1", yScale(Math.max(0, d.lower_ci))).attr("y2", yScale(d.upper_ci))
+          .attr("stroke", "#1e293b").attr("stroke-width", 1.4).attr("pointer-events", "none");
+        [d.lower_ci, d.upper_ci].forEach(ci => {
+          if (isNaN(ci)) return;
+          g.append("line")
+            .attr("x1", mid - 3).attr("x2", mid + 3)
+            .attr("y1", yScale(Math.max(0, ci))).attr("y2", yScale(Math.max(0, ci)))
+            .attr("stroke", "#1e293b").attr("stroke-width", 1.2).attr("pointer-events", "none");
+        });
+      }
+    });
+
+  }, [data, width, filteredVarValues, isCategorical, yDomain, innerW, innerH, displayData]);
+
+  return (
+    <div style={{ position: "relative" }}>
+      <svg ref={svgRef} width={width} height={CHART_H} style={{ overflow: "visible" }} />
+      {allSuppressed && <SmallSampleOverlay />}
+    </div>
+  );
+}
+
+// ─── Stratified Bar Chart ─────────────────────────────────────────────────────
+function BarChart({ data, width, isCategorical, yDomain, varValues, stratValues, colourMap, enabledVarVals }) {
+  const svgRef = useRef();
+  const innerW = Math.max(80, width - MARGIN_BAR.left - MARGIN_BAR.right);
+  const innerH = CHART_H - MARGIN_BAR.top - MARGIN_BAR.bottom;
+
+  const filteredVarValues = varValues.filter(vv => enabledVarVals.has(vv));
+  const allSuppressed = data.length > 0 && data.every(d => isNaN(d.mean_value));
+
+  useEffect(() => {
+    if (!data.length || width < 100) return;
+    const svg = d3.select(svgRef.current);
+    svg.selectAll("*").remove();
+
+    const displayStrats = stratValues.length > 0 ? stratValues : ["Overall"];
+    const xOuter = d3.scaleBand().domain(displayStrats).range([0, innerW]).padding(0.28);
+    const xInner = d3.scaleBand().domain(filteredVarValues).range([0, xOuter.bandwidth()]).padding(0.06);
+    const yScale = d3.scaleLinear().domain(yDomain).range([innerH, 0]);
+    const g      = svg.append("g").attr("transform", `translate(${MARGIN_BAR.left},${MARGIN_BAR.top})`);
+
+    g.append("g").attr("opacity", 0.08)
+      .call(d3.axisLeft(yScale).tickSize(-innerW).tickFormat(""))
+      .select(".domain").remove();
+
+    g.append("g").attr("transform", `translate(0,${innerH})`)
+      .call(d3.axisBottom(xOuter).tickFormat(v => addSpaces(stratLabel(v))))
+      .call(ax => { ax.select(".domain").attr("stroke", "#ddd8ce"); ax.selectAll("text").attr("transform", "rotate(-22)").attr("text-anchor", "end").style("font-size", "10px").style("fill", "#64748b"); });
+
+    g.append("g")
+      .call(d3.axisLeft(yScale).tickFormat(d => isCategorical ? fmtPct(d) : d3.format(",.0f")(d)))
+      .call(ax => { ax.select(".domain").attr("stroke", "#ddd8ce"); ax.selectAll("text").style("font-size", "11px").style("fill", "#64748b"); });
+
+    addXAxisLabel(g, innerH, innerW, "Group");
+    addYAxisLabel(g, innerH, isCategorical ? "Share (%)" : "Value");
+
+    displayStrats.forEach(sVal => {
+      const baseColor = colourMap[sVal] || "#607D8B";
+      const groupG    = g.append("g").attr("transform", `translate(${xOuter(sVal)},0)`);
+
+      filteredVarValues.forEach((vVal, vIdx) => {
+        const d = data.find(r => r.stratifier_value === sVal && r.variable_value === vVal);
+        if (!d || isNaN(d.mean_value)) return;
+
+        const color = getShadedColour(baseColor, vIdx);
+        const barX  = xInner(vVal), barW = xInner.bandwidth();
+        const barY  = yScale(d.mean_value), barH = Math.max(0, innerH - barY);
+
+        groupG.append("rect")
+          .attr("x", barX).attr("y", barY).attr("width", barW).attr("height", barH)
+          .attr("fill", color).attr("rx", 2)
+          .on("mouseenter", function(event) {
+            d3.select(this).attr("opacity", 0.78);
+            const ciPart = !isNaN(d.lower_ci)
+              ? `<div style="margin-top:4px;color:#94a3b8;font-size:11px"> Data spread: ${fmtVal(d.lower_ci, isCategorical)} – ${fmtVal(d.upper_ci, isCategorical)}</div>` : "";
+            showTooltip(
+              `<div style="font-weight:700;margin-bottom:4px">${addSpaces(stratLabel(sVal))}</div>
+               <div><span style="color:#94a3b8">Category:</span> ${addSpaces(vVal)}</div>
+               <div><span style="color:#94a3b8">Value:</span> <strong>${fmtVal(d.mean_value, isCategorical)}</strong></div>
+               <div><span style="color:#94a3b8">Value:</span> <strong>${fmtVal(d.mean_sample)}</strong></div>
+               ${ciPart}`, event);
+          })
+          .on("mousemove", moveTooltip)
+          .on("mouseleave", function() { d3.select(this).attr("opacity", 1); hideTooltip(); });
+
+        if (!isNaN(d.lower_ci)) {
+          const mid = barX + barW / 2;
+          groupG.append("line")
+            .attr("x1", mid).attr("x2", mid)
+            .attr("y1", yScale(Math.max(0, d.lower_ci))).attr("y2", yScale(d.upper_ci))
+            .attr("stroke", "#1e293b").attr("stroke-width", 1.4).attr("pointer-events", "none");
+          [d.lower_ci, d.upper_ci].forEach(ci => {
+            if (isNaN(ci)) return;
+            groupG.append("line")
+              .attr("x1", mid - 3).attr("x2", mid + 3)
+              .attr("y1", yScale(Math.max(0, ci))).attr("y2", yScale(Math.max(0, ci)))
+              .attr("stroke", "#1e293b").attr("stroke-width", 1.2).attr("pointer-events", "none");
+          });
+        }
+      });
+    });
+  }, [data, width, stratValues, filteredVarValues, colourMap, isCategorical, yDomain, innerW, innerH]);
+
+  return (
+    <div style={{ position: "relative" }}>
+      <svg ref={svgRef} width={width} height={CHART_H} style={{ overflow: "visible" }} />
+      {allSuppressed && <SmallSampleOverlay />}
+    </div>
+  );
+}
