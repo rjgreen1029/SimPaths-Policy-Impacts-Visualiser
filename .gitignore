@@ -10,9 +10,7 @@
 
 # production
 /build
-#data
-SimPaths_All_Aggregated_Outputs.csv
-
+#data 
 # misc
 .env
 .DS_Store
