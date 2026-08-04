@@ -10,8 +10,6 @@
 
 # production
 /build
-#data
-SimPaths_All_Aggregated_Outputs.csv
 
 # misc
 .env
