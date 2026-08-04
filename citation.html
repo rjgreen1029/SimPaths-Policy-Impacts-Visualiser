@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>How to Cite This Resource — SimPaths Policy Impacts Visualiser</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Work+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#f3ede3; --bg-dark:#faf7ef; --bg-panel:#f3ede3;
+    --teal:#14687c; --aqua:#0f93a1; --coral:#ff6e51; --indigo:#5975f8;
+    --text-dark:#1e293b; --text-mid:#475569; --text-soft:#64748b;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text-dark);font-family:'Work Sans',Arial,sans-serif;line-height:1.6;}
+
+  .header{background:var(--coral);padding:16px 48px;display:flex;align-items:center;gap:24px;flex-wrap:wrap;}
+  .logo-box{background:var(--bg-dark);border-radius:10px;padding:6px 12px;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 3px rgba(0,0,0,0.12);flex-shrink:0;}
+  .logo-box img{width:170px;max-width:200px;height:auto;display:block;object-fit:contain;}
+  .header-title{color:var(--bg-dark);margin:0;font-size:clamp(18px,3.6vw,26px);font-weight:600;flex:1;min-width:160px;line-height:1.25;}
+  .back-link{color:#fdfdfd;text-decoration:none;font-size:13px;font-weight:600;background:rgba(255,255,255,0.16);border:1px solid rgba(255,255,255,0.32);border-radius:6px;padding:9px 16px;white-space:nowrap;transition:background 0.15s;}
+  .back-link:hover{background:rgba(255,255,255,0.28);}
+
+  .container{max-width:880px;margin:0 auto;padding:44px 24px 64px;display:flex;flex-direction:column;gap:22px;}
+  .eyebrow{font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--aqua);margin:0 0 8px;}
+  h1{font-size:clamp(26px,4.2vw,36px);font-weight:700;color:var(--teal);margin:0 0 12px;letter-spacing:-0.4px;}
+  .lede{font-size:16px;color:var(--text-mid);line-height:1.7;margin:0 0 6px;max-width:680px;}
+
+  .card{background:var(--bg-dark);border:0.5px solid var(--bg-panel);border-radius:12px;padding:32px 40px;box-shadow:0 2px 8px rgba(0,0,0,0.08);}
+  .card h2{font-size:13px;text-transform:uppercase;letter-spacing:0.05em;font-weight:600;color:var(--teal);margin:0 0 14px;}
+  .card h2.big{font-size:19px;text-transform:none;letter-spacing:-0.2px;color:var(--text-dark);font-weight:700;margin:0 0 12px;}
+  .card p{font-size:15px;color:var(--text-dark);line-height:1.8;margin:0 0 14px;}
+  .card p:last-child{margin-bottom:0;}
+  .card ul{margin:0 0 14px;padding-left:22px;color:var(--text-dark);font-size:15px;line-height:1.8;}
+  .card li{margin-bottom:6px;}
+  .card li:last-child{margin-bottom:0;}
+
+  /* Citation box — mirrors the in-app "Cite this dashboard" box from the closing banner */
+  .cite-box{background:rgba(20,104,124,0.05);border:1px solid rgba(20,104,124,0.16);border-radius:8px;padding:16px 20px;margin:6px 0 18px;}
+  .cite-box:last-child{margin-bottom:0;}
+  .cite-box .cite-label{font-size:11px;color:var(--text-soft);margin:0 0 8px;text-transform:uppercase;letter-spacing:0.05em;font-weight:600;}
+  .cite-text{font-size:14px;color:var(--text-dark);line-height:1.7;margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:rgba(255,255,255,0.5);border-radius:6px;padding:12px 14px;}
+
+  .todo{display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:#c2410c;background:#fee8e2;border:1px solid #fed7ca;border-radius:4px;padding:2px 7px;margin-left:6px;vertical-align:middle;}
+
+  pre{background:#1e293b;color:#e2e8f0;border-radius:8px;padding:16px 18px;overflow-x:auto;font-size:12.5px;line-height:1.65;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;margin:6px 0 18px;}
+  pre:last-child{margin-bottom:0;}
+
+  a{color:var(--aqua);}
+  .link-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;}
+  .link-btn{color:var(--aqua);text-decoration:none;font-size:13px;padding:8px 14px;background:rgba(15,147,161,0.06);border-radius:6px;border:1px solid rgba(15,147,161,0.22);font-weight:500;display:inline-flex;align-items:center;gap:6px;}
+  .link-btn:hover{background:rgba(15,147,161,0.13);}
+
+  .callout{border-radius:8px;padding:16px 20px;margin:6px 0 0;border-left:4px solid var(--aqua);background:rgba(15,147,161,0.05);border-top:1px solid rgba(15,147,161,0.14);border-right:1px solid rgba(15,147,161,0.14);border-bottom:1px solid rgba(15,147,161,0.14);}
+  .callout h3{margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:0.05em;font-weight:600;color:var(--teal);}
+  .callout p{margin:0;font-size:14px;color:var(--text-mid);line-height:1.7;}
+
+  .footer{background:var(--coral);padding:22px 48px;margin-top:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;}
+  .footer p{color:#fdfdfd;opacity:0.92;font-size:13px;margin:0;}
+  .footer a{color:#fdfdfd;font-weight:600;text-decoration:none;border-bottom:1.5px solid rgba(255,255,255,0.4);padding-bottom:2px;}
+
+  @media (max-width:640px){
+    .header{padding:14px 16px;}
+    .container{padding:30px 16px 48px;}
+    .card{padding:22px 20px;}
+    .footer{padding:18px 20px;flex-direction:column;align-items:flex-start;}
+  }
+</style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="logo-box"><img src="/pmh_logo.png" alt="Logo" onerror="this.parentElement.style.display='none'"></div>
+    <p class="header-title">SimPaths Policy Impacts Visualiser</p>
+    <a class="back-link" href="/">← Back to Dashboard</a>
+  </div>
+
+  <div class="container">
+
+    <div>
+      <p class="eyebrow">Guidance</p>
+      <h1>How to Cite This Resource</h1>
+      <p class="lede">If you use this dashboard, the SimPaths model, or the underlying survey data in your own work, please cite the appropriate source below.</p>
+    </div>
+
+    <div class="card">
+      <h2 class="big">Citing this dashboard</h2>
+      <p>If you reference figures, screenshots, or findings produced with this tool, please cite it directly using the DOI below.</p>
+      <div class="cite-box">
+        <p class="cite-label">Cite this dashboard <span class="todo">Add DOI before publishing</span></p>
+        <p class="cite-text">SimPaths Policy Impacts Visualiser. Policy Modelling for Health, University of Glasgow. https://doi.org/ADD-DOI</p>
+      </div>
+      <p>BibTeX:</p>
+      <pre>@misc{simpaths_visualiser,
+  title        = {SimPaths Policy Impacts Visualiser},
+  author       = {{Policy Modelling for Health, University of Glasgow}},
+  year         = {2026},
+  howpublished = {\url{https://doi.org/ADD-DOI}}
+}</pre>
+    </div>
+
+    <div class="card">
+      <h2 class="big">Citing the SimPaths model</h2>
+      <p>This dashboard visualises outputs from <strong>SimPaths</strong>, a dynamic microsimulation model developed by the Centre for Microsimulation and Policy Analysis (CeMPA) at the University of Essex, and extended by researchers at the University of Glasgow as part of the Policy Modelling for Health research group. If your work involves using the SimPaths model and the visualiser, cite SimPaths directly along with the visualiser and consult its own documentation for the current recommended citation.</p>
+      <div class="link-row">
+        <a class="link-btn" href="https://simpaths.org/" target="_blank" rel="noopener noreferrer">SimPaths documentation ↗</a>
+        <a class="link-btn" href="https://github.com/simpaths/SimPaths" target="_blank" rel="noopener noreferrer">GitHub repository ↗</a>
+        <a class="link-btn" href="https://github.com/simpaths/SimPaths/blob/main/license.txt" target="_blank" rel="noopener noreferrer"> SimPaths License ↗</a>
+   
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="big">Citing the underlying survey data</h2>
+      <p>The population and behavioural relationships behind SimPaths are built from <strong>Understanding Society: the UK Household Longitudinal Study</strong>. If you use results derived from this data, please cite the dataset itself in addition to the model.</p>
+      <div class="cite-box">
+        <p class="cite-label">Current citation (verify against the live page before publishing)</p>
+        <p class="cite-text">University of Essex, Institute for Social and Economic Research (2026). Understanding Society: Waves 1-15, 2009-2024 and Harmonised BHPS: Waves 1-18, 1991-2009. [data collection]. 21st Edition. UK Data Service. SN: 6614, DOI: http://doi.org/10.5255/UKDA-SN-6614-22</p>
+      </div>
+      <div class="callout">
+        <h3>This citation updates with every data release</h3>
+        <p>Understanding Society issues a new edition (with an updated DOI) each time a wave is added, so the exact wording above will go stale. Always confirm the current version at the official citation page before publishing.</p>
+      </div>
+      <div class="link-row" style="margin-top:14px;">
+        <a class="link-btn" href="https://www.understandingsociety.ac.uk/documentation/citation" target="_blank" rel="noopener noreferrer">Official citation page ↗</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="big">Acknowledgements</h2>
+      <p>We acknowledge the contributions of researchers, data providers, and funders supporting this work. Results are modelled estimates and should not be interpreted as forecasts or official statistics.</p>
+    </div>
+
+    <div class="card">
+      <h2 class="big">Related pages</h2>
+      <div class="link-row">
+        <a class="link-btn" href="/interpreting-results.html">Interpreting the Results ↗</a>
+        <a class="link-btn" href="https://simpaths.org/" target="_blank" rel="noopener noreferrer">About the Dataset ↗</a>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="footer">
+    <p>SimPaths Policy Impacts Visualiser — Policy Modelling for Health, University of Glasgow</p>
+    <a href="mailto:healthmod@glasgow.ac.uk?subject=SimPaths%20Data%20Visualiser"> Send Feedback</a>
+  </div>
+
+</body>
+</html>
