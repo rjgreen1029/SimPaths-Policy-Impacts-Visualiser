@@ -108,9 +108,9 @@ function slugify(s){ return String(s||"").replace(/\W+/g,"_").toLowerCase(); }
  * Draws a diagonal hatch pattern clipped to a rectangle — this is how
  * Scenario bars are visually distinguished from solid Baseline bars (the
  * "full vs. hatched fill" half of the solid/dashed Baseline/Scenario visual
- * convention used throughout the dashboard). Builds and reuses an inline
- * SVG clipPath (in a lazily-created <defs>) rather than url(#pattern), so
- * the hatching survives being serialised into a standalone PNG export.
+ * convention used throughout the dashboard). Builds a fresh inline SVG
+ * clipPath per call (in a lazily-created <defs>) rather than url(#pattern),
+ * so the hatching survives being serialised into a standalone PNG export.
  *
  * @param {d3.Selection} svgSel - the root <svg> selection (for the defs/clipPath)
  * @param {d3.Selection} g - the group to draw the hatch lines into
@@ -119,16 +119,22 @@ function slugify(s){ return String(s||"").replace(/\W+/g,"_").toLowerCase(); }
  * @param {number} [opacity]
  * @param {number} [spacing] - gap between hatch lines in px
  */
+// Monotonically incrementing counter for hatch clipPath ids — guarantees no
+// two segments ever collide onto the same id (an earlier version hashed the
+// rounded x/y/w coordinates into a shared, bounded id space instead; two
+// different segments could round to the same hash, and the "reuse if
+// exists" check would then silently reuse the FIRST segment's clip
+// rectangle for the SECOND segment too — visually, one segment's hatch
+// rendering at another segment's position, and the second segment left
+// with no hatch of its own).
+let hatchClipCounter=0;
 function drawHatchClipped(svgSel,g,x,y,w,h,colour,opacity=0.4,spacing=6){
   if (w<=0||h<=0) return;
-  // Create a clipPath in the SVG defs (reuse if exists by id)
-  const clipId=`hc_${Math.abs(Math.round(x*10+y*100+w*1000))%99999}`;
+  const clipId=`hc_${++hatchClipCounter}`;
   let defsEl=svgSel.select("defs");
   if (defsEl.empty()) defsEl=svgSel.insert("defs","g");
-  if (defsEl.select(`#${clipId}`).empty()){
-    defsEl.append("clipPath").attr("id",clipId)
-      .append("rect").attr("x",x).attr("y",y).attr("width",w).attr("height",h);
-  }
+  defsEl.append("clipPath").attr("id",clipId)
+    .append("rect").attr("x",x).attr("y",y).attr("width",w).attr("height",h);
   const hg=g.append("g").attr("clip-path",`url(#${clipId})`).style("pointer-events","none");
   for (let offset=-(h+spacing); offset<w+h+spacing; offset+=spacing){
     hg.append("line")
@@ -1371,9 +1377,17 @@ export default function DashboardSection({parsedCache,targetVariable}){
   const showHighlight   =!(activeTab==="timeseries"&&chartType==="bar");
   const hasSidebar       =showFilterVars||showStratFilters||showHighlight;
   const SIDEBAR_W=190;
+  // Below this container width, the sidebar can't sit beside the chart
+  // without squeezing it unusably narrow — collapse it to a full-width row
+  // ABOVE the chart instead (same content, different layout direction).
+  // Uses `width` (the actual measured container width from the
+  // ResizeObserver, already net of whatever surrounding page chrome/sidebar
+  // App.js has) rather than window.innerWidth, since that's what actually
+  // determines whether SIDEBAR_W + a usable chart both fit side by side.
+  const stackSidebar=hasSidebar&&width<640;
   // Charts size themselves off this instead of the raw container width
-  // whenever the sidebar is actually taking up horizontal space.
-  const chartAreaWidth=hasSidebar?Math.max(240,width-SIDEBAR_W-20):width;
+  // whenever the sidebar is actually taking up horizontal space beside them.
+  const chartAreaWidth=hasSidebar&&!stackSidebar?Math.max(240,width-SIDEBAR_W-20):width;
 
   return (
     <div ref={containerRef} style={{width:"100%",maxWidth:"100%",overflowX:"hidden"}}>
@@ -1437,25 +1451,30 @@ export default function DashboardSection({parsedCache,targetVariable}){
       </div>
 
       {/* ── Sidebar (Filter Variables / Stratifiers / Highlight) + chart content ── */}
-      <div style={{display:"flex",gap:20,alignItems:"flex-start"}}>
+      <div style={{display:"flex",flexDirection:stackSidebar?"column":"row",gap:20,alignItems:stackSidebar?"stretch":"flex-start"}}>
 
         {hasSidebar&&(
-          <div style={{width:SIDEBAR_W,flexShrink:0,display:"flex",flexDirection:"column",gap:18}}>
+          <div style={{
+            width:stackSidebar?"100%":SIDEBAR_W,flexShrink:0,
+            display:"flex",flexDirection:stackSidebar?"row":"column",
+            flexWrap:stackSidebar?"wrap":"nowrap",gap:stackSidebar?"14px 28px":18,
+          }}>
 
             {showFilterVars&&(
-              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              <div style={{display:"flex",flexDirection:"column",gap:8,...(stackSidebar?{flex:"1 1 220px",minWidth:200}:{})}}>
                 <span style={controlLabel}>Filter Variables</span>
-                <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                <div style={{display:"flex",flexDirection:stackSidebar?"row":"column",flexWrap:stackSidebar?"wrap":"nowrap",gap:6}}>
                   {varValues.map(vv=>{
                     const isOn=enabledVarVals.has(vv);
                     const c=colourMap[vv]||TEAL;
                     return (
                       <button key={vv} onClick={()=>onToggleVarVal(vv)} style={{
-                        display:"flex",alignItems:"center",gap:7,cursor:"pointer",padding:"7px 12px",borderRadius:18,width:"100%",boxSizing:"border-box",
+                        display:"flex",alignItems:"center",gap:7,cursor:"pointer",padding:"7px 12px",borderRadius:18,
+                        width:stackSidebar?"auto":"100%",boxSizing:"border-box",
                         border:`1.5px solid ${isOn?c:"#ddd8ce"}`,background:isOn?`${c}18`:"transparent",transition:"all 0.15s",
                       }}>
                         <span style={{width:9,height:9,borderRadius:"50%",background:isOn?c:"#c7c1b6",flexShrink:0}}/>
-                        <span style={{fontSize:13,fontWeight:isOn?600:500,color:isOn?TEXT_D:TEXT_S,textAlign:"left"}}>{addSpaces(stratLabel(vv))}</span>
+                        <span style={{fontSize:13,fontWeight:isOn?600:500,color:isOn?TEXT_D:TEXT_S,textAlign:"left",whiteSpace:"nowrap"}}>{addSpaces(stratLabel(vv))}</span>
                       </button>
                     );
                   })}
@@ -1468,17 +1487,18 @@ export default function DashboardSection({parsedCache,targetVariable}){
             )}
 
             {showStratFilters&&(
-              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              <div style={{display:"flex",flexDirection:"column",gap:8,...(stackSidebar?{flex:"1 1 220px",minWidth:200}:{})}}>
                 <span style={controlLabel}>Stratifiers</span>
-                <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                <div style={{display:"flex",flexDirection:stackSidebar?"row":"column",flexWrap:stackSidebar?"wrap":"nowrap",gap:6}}>
                   {stratValues.map(sv=>{
                     const isOn=enabledStrats.has(sv);
                     return (
                       <button key={sv} onClick={()=>onToggleStrat(sv)} style={{
-                        display:"flex",alignItems:"center",gap:7,cursor:"pointer",padding:"7px 12px",borderRadius:18,width:"100%",boxSizing:"border-box",
+                        display:"flex",alignItems:"center",gap:7,cursor:"pointer",padding:"7px 12px",borderRadius:18,
+                        width:stackSidebar?"auto":"100%",boxSizing:"border-box",
                         border:`1.5px solid ${isOn?TEAL:"#ddd8ce"}`,background:isOn?`${TEAL}18`:"transparent",transition:"all 0.15s",
                       }}>
-                        <span style={{fontSize:13,fontWeight:isOn?600:500,color:isOn?TEXT_D:TEXT_S,textAlign:"left"}}>{addSpaces(stratLabel(sv))}</span>
+                        <span style={{fontSize:13,fontWeight:isOn?600:500,color:isOn?TEXT_D:TEXT_S,textAlign:"left",whiteSpace:"nowrap"}}>{addSpaces(stratLabel(sv))}</span>
                       </button>
                     );
                   })}
@@ -1491,23 +1511,23 @@ export default function DashboardSection({parsedCache,targetVariable}){
             )}
 
             {showHighlight&&(
-              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              <div style={{display:"flex",flexDirection:"column",gap:8,...(stackSidebar?{flex:"1 1 220px",minWidth:200}:{})}}>
                 <span style={controlLabel}>
                   {highlighted.size>0?"Highlighting:":"Highlight variables"}
                 </span>
-                <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                <div style={{display:"flex",flexDirection:stackSidebar?"row":"column",flexWrap:"wrap",gap:6}}>
                   <LegendRow label={null} entries={legendEntries} highlighted={highlighted} onToggle={onHighlight}/>
                 </div>
                 {stratLegendEntries.length>0&&(
                   <>
                     <span style={{...controlLabel,marginTop:4,paddingTop:8,borderTop:"1px solid #e2ddd5"}}>Stratifier</span>
-                    <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                    <div style={{display:"flex",flexDirection:stackSidebar?"row":"column",flexWrap:"wrap",gap:6}}>
                       <LegendRow label={null} entries={stratLegendEntries} highlighted={highlighted} onToggle={onHighlight} showSymbols={isCatStrat}/>
                     </div>
                   </>
                 )}
                 {showBaseline&&showScenario&&(
-                  <div style={{display:"flex",flexDirection:"column",gap:6,marginTop:4,paddingTop:8,borderTop:"1px solid #e2ddd5"}}>
+                  <div style={{display:"flex",flexDirection:stackSidebar?"row":"column",flexWrap:"wrap",gap:stackSidebar?16:6,marginTop:4,paddingTop:8,borderTop:"1px solid #e2ddd5"}}>
                     <div style={{display:"flex",alignItems:"center",gap:6}}>
                       <svg width="20" height="9"><line x1="0" y1="4" x2="20" y2="4" stroke={TEXT_M} strokeWidth="2.5"/></svg>
                       <span style={{fontSize:12.5,color:TEXT_S,fontWeight:500}}>Baseline</span>
@@ -1537,9 +1557,14 @@ export default function DashboardSection({parsedCache,targetVariable}){
               // Stratified combined: full-width line, cross-section below
               const isOverall=!isStratified;
               const isPanels=isStratified&&displayMode==="panels";
+              // Below this width, a side-by-side split leaves neither chart
+              // usably wide — stack them full-width instead (flexWrap below
+              // then does the actual stacking; this just decides whether to
+              // even attempt a 62/38 split in the first place).
+              const stackOverallLayout=isOverall&&chartAreaWidth<600;
               // Widths for side-by-side (overall only)
-              const lineW   = isOverall ? Math.round(chartAreaWidth*0.62) : chartAreaWidth;
-              const crossW  = isOverall ? Math.max(200, chartAreaWidth - lineW - 20) : chartAreaWidth;
+              const lineW   = isOverall ? (stackOverallLayout?chartAreaWidth:Math.round(chartAreaWidth*0.62)) : chartAreaWidth;
+              const crossW  = isOverall ? (stackOverallLayout?chartAreaWidth:Math.max(200, chartAreaWidth - lineW - 20)) : chartAreaWidth;
 
               const crossSectionTitle=selectedYear===null
                 ?<span>Average across all years <span style={{fontSize:11,color:TEXT_S,fontWeight:400}}>(click a point to pin a year)</span></span>
@@ -1578,10 +1603,10 @@ export default function DashboardSection({parsedCache,targetVariable}){
                     /* Overall or combined-stratified */
                     :<div>
                       {isOverall
-                        /* Side-by-side: line left (with its own buttons below), cross-section right (with its own buttons) */
-                        ?<div style={{display:"flex",gap:20,alignItems:"flex-start"}}>
+                        /* Side-by-side: line left (with its own buttons below), cross-section right (with its own buttons) — stacks full-width on narrow screens instead */
+                        ?<div style={{display:"flex",gap:20,alignItems:"flex-start",flexWrap:"wrap"}}>
                           {/* Line chart + its download buttons flush below */}
-                          <div style={{flexShrink:0,display:"flex",flexDirection:"column",gap:4}}>
+                          <div style={{flexShrink:0,display:"flex",flexDirection:"column",gap:4,width:stackOverallLayout?"100%":"auto"}}>
                             {lineChart}
                             <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
                               <DownloadBtn svgRef={lineRef} filename="time_series.png" pubProps={pubProps(`${varLabel} over time`)}/>
@@ -1590,7 +1615,7 @@ export default function DashboardSection({parsedCache,targetVariable}){
                             </div>
                           </div>
                           {/* Cross-section with its own title + buttons handled inside CrossSectionPanel */}
-                          <div style={{flexShrink:0,flexGrow:1,minWidth:0}}>
+                          <div style={{flexShrink:0,flexGrow:1,minWidth:0,width:stackOverallLayout?"100%":"auto"}}>
                             <div style={{marginBottom:6}}>
                               <span style={{fontSize:12,fontWeight:700,color:TEXT_D}}>{crossSectionTitle}</span>
                             </div>
