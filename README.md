@@ -1,8 +1,8 @@
 # SimPaths Policy Impacts Visualiser
 
-An interactive React + D3 dashboard for exploring outputs from SimPaths, a dynamic microsimulation model developed by the Centre for Microsimulation and Policy Analysis (CeMPA) at the University of Essex. Built by researchers at the University of Glasgow as part of the Policy Modelling for Health research group.
+An interactive React + D3 dashboard for exploring outputs from SimPaths, a dynamic microsimulation model developed by the Centre for Microsimulation and Policy Analysis (CeMPA) at the University of Essex. Visualiser built by researchers at the University of Glasgow as part of the Policy Modelling for Health research group.
 
-The dashboard compares a Baseline run against a Policy Scenario across demographic, employment, income and health outcomes — as a time series, at a single point in time, or as the difference between the two — with all aggregation happening entirely client-side, in the browser.
+The dashboard compares a Baseline run against a Policy Scenario across demographic, employment, income and health outcomes — as a time series, at a single year, or as the difference between the two — with all aggregation happening entirely client-side, in the browser.
 
 ---
 
@@ -33,7 +33,7 @@ The dashboard compares a Baseline run against a Policy Scenario across demograph
 - Line, stacked-bar and grouped-bar charts for numeric and categorical variables, rendered directly with D3 (no charting library dependency).
 - Three ways to view the data: time series, a single cross-sectional year, and Baseline → Scenario deltas.
 - Stratify any variable by Age, Gender, Household Type, Disability Status, Region, Ethnicity or Income Quintile, shown as small-multiple panels or combined onto one chart.
-- 95% confidence intervals computed across model runs; unreliable estimates (small underlying samples) are automatically suppressed rather than shown.
+- 95% confidence intervals computed across model runs; unreliable estimates (small underlying samples n<=10) are automatically suppressed rather than shown.
 - Two data sources: a pre-packaged default dataset, or point the dashboard at your own local SimPaths output folder — no upload, no server round-trip.
 - Parallelised, memory-lean parsing: your own runs are read and aggregated by a pool of Web Workers, one run's CSV text in memory at a time per worker, so large multi-run folders don't blow out browser memory.
 - Export any chart panel as a PNG, or its underlying data as CSV.
@@ -44,9 +44,9 @@ The dashboard compares a Baseline run against a Policy Scenario across demograph
 - React (function components + hooks) for the UI
 - D3.js for both data-side aggregation (`d3.csvParse`, `d3.csv`) and chart rendering (raw SVG, no chart library)
 - Web Workers (native, no bundler-specific worker loader) for parallel CSV parsing/aggregation
-- File System Access API (`window.showDirectoryPicker`) for reading local simulation output folders directly, with no file upload step
+- File System Access API (`window.showDirectoryPicker`) for reading local simulation output folders directly, with no file-by-file upload step
 
-No backend is required — this is a fully static, client-side application.
+No backend is required. This is a static, client-side application.
 
 ## Project structure
 
@@ -61,7 +61,6 @@ src/
 └── parseWorker.js          # Web Worker: reads + aggregates one batch of runs at a time
 
 public/
-├── SimPaths_All_Aggregated_Outputs.csv   # Default pre-aggregated dataset (see below)
 ├── pmh_logo.png                          # Header logo
 ├── guidance_notes.pdf                    # Folder/file layout guidance for "Visualise Your Own Data"
 └── bottom_banner_image.png               # Optional — see "Customising the dashboard"
@@ -69,37 +68,6 @@ public/
 
 `parseCore.js` is imported by both `localFolderParser.js` (the main-thread, no-Worker fallback) and `parseWorker.js` (the Worker path), so the CSV join/rename/aggregation logic exists in exactly one place regardless of which path runs.
 
-## Getting started
-
-This project follows standard Create React App conventions (`react-scripts`). If your `package.json` differs, adjust accordingly.
-
-```bash
-# install dependencies
-npm install
-
-# start a local dev server
-npm start
-
-# build a production bundle
-npm run build
-```
-
-The app expects `d3` as a dependency — if you're starting from a bare CRA scaffold, install it with:
-
-```bash
-npm install d3
-```
-
-## Required public assets
-
-Drop these into `public/` before running the app — the dashboard references them directly:
-
-| File | Required? | Purpose |
-|---|---|---|
-| `SimPaths_All_Aggregated_Outputs.csv` | Yes | Default dataset loaded on first visit |
-| `pmh_logo.png` | Yes | Logo shown in the header banner |
-| `guidance_notes.pdf` | Yes | Linked from the "Guidance Notes" button in the Connect Data card |
-| `bottom_banner_image.png` | No | Optional logo strip (e.g. funder/partner logos) in the closing banner — the slot stays invisible until this file exists |
 
 ## Data inputs
 
@@ -107,7 +75,7 @@ The dashboard can be driven by either of two data sources, toggled from the Conn
 
 ### 1. Default pre-aggregated dataset
 
-On load, the app fetches `/SimPaths_All_Aggregated_Outputs.csv` and parses each row with `parseCsvRow()` in `useAggregatedData.js`. Expected columns (case-insensitive alternates are supported for several — see the parser):
+On load, the app fetches the preaggregated data and parses each row with `parseCsvRow()` in `useAggregatedData.js`. Expected columns (case-insensitive alternates are supported for several — see the parser):
 
 | Column | Meaning |
 |---|---|
@@ -124,7 +92,6 @@ On load, the app fetches `/SimPaths_All_Aggregated_Outputs.csv` and parses each 
 | `mean_value`, `sd_value` | Cross-run mean and standard deviation |
 | `ci_lower` / `lower_ci`, `ci_upper` / `upper_ci` | 95% confidence interval bounds |
 
-This is the same shape produced by the local-folder aggregation pipeline (see `performCrossRunAggregation`), so a folder you've processed once can be exported and reused as a new default dataset.
 
 ### 2. Bring your own simulation output
 
@@ -134,7 +101,7 @@ Clicking "Visualise Your Own Data" opens a native folder picker. The selected pa
 YourSimulationOutput/
 ├── Baseline/
 │   ├── run_1/
-│   │   └── csv/                 # optional — files are also found directly in the run folder
+│   │   └── csv/               
 │   │       ├── ..._person_....csv
 │   │       └── ..._benefit_....csv
 │   ├── run_2/
@@ -187,15 +154,14 @@ Expected raw columns (person and/or benefit CSV — see `COLUMN_MAP` in `parseCo
 
 Plus join/weighting keys: `time`/`Time`/`Year`, `id_BenefitUnit`/`idbu`/`idBu`, and an optional `wgt`/`Wgt` weight column (defaults to 1.0 per row if absent or invalid).
 
-Full details, including exact expected file naming, live in `guidance_notes.pdf`, linked from the Connect Data card.
 
 ## How the aggregation pipeline works
 
 1. **Discovery** (main thread): the folder tree is scanned for `Baseline`/`Scenario` → run subfolders → person/benefit CSV file handles. This step only lists directory contents — no file content is read yet, so it's fast regardless of file size.
 2. **Dispatch**: run handles are batched (2 runs per message by default) and sent to a pool of Web Workers — sized to `min(navigator.hardwareConcurrency, 8)` — so multiple runs are read and aggregated in parallel across CPU cores. If Workers aren't supported (e.g. `file://` without cross-origin isolation headers), the app falls back to processing runs one at a time on the main thread with identical logic.
-3. **Per-run aggregation** (`parseCore.js`, inside each worker): person and benefit CSVs are streamed and joined on `<year>_<benefitUnitId>`, renamed to display variable names, and reduced — in a single pass per year — into weighted means (numeric variables) and weighted shares (categorical variables), each broken down overall and by every stratifier.
-4. **Cross-run aggregation**: once every run's metrics are collected, `performCrossRunAggregation()` groups matching rows across runs and computes the cross-run mean, standard deviation, and a 95% CI (mean ± 1.96·SD). Any estimate whose smallest contributing run sample is below 100 is suppressed (`NaN`) rather than shown, to avoid presenting unreliable small-sample estimates.
-5. The result is the same row shape as the default CSV (`year, scenario, module, variable, variable_value, stratifier, stratifier_value, metric_type, n_runs, total_sample, min_sample, mean_sample, mean_value, sd_value, lower_ci, upper_ci`), so the rest of the app doesn't need to know which data source it came from.
+3. **Per-run aggregation** (`parseCore.js`, inside each worker): person and benefit CSVs are streamed and joined on `<year>_<benefitUnitId>`, renamed to display variable names, and reduced — in a single pass per year — into weighted means (numeric variables) and weighted shares (categorical variables) per run, each broken down overall and by every stratifier.
+4. **Cross-run aggregation**: once every run's metrics are collected, `performCrossRunAggregation()` groups matching rows across runs and computes the cross-run mean, standard deviation, and a 95% CI (using the standard error of the mean (SD ÷ √n_runs)). Any estimate whose smallest contributing run sample is below 10 is suppressed (`NaN`) rather than shown, to avoid presenting unreliable small-sample estimates.
+5. The result is the same row shape as the default CSV (`year, scenario, module, variable, variable_value, stratifier, stratifier_value, metric_type, n_runs, total_sample, min_sample, mean_sample, mean_value, sd_value, lower_ci, upper_ci`).
 
 At every stage, only a bounded amount of raw CSV text is held in memory at once (roughly one run per worker), rather than the whole dataset — so this scales to folders with many, or large, runs without exhausting browser memory.
 
@@ -247,7 +213,7 @@ This tool is entirely JavaScript-based. All aggregation of your own simulation o
 
 ## Known limitations
 
-- Outputs are based on simulated data, intended for research purposes only — they should not be interpreted as forecasts or official statistics.
+- Outputs are based on simulated data, intended for research purposes only — they should not be interpreted as  official statistics.
 - Every figure is an average across multiple model runs, shown with a 95% confidence interval; estimates with an insufficient underlying sample in any contributing run are suppressed rather than shown.
 - Differences between Baseline and Scenario reflect the modelled effect of the policy change being tested, not an observed real-world outcome.
 
