@@ -57,7 +57,7 @@ export const DISABILITY_MAP      = {"false":"No disability","0":"No disability",
 export const FINANCIAL_MAP       = {"false":"Not financially distressed","0":"Not financially distressed","true":"Financially distressed","1":"Financially distressed"};
 export const SOCIAL_CARE_MAP     = {"false":"Does not need social care","0":"Does not need social care","true":"Needs social care","1":"Needs social care"};
 export const PROV_SOCIAL_CARE_MAP= {"false":"Does not provide social care","0":"Does not provide social care","true":"Provides social care","1":"Provides social care"};
-export const UC_BENEFITS_MAP     = {"false":"Does not receive benefits","0":"Does not receive benefits","true":"Receives benefits","1":"Receives benefits"};
+export const UC_BENEFITS_MAP     = {"false":"No benefits received","true":"Benefits received"};
 
 /**
  * The single source of truth for "raw SimPaths CSV column name" → "display

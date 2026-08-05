@@ -88,7 +88,7 @@ export const VARIABLE_DEFS = {
   "household type":      { type:"categorical", order:HOUSEHOLD_TYPE_ORDER },
   "employment status":   { type:"categorical", order:["Employed or self employed","Not employed","Retired","Student"] },
   "partnership status":  { type:"categorical", order:["Single","Partnered"] },
-  "uc benefits flag":   { type:"categorical", order:["Receives benefits","Does not receive benefits"] },
+  "uc benefits flag":   { type:"categorical", order:["Benefits received","No benefits received"] },
   "financial distress flag":  { type:"categorical", order:["Financially distressed","Not financially distressed"] },
   "need of social care":      { type:"categorical", order:["Needs social care","Does not need social care"] },
   "provided social care":     { type:"categorical", order:["Provides social care","Does not provide social care"] },
@@ -408,20 +408,22 @@ export function averageAcrossYears(rows) {
 export function parseCsvRow(d) {
   const variable=d.variable||d.Variable;
   let variable_value=d.variable_value||d.Variable_Value||d.variable_values||d.value;
-  // UC Benefits Flag ships from the aggregation pipeline as raw 0/1/null
+  // UC Benefits Flag ships from the aggregation pipeline as raw true/false
   // rather than a relabeled category — every other boolean-style variable
   // (Disability Status, Financial distress, Need/Provided social care) is
   // already relabeled upstream before export, so they never hit this; UC
   // Benefits Flag is the one that isn't. Relabelling it HERE, before it
   // ever reaches stratLabel(), matters because stratLabel()'s value-label
   // lookup is global and unscoped — it has no notion of which variable a
-  // value came from — so a raw "1" would otherwise collide with Region's
-  // own numeric code "1" ("North East") and get silently mislabelled.
+  // value came from — so a raw numeric code could otherwise collide with
+  // an unrelated stratifier's own code (this is what happened previously
+  // with a raw "1" colliding with Region's code for "North East").
   if (variable==="UC Benefits Flag") {
     const v=String(variable_value).trim().toLowerCase();
-    variable_value=(v==="1"||v==="true")?"Receives benefits"
-      :(v==="0"||v==="false")?"Does not receive benefits"
-      :"Missing";
+    if (v==="true") variable_value="Benefits received";
+    else if (v==="false") variable_value="No benefits received";
+    else if (v===""||v==="na"||v==="nan"||v==="null"||v==="undefined") variable_value="Missing";
+    // else: leave unchanged (e.g. already "Missing" from upstream)
   }
   return {
     year:             +d.Year            || +d.year,
