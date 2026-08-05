@@ -406,12 +406,29 @@ export function averageAcrossYears(rows) {
  * casing used by whoever last exported the CSV can vary.
  */
 export function parseCsvRow(d) {
+  const variable=d.variable||d.Variable;
+  let variable_value=d.variable_value||d.Variable_Value||d.variable_values||d.value;
+  // UC Benefits Flag ships from the aggregation pipeline as raw 0/1/null
+  // rather than a relabeled category — every other boolean-style variable
+  // (Disability Status, Financial distress, Need/Provided social care) is
+  // already relabeled upstream before export, so they never hit this; UC
+  // Benefits Flag is the one that isn't. Relabelling it HERE, before it
+  // ever reaches stratLabel(), matters because stratLabel()'s value-label
+  // lookup is global and unscoped — it has no notion of which variable a
+  // value came from — so a raw "1" would otherwise collide with Region's
+  // own numeric code "1" ("North East") and get silently mislabelled.
+  if (variable==="UC Benefits Flag") {
+    const v=String(variable_value).trim().toLowerCase();
+    variable_value=(v==="1"||v==="true")?"Receives benefits"
+      :(v==="0"||v==="false")?"Does not receive benefits"
+      :"Missing";
+  }
   return {
     year:             +d.Year            || +d.year,
     scenario:         (d.scenario        || d.Scenario || "baseline").toLowerCase(),
     module:           d.module           || d.Module,
-    variable:         d.variable         || d.Variable,
-    variable_value:   d.variable_value   || d.Variable_Value || d.variable_values || d.value,
+    variable,
+    variable_value,
     stratifier:       d.stratifier       || d.Stratifier       || "Overall",
     stratifier_value: d.stratifier_value || d.Stratifier_Value || "Overall",
     metric_type:      d.metric_type      || d.Metric_Type      || "mean",
