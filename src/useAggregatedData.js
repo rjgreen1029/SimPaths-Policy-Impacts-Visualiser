@@ -88,7 +88,7 @@ export const VARIABLE_DEFS = {
   "household type":      { type:"categorical", order:HOUSEHOLD_TYPE_ORDER },
   "employment status":   { type:"categorical", order:["Employed or self employed","Not employed","Retired","Student"] },
   "partnership status":  { type:"categorical", order:["Single","Partnered"] },
-  "uc benefits flag":   { type:"categorical", order:[] }, // raw/unrelabeled values — order unknown in advance, falls back to alphabetical
+  "uc benefits flag":   { type:"categorical", order:["Receives benefits","Does not receive benefits"] },
   "financial distress flag":  { type:"categorical", order:["Financially distressed","Not financially distressed"] },
   "need of social care":      { type:"categorical", order:["Needs social care","Does not need social care"] },
   "provided social care":     { type:"categorical", order:["Provides social care","Does not provide social care"] },

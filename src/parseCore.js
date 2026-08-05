@@ -57,6 +57,7 @@ export const DISABILITY_MAP      = {"false":"No disability","0":"No disability",
 export const FINANCIAL_MAP       = {"false":"Not financially distressed","0":"Not financially distressed","true":"Financially distressed","1":"Financially distressed"};
 export const SOCIAL_CARE_MAP     = {"false":"Does not need social care","0":"Does not need social care","true":"Needs social care","1":"Needs social care"};
 export const PROV_SOCIAL_CARE_MAP= {"false":"Does not provide social care","0":"Does not provide social care","true":"Provides social care","1":"Provides social care"};
+export const UC_BENEFITS_MAP     = {"false":"Does not receive benefits","0":"Does not receive benefits","true":"Receives benefits","1":"Receives benefits"};
 
 /**
  * The single source of truth for "raw SimPaths CSV column name" → "display
@@ -225,6 +226,7 @@ export function processRunTexts(personText, benefitText, scenarioName, runId) {
     if (renamed["Financial distress flag"]!=null) renamed["Financial distress flag"]=FINANCIAL_MAP[String(renamed["Financial distress flag"]).toLowerCase()]??renamed["Financial distress flag"];
     if (renamed["Need of social care"]!=null)     renamed["Need of social care"]=SOCIAL_CARE_MAP[String(renamed["Need of social care"]).toLowerCase()]??renamed["Need of social care"];
     if (renamed["Provided social care"]!=null)    renamed["Provided social care"]=PROV_SOCIAL_CARE_MAP[String(renamed["Provided social care"]).toLowerCase()]??renamed["Provided social care"];
+    if (renamed["UC Benefits Flag"]!=null)         renamed["UC Benefits Flag"]=UC_BENEFITS_MAP[String(renamed["UC Benefits Flag"]).toLowerCase()]??renamed["UC Benefits Flag"];
     if (renamed["Gender"]!=null) {
       const g=String(renamed["Gender"]).toLowerCase();
       renamed["Gender"]=(g==="1"||g==="true"||g==="male")?"Male":"Female";
