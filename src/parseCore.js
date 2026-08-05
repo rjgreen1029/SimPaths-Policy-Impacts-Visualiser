@@ -72,18 +72,22 @@ export const UC_BENEFITS_MAP     = {"false":"No benefits received","true":"Benef
  */
 export const COLUMN_MAP = {
   "eduHighestC4":"Highest Level of Education","demAge":"Age","demMaleFlag":"Gender",
-  "demEthnC6":"Ethnicity","healthDsblLongtermFlag":"Disability Status","dhhtp_c4":"Household Type",
+  "demEthnC6":"Ethnicity","healthDsblLongtermFlag":"Disability Status",
+  //"dhhtp_c4":"Household Type",
   "yHhQuintilesMonthC5":"Income Quintile","region":"Region","demPartnerStatus":"Partnership status",
-  "demNChild":"Number of children","labC4":"Employment status","labHrsWorkWeek":"Hours worked",
+  //"demNChild":"Number of children",
+  "labC4":"Employment status","labHrsWorkWeek":"Hours worked",
   "yCapitalPersMonth":"Capital Income","yDispEquivYear":"Equivalised yearly disposable income",
-  "yEmpPersGrossMonth":"Gross personal employment income","yPensYear":"Gross private pension income",
+ // "yEmpPersGrossMonth":"Gross personal employment income",
+ // "yPensYear":"Gross private pension income",
   "yBenAmountMonth":"Amount of benefits received per month",
   "yBenUCReceivedFlag":"UC Benefits Flag",
-  "yFinDstrssFlag":"Financial distress flag","healthPsyDstrss0to12":"Psychological distress score",
+ // "yFinDstrssFlag":"Financial distress flag",
+  "healthPsyDstrss0to12":"Psychological distress score",
   "healthMentalMcs":"Mental Component Summary (MCS)","healthPhysicalPcs":"Physical Component Summary (PCS)",
   "healthSelfRated":"Self-Rated Health","demLifeSatScore0to10":"Life Satisfaction Score",
   "healthWbScore0to36":"Subjective wellbeing (GHQ)","careNeedFlag":"Need of social care",
-  "careProvidedFlag.y":"Provided social care","careProvidedFlag":"Provided social care",
+ // "careProvidedFlag":"Provided social care",
 };
 
 /** Groups every display variable into the four dashboard domains/tabs (Demographics, Activity status, Income, Health). Anything not listed here falls back to "Other". */

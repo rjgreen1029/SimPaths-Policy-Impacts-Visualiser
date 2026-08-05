@@ -25,18 +25,21 @@ import { parseLocalFolder } from "./localFolderParser";
 const DOMAIN_SECTIONS = {
   "Demographics": [
     "Highest Level of Education", "Ethnicity", "Partnership status",
-    "Number of children", "Household Type"
+   // "Number of children", 
+   // "Household Type"
   ],
   "Activity status": ["Employment status", "Hours worked"],
   "Income": [
     "Income Quintile", "UC Benefits Flag", "Financial distress flag",
-    "Equivalised yearly disposable income", "Gross personal employment income",
+    "Equivalised yearly disposable income", 
+    //"Gross personal employment income",
     "Capital Income", "Amount of benefits received per month"
   ],
   "Health": [
     "Self-Rated Health",  "Disability Status", 
     "Psychological distress score", "Mental Component Summary (MCS)", "Physical Component Summary (PCS)", "Life Satisfaction Score",
-    "Subjective wellbeing (GHQ)", "Need of social care", "Provided social care"
+    "Subjective wellbeing (GHQ)", "Need of social care", 
+    //"Provided social care"
   ]
 };
 
@@ -53,15 +56,15 @@ export const VARIABLE_DESCRIPTIONS = {
   "Highest Level of Education":           "Highest qualification attained (e.g., high, medium, low or in education).",
   "Ethnicity":                            "Self-identified ethnic group classification.",
   "Partnership status":                   "Whether an individual is single or partnered.",
-  "Number of children":                   "Count of dependent children in the household.",
-  "Household Type":                       "Benefit unit composition (e.g., single adult, couple with/without children).",
+  //"Number of children":                   "Count of dependent children in the household.",
+ // "Household Type":                       "Benefit unit composition (e.g., single adult, couple with/without children).",
   "Employment status":                    "Current labour market status (e.g., employed, unemployed, retired, student).",
   "Hours worked":                         "Usual number of paid working hours per week.",
   "Income Quintile":                      "Benefit unit position in the population income distribution split into five equal groups (from lowest (1) to highest (5)).",
   "UC Benefits Flag":                     "Whether the benefit unit receives Universal Credit.",
   "Financial distress flag":              "Indicator of reported difficulty in meeting basic financial commitments.",
   "Equivalised yearly disposable income": "Annual income after taxes and transfers.",
-  "Gross personal employment income":     "Earnings from employment before tax and deductions.",
+  //"Gross personal employment income":     "Earnings from employment before tax and deductions.",
   "Capital Income":                       "Income from assets such as savings, investments, or property.",
   "Amount of benefits received per month":"Monthly monetary value of welfare benefits received.",
   "Disability Status":                    "Whether the individual reports a limiting long-term illness or disability.",
@@ -72,7 +75,7 @@ export const VARIABLE_DESCRIPTIONS = {
   "Life Satisfaction Score":              "Overall life satisfaction measure (from 0–10).",
   "Subjective wellbeing (GHQ)":           "Self-reported wellbeing measure summing values from the General Health Questionnaire (from 0–36).",
   "Need of social care":                  "Whether an individual has assessed needs for assistance with daily living due to health or disability.",
-  "Provided social care":                 "Whether an individual provides informal care to others.",
+ // "Provided social care":                 "Whether an individual provides informal care to others.",
 };
 
 /**

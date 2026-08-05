@@ -394,7 +394,7 @@ function LegendRow({label,entries,highlighted,onToggle,showSymbols=false,stratDe
               display:"flex",alignItems:"center",gap:7,cursor:"pointer",padding:"7px 13px",borderRadius:20,
               border:`1.5px solid ${isH?swatchColour:"#ddd8ce"}`,
               background:isH?`${swatchColour}18`:"#fff",
-              transition:"all 0.15s",
+              transition:"all 0.15s",flexShrink:0,
             }}>
               {showSymbols&&symIdx!==undefined
                 ? <svg width="14" height="14"><path d={d3.symbol().type(SYMBOLS[symIdx%SYMBOLS.length]).size(64)()} transform="translate(7,7)" fill={active?TEXT_M:GREY} opacity={active?1:0.4}/></svg>
@@ -402,11 +402,11 @@ function LegendRow({label,entries,highlighted,onToggle,showSymbols=false,stratDe
                   ? <svg width="22" height="12"><line x1="0" y1="6" x2="22" y2="6" stroke={active?TEXT_M:GREY} strokeWidth={sw} opacity={active?1:0.4}/></svg>
                   : <span style={{width:13,height:13,borderRadius:4,background:active?color:GREY,flexShrink:0,display:"inline-block",transition:"background 0.15s"}}/>
               }
-              <span style={{fontSize:14,color:active?TEXT_D:TEXT_S,fontWeight:active?600:500}}>{addSpaces(stratLabel(lbl))}</span>
+              <span style={{fontSize:14,color:active?TEXT_D:TEXT_S,fontWeight:active?600:500,whiteSpace:"nowrap"}}>{addSpaces(stratLabel(lbl))}</span>
             </button>
           );
         })}
-        {highlighted.size>0&&<button onClick={()=>onToggle(null)} style={{fontSize:13,fontWeight:600,color:TEAL,background:"none",border:"none",cursor:"pointer",padding:"7px 10px",textDecoration:"underline"}}>Clear all</button>}
+        {highlighted.size>0&&<button onClick={()=>onToggle(null)} style={{fontSize:13,fontWeight:600,color:TEAL,background:"none",border:"none",cursor:"pointer",padding:"7px 10px",textDecoration:"underline",whiteSpace:"nowrap",flexShrink:0}}>Clear all</button>}
       </div>
     </div>
   );
@@ -1462,7 +1462,11 @@ export default function DashboardSection({parsedCache,targetVariable}){
   // up front so we know whether to reserve sidebar width for the charts.
   const showFilterVars  =isCategorical&&varValues.length>1;
   const showStratFilters=isStratified&&stratValues.length>0;
-  const showHighlight   =!(activeTab==="timeseries"&&chartType==="bar");
+  // Highlight only makes sense when there's more than one thing to pick
+  // between. A numeric variable has exactly one series ("Mean") unless it's
+  // stratified — in which case stratLegendEntries (one per stratum line) is
+  // what makes highlighting worthwhile, not legendEntries.
+  const showHighlight   =!(activeTab==="timeseries"&&chartType==="bar")&&(legendEntries.length>1||stratLegendEntries.length>0);
   const hasSidebar       =showFilterVars||showStratFilters||showHighlight;
   const SIDEBAR_W=190;
   // Below this container width, the sidebar can't sit beside the chart
@@ -1558,11 +1562,11 @@ export default function DashboardSection({parsedCache,targetVariable}){
                     return (
                       <button key={vv} onClick={()=>onToggleVarVal(vv)} style={{
                         display:"flex",alignItems:"center",gap:7,cursor:"pointer",padding:"7px 12px",borderRadius:18,
-                        width:stackSidebar?"auto":"100%",boxSizing:"border-box",
+                        width:stackSidebar?"auto":"100%",boxSizing:"border-box",minWidth:0,
                         border:`1.5px solid ${isOn?c:"#ddd8ce"}`,background:isOn?`${c}18`:"transparent",transition:"all 0.15s",
                       }}>
                         <span style={{width:9,height:9,borderRadius:"50%",background:isOn?c:"#c7c1b6",flexShrink:0}}/>
-                        <span style={{fontSize:13,fontWeight:isOn?600:500,color:isOn?TEXT_D:TEXT_S,textAlign:"left",whiteSpace:"nowrap"}}>{addSpaces(stratLabel(vv))}</span>
+                        <span style={{fontSize:13,fontWeight:isOn?600:500,color:isOn?TEXT_D:TEXT_S,textAlign:"left",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",minWidth:0}}>{addSpaces(stratLabel(vv))}</span>
                       </button>
                     );
                   })}
@@ -1583,10 +1587,10 @@ export default function DashboardSection({parsedCache,targetVariable}){
                     return (
                       <button key={sv} onClick={()=>onToggleStrat(sv)} style={{
                         display:"flex",alignItems:"center",gap:7,cursor:"pointer",padding:"7px 12px",borderRadius:18,
-                        width:stackSidebar?"auto":"100%",boxSizing:"border-box",
+                        width:stackSidebar?"auto":"100%",boxSizing:"border-box",minWidth:0,
                         border:`1.5px solid ${isOn?TEAL:"#ddd8ce"}`,background:isOn?`${TEAL}18`:"transparent",transition:"all 0.15s",
                       }}>
-                        <span style={{fontSize:13,fontWeight:isOn?600:500,color:isOn?TEXT_D:TEXT_S,textAlign:"left",whiteSpace:"nowrap"}}>{addSpaces(stratLabel(sv))}</span>
+                        <span style={{fontSize:13,fontWeight:isOn?600:500,color:isOn?TEXT_D:TEXT_S,textAlign:"left",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",minWidth:0}}>{addSpaces(stratLabel(sv))}</span>
                       </button>
                     );
                   })}

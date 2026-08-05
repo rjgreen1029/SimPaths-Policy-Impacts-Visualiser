@@ -70,14 +70,13 @@ const INCOME_QUINTILE_ORDER = ["Q1","Q2","Q3","Q4","Q5"];
  */
 export const VARIABLE_DEFS = {
   "highest level of education": { type:"ordinal",     order:["InEducation","Low","Medium","High"] },
-  "number of children":         { type:"ordinal",     order:["None","1 Child","2 Children","3+ Children"] },
+  //"number of children":         { type:"ordinal",     order:["None","1 Child","2 Children","3+ Children"] },
   "income quintile":            { type:"ordinal",     order:INCOME_QUINTILE_ORDER },
   "self-rated health":          { type:"ordinal",     order:["Excellent","VeryGood","Good","Fair","Poor"] },
   "hours worked":                             { type:"numeric" },
   "equivalised yearly disposable income":     { type:"numeric" },
-  "gross personal employment income":         { type:"numeric" },
+  // "gross personal employment income":         { type:"numeric" },
   "capital income":                           { type:"numeric" },
-  "amount of benefits recieved per month":    { type:"numeric" },
   "amount of benefits received per month":    { type:"numeric" },
   "psychological distress score":             { type:"numeric" },
   "mental component summary (mcs)":           { type:"numeric" },
@@ -85,13 +84,13 @@ export const VARIABLE_DEFS = {
   "life satisfaction score":                  { type:"numeric" },
   "subjective wellbeing (ghq)":               { type:"numeric" },
   "ethnicity":           { type:"categorical", order:ETHNICITY_ORDER },
-  "household type":      { type:"categorical", order:HOUSEHOLD_TYPE_ORDER },
+ // "household type":      { type:"categorical", order:HOUSEHOLD_TYPE_ORDER },
   "employment status":   { type:"categorical", order:["Employed or self employed","Not employed","Retired","Student"] },
   "partnership status":  { type:"categorical", order:["Single","Partnered"] },
   "uc benefits flag":   { type:"categorical", order:["Benefits received","No benefits received"] },
   "financial distress flag":  { type:"categorical", order:["Financially distressed","Not financially distressed"] },
   "need of social care":      { type:"categorical", order:["Needs social care","Does not need social care"] },
-  "provided social care":     { type:"categorical", order:["Provides social care","Does not provide social care"] },
+ // "provided social care":     { type:"categorical", order:["Provides social care","Does not provide social care"] },
   "disability status":        { type:"categorical", order:["Has disability","No disability"] },
 };
 
@@ -100,7 +99,7 @@ export const STRATIFIER_DEFS = {
   "age":             { type:"ordinal",     order:["Under 18","18-24","25-34","35-44","45-54","55-64","65+"] },
   "income quintile": { type:"ordinal",     order:INCOME_QUINTILE_ORDER },
   "gender":          { type:"categorical", order:["Male","Female"] },
-  "household type":  { type:"categorical", order:HOUSEHOLD_TYPE_ORDER },
+  //"household type":  { type:"categorical", order:HOUSEHOLD_TYPE_ORDER },
   "disability status":{ type:"categorical",order:["Has disability","No disability"] },
   "ethnicity":       { type:"categorical", order:ETHNICITY_ORDER },
   "region": { type:"categorical", order:[
