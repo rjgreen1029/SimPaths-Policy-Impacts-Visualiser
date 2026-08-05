@@ -48,13 +48,24 @@ const TEXT_S  = "#64748b";
 const PUB_FONT= "'Work Sans', Arial, sans-serif";
 const FONT_SZ = "12px"; // single source of truth for all chart text
 
-// Dot symbols for categorical stratifiers (d3 symbol path generators)
+// Dot symbols for categorical stratifiers (d3 symbol path generators).
+// 12 distinct shapes — Region has 12 values, and with only 6 shapes (the
+// previous array) symIdx=si%SYMBOLS.length wrapped around twice, so half
+// the regions silently duplicated another region's shape.
 const SYMBOLS = [
-  d3.symbolCircle, d3.symbolSquare, d3.symbolDiamond,
-  d3.symbolTriangle, d3.symbolCross, d3.symbolStar,
+  d3.symbolCircle, d3.symbolSquare, d3.symbolDiamond, d3.symbolTriangle,
+  d3.symbolCross, d3.symbolStar, d3.symbolWye, d3.symbolX,
+  d3.symbolPlus, d3.symbolAsterisk, d3.symbolDiamond2, d3.symbolSquare2,
 ];
-// Ordinal stratifiers get increasing stroke widths
-const ORDINAL_WIDTHS = [1.5, 2.5, 3.5, 4.5];
+// Ordinal stratifiers get increasing stroke widths. 7 levels — Age has 7
+// bands (Under 18 … 65+) and Income Quintile has 5 (Q1–Q5); with only 4
+// levels (the previous array) the modulo wrap meant the LAST band/quintile
+// in each case looped back to the THINNEST width instead of continuing to
+// thicken, breaking the intended thin→thick progression (Q5 ended up as
+// thin as Q1; Age's widths repeated partway through instead of increasing
+// monotonically, which is what made it look "out of order" even though the
+// underlying stratum ordering itself was always correct).
+const ORDINAL_WIDTHS = [1, 1.75, 2.5, 3.25, 4, 4.75, 5.5];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 /** Inserts a space before each internal capital letter — e.g. "CoupleChildren" → "Couple Children" — for display when a raw code doesn't have a friendlier label in STRATIFIER_VALUE_LABELS. */
@@ -1348,6 +1359,20 @@ export default function DashboardSection({parsedCache,targetVariable}){
     ro.observe(containerRef.current); return ()=>ro.disconnect();
   },[]);
 
+  // Sidebar chips are now allowed to grow to fit their full text (no
+  // truncation), so its rendered width varies with content rather than
+  // being a fixed constant — measuring it directly (same ResizeObserver
+  // pattern as the outer container above) is what lets the chart area
+  // reliably avoid overlapping it, instead of guessing a width that could
+  // be wrong for a long label.
+  const sidebarRef=useRef();
+  const [sidebarWidth,setSidebarWidth]=useState(190);
+  useEffect(()=>{
+    if (!sidebarRef.current) return;
+    const ro=new ResizeObserver(e=>{if(e[0]) setSidebarWidth(e[0].contentRect.width);});
+    ro.observe(sidebarRef.current); return ()=>ro.disconnect();
+  },[]);
+
   useEffect(()=>{
     setViewBy("Overall");setChartType("line");setDisplayMode("panels");
     setActiveTab("timeseries");setSelectedYear(null);
@@ -1468,18 +1493,20 @@ export default function DashboardSection({parsedCache,targetVariable}){
   // what makes highlighting worthwhile, not legendEntries.
   const showHighlight   =!(activeTab==="timeseries"&&chartType==="bar")&&(legendEntries.length>1||stratLegendEntries.length>0);
   const hasSidebar       =showFilterVars||showStratFilters||showHighlight;
-  const SIDEBAR_W=190;
   // Below this container width, the sidebar can't sit beside the chart
   // without squeezing it unusably narrow — collapse it to a full-width row
   // ABOVE the chart instead (same content, different layout direction).
   // Uses `width` (the actual measured container width from the
-  // ResizeObserver, already net of whatever surrounding page chrome/sidebar
-  // App.js has) rather than window.innerWidth, since that's what actually
-  // determines whether SIDEBAR_W + a usable chart both fit side by side.
-  const stackSidebar=hasSidebar&&width<640;
+  // ResizeObserver) as a general narrow-viewport check, PLUS a check
+  // against the sidebar's own actual measured width (sidebarWidth, from the
+  // ResizeObserver above) — chips now grow to fit their full text rather
+  // than truncating, so a single long label can make the sidebar wider
+  // than expected; if that ever leaves less than 240px for the chart, stack
+  // instead of letting the two visually collide.
+  const stackSidebar=hasSidebar&&(width<640||(width-sidebarWidth-20)<240);
   // Charts size themselves off this instead of the raw container width
   // whenever the sidebar is actually taking up horizontal space beside them.
-  const chartAreaWidth=hasSidebar&&!stackSidebar?Math.max(240,width-SIDEBAR_W-20):width;
+  const chartAreaWidth=hasSidebar&&!stackSidebar?Math.max(240,width-sidebarWidth-20):width;
 
   return (
     <div ref={containerRef} style={{width:"100%",maxWidth:"100%",overflowX:"hidden"}}>
@@ -1546,8 +1573,8 @@ export default function DashboardSection({parsedCache,targetVariable}){
       <div style={{display:"flex",flexDirection:stackSidebar?"column":"row",gap:20,alignItems:stackSidebar?"stretch":"flex-start"}}>
 
         {hasSidebar&&(
-          <div style={{
-            width:stackSidebar?"100%":SIDEBAR_W,flexShrink:0,
+          <div ref={sidebarRef} style={{
+            width:stackSidebar?"100%":"auto",flexShrink:0,
             display:"flex",flexDirection:stackSidebar?"row":"column",
             flexWrap:stackSidebar?"wrap":"nowrap",gap:stackSidebar?"14px 28px":18,
           }}>
@@ -1555,18 +1582,18 @@ export default function DashboardSection({parsedCache,targetVariable}){
             {showFilterVars&&(
               <div style={{display:"flex",flexDirection:"column",gap:8,...(stackSidebar?{flex:"1 1 220px",minWidth:200}:{})}}>
                 <span style={controlLabel}>Filter Variables</span>
-                <div style={{display:"flex",flexDirection:stackSidebar?"row":"column",flexWrap:stackSidebar?"wrap":"nowrap",gap:6}}>
+                <div style={{display:"flex",flexDirection:stackSidebar?"row":"column",flexWrap:"wrap",gap:6}}>
                   {varValues.map(vv=>{
                     const isOn=enabledVarVals.has(vv);
                     const c=colourMap[vv]||TEAL;
                     return (
                       <button key={vv} onClick={()=>onToggleVarVal(vv)} style={{
                         display:"flex",alignItems:"center",gap:7,cursor:"pointer",padding:"7px 12px",borderRadius:18,
-                        width:stackSidebar?"auto":"100%",boxSizing:"border-box",minWidth:0,
+                        width:"auto",flexShrink:0,boxSizing:"border-box",
                         border:`1.5px solid ${isOn?c:"#ddd8ce"}`,background:isOn?`${c}18`:"transparent",transition:"all 0.15s",
                       }}>
                         <span style={{width:9,height:9,borderRadius:"50%",background:isOn?c:"#c7c1b6",flexShrink:0}}/>
-                        <span style={{fontSize:13,fontWeight:isOn?600:500,color:isOn?TEXT_D:TEXT_S,textAlign:"left",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",minWidth:0}}>{addSpaces(stratLabel(vv))}</span>
+                        <span style={{fontSize:13,fontWeight:isOn?600:500,color:isOn?TEXT_D:TEXT_S,textAlign:"left",whiteSpace:"nowrap"}}>{addSpaces(stratLabel(vv))}</span>
                       </button>
                     );
                   })}
@@ -1574,30 +1601,6 @@ export default function DashboardSection({parsedCache,targetVariable}){
                 <div style={{display:"flex",gap:10}}>
                   <button onClick={()=>setEnabledVarVals(new Set(varValues))} style={{fontSize:12,fontWeight:600,color:TEAL,background:"none",border:"none",cursor:"pointer",padding:0,textDecoration:"underline"}}>All</button>
                   <button onClick={()=>setEnabledVarVals(new Set())} style={{fontSize:12,fontWeight:600,color:TEXT_S,background:"none",border:"none",cursor:"pointer",padding:0,textDecoration:"underline"}}>None</button>
-                </div>
-              </div>
-            )}
-
-            {showStratFilters&&(
-              <div style={{display:"flex",flexDirection:"column",gap:8,...(stackSidebar?{flex:"1 1 220px",minWidth:200}:{})}}>
-                <span style={controlLabel}>Stratifiers</span>
-                <div style={{display:"flex",flexDirection:stackSidebar?"row":"column",flexWrap:stackSidebar?"wrap":"nowrap",gap:6}}>
-                  {stratValues.map(sv=>{
-                    const isOn=enabledStrats.has(sv);
-                    return (
-                      <button key={sv} onClick={()=>onToggleStrat(sv)} style={{
-                        display:"flex",alignItems:"center",gap:7,cursor:"pointer",padding:"7px 12px",borderRadius:18,
-                        width:stackSidebar?"auto":"100%",boxSizing:"border-box",minWidth:0,
-                        border:`1.5px solid ${isOn?TEAL:"#ddd8ce"}`,background:isOn?`${TEAL}18`:"transparent",transition:"all 0.15s",
-                      }}>
-                        <span style={{fontSize:13,fontWeight:isOn?600:500,color:isOn?TEXT_D:TEXT_S,textAlign:"left",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",minWidth:0}}>{addSpaces(stratLabel(sv))}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-                <div style={{display:"flex",gap:10}}>
-                  <button onClick={()=>setEnabledStrats(new Set(stratValues))} style={{fontSize:12,fontWeight:600,color:TEAL,background:"none",border:"none",cursor:"pointer",padding:0,textDecoration:"underline"}}>All</button>
-                  <button onClick={()=>setEnabledStrats(new Set())} style={{fontSize:12,fontWeight:600,color:TEXT_S,background:"none",border:"none",cursor:"pointer",padding:0,textDecoration:"underline"}}>None</button>
                 </div>
               </div>
             )}
@@ -1630,6 +1633,31 @@ export default function DashboardSection({parsedCache,targetVariable}){
                     </div>
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Stratifiers always sits below Filter Variables and Highlight */}
+            {showStratFilters&&(
+              <div style={{display:"flex",flexDirection:"column",gap:8,...(stackSidebar?{flex:"1 1 220px",minWidth:200}:{})}}>
+                <span style={controlLabel}>Stratifiers</span>
+                <div style={{display:"flex",flexDirection:stackSidebar?"row":"column",flexWrap:"wrap",gap:6}}>
+                  {stratValues.map(sv=>{
+                    const isOn=enabledStrats.has(sv);
+                    return (
+                      <button key={sv} onClick={()=>onToggleStrat(sv)} style={{
+                        display:"flex",alignItems:"center",gap:7,cursor:"pointer",padding:"7px 12px",borderRadius:18,
+                        width:"auto",flexShrink:0,boxSizing:"border-box",
+                        border:`1.5px solid ${isOn?TEAL:"#ddd8ce"}`,background:isOn?`${TEAL}18`:"transparent",transition:"all 0.15s",
+                      }}>
+                        <span style={{fontSize:13,fontWeight:isOn?600:500,color:isOn?TEXT_D:TEXT_S,textAlign:"left",whiteSpace:"nowrap"}}>{addSpaces(stratLabel(sv))}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{display:"flex",gap:10}}>
+                  <button onClick={()=>setEnabledStrats(new Set(stratValues))} style={{fontSize:12,fontWeight:600,color:TEAL,background:"none",border:"none",cursor:"pointer",padding:0,textDecoration:"underline"}}>All</button>
+                  <button onClick={()=>setEnabledStrats(new Set())} style={{fontSize:12,fontWeight:600,color:TEXT_S,background:"none",border:"none",cursor:"pointer",padding:0,textDecoration:"underline"}}>None</button>
+                </div>
               </div>
             )}
           </div>
