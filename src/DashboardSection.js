@@ -28,7 +28,7 @@ import * as d3 from "d3";
 import {
   useAggregatedData, uniqueValues, stratLabel, averageAcrossYears,
   buildColourMap, orderVariableValues, orderStratifierValues, GREY,
-  getStratifierDef,
+  getStratifierDef, getVariableDef,
 } from "./useAggregatedData";
 
 // ─── Layout ───────────────────────────────────────────────────────────────────
@@ -84,6 +84,23 @@ function fmtSample(row){
 function fmtDeltaSample(row){
   if (!row||row.base_mean_sample==null||row.scen_mean_sample==null) return "";
   return `<br/>Sample: Baseline ${Math.round(row.base_mean_sample).toLocaleString()} · Scenario ${Math.round(row.scen_mean_sample).toLocaleString()}`;
+}
+/**
+ * Formats a numeric variable's missingness for a data point's tooltip, e.g.
+ * "Missing: 12.3% (avg 45 missing per run, across 5 runs)". `mrow` is the
+ * matching row from missingLookup (see DashboardSection) — a
+ * variable_value:"Missing" share row for this exact scenario/year/
+ * stratifier/stratifier-value combination, if one exists. Returns "" (append
+ * nothing) when there's no missingness row, or it rounds to 0%, so tooltips
+ * for fully-complete points stay uncluttered.
+ */
+function fmtMissing(mrow){
+  if (!mrow||isNaN(mrow.mean_value)||mrow.mean_value<=0) return "";
+  const pct=(mrow.mean_value*100).toFixed(1);
+  if (pct==="0.0") return "";
+  const avgN=mrow.mean_sample!=null&&!isNaN(mrow.mean_sample)?Math.round(mrow.mean_sample):null;
+  const n=mrow.n_runs;
+  return `<br/>Missing: ${pct}%`+(avgN!=null?` (avg ${avgN.toLocaleString()} missing${n!=null?` per run, across ${n} run${n===1?"":"s"}`:""})`:"");
 }
 /** d3.extent() over a list of years, but guards the two degenerate cases: no years at all (→ [0,1]) and a single distinct year (→ that year ±1, so the axis isn't zero-width). */
 function safeYearDomain(yrs){
@@ -487,12 +504,14 @@ function drawBSKey(g,iW,iH,showBaseline,showScenario){
  * @param {Set<string>} [props.enabledStrats] - which stratum values are toggled on
  * @param {string} [props.viewBy] - active stratifier name
  * @param {boolean} [props.showCI] - whether to draw the 95% CI ribbons (small toggle button in the controls row)
+ * @param {Map<string,object>} [props.missingLookup] - for numeric variables, maps "scenario|year|stratifier_value" to that point's "Missing" share row, so its % missing (and missing sample size) can be appended to the tooltip instead of ever being plotted as its own series
+ * @param {string} [props.missingStratValue] - overrides which stratifier_value to use when looking up missingness — needed for small-multiple panels, where each panel's own series report sv:null internally (see buildSeriesList's `small` branch) even though the panel itself represents one specific stratum
  * @param {number[]} [props.allYears] - the FULL year range for this variable, across every stratum — pass this explicitly (from the top-level DashboardSection) rather than relying on the local fallback whenever baseData/scenData might be scoped to a single stratum (i.e. always, for small-multiple panels)
  */
 function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
     isCategorical,yDomain,varValues,enabledVarVals,showBaseline,showScenario,
     width,small,onYearClick,selectedYear,
-    isStratified=false,stratValues=[],enabledStrats=new Set(),viewBy="",showCI=true,allYears:allYearsProp}){
+    isStratified=false,stratValues=[],enabledStrats=new Set(),viewBy="",showCI=true,allYears:allYearsProp,missingLookup=null,missingStratValue}){
   const mar=small?M_SM:M;
   const H=small?CHART_H_SM:CHART_H;
   const W=small?width:Math.min(width,MAX_W);
@@ -594,16 +613,24 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
     };
 
     const drawDots=(s,scenLabel)=>{
-      const {vv,pts,colour,symIdx,isLit,label}=s;
+      const {vv,sv,pts,colour,symIdx,isLit,label}=s;
       if (!enabledVarVals.has(vv)) return;
       const fc=isLit?colour:GREY;
       const opacity=isLit?1:0.18;
       const sorted=[...pts].sort((a,b)=>a.year-b.year);
+      // For numeric variables, resolve this series' stratifier value once
+      // (same for every point in the series) rather than recomputing per
+      // point. missingStratValue overrides sv for panels, where sv is
+      // always null internally even though the panel represents one
+      // specific stratum — see the prop's JSDoc above.
+      const scenarioKey=scenLabel==="Baseline"?"baseline":"scenario";
+      const stratValKey=missingStratValue??sv??"Overall";
       // Always draw dots + always add an invisible hit area so tooltips work
       // regardless of opacity, size, or baseline vs scenario
       sorted.filter(d=>!isNaN(d.mean_value)).forEach(d=>{
         const cx=xScale(d.year), cy=yScale(d.mean_value);
-        const ttHtml=`<strong>${label}</strong><br/>${scenLabel}: ${fmt(d.mean_value,isCategorical)}`+(!isNaN(d.lower_ci)?`<br/>95% CI: [${fmt(d.lower_ci,isCategorical)}, ${fmt(d.upper_ci,isCategorical)}]`:"")+fmtSample(d)+`<br/>Year: ${d.year}${(!small&&onYearClick)?" · click to filter a cross-section":""}`;
+        const mrow=missingLookup?missingLookup.get(`${scenarioKey}|${d.year}|${stratValKey}`):null;
+        const ttHtml=`<strong>${label}</strong><br/>${scenLabel}: ${fmt(d.mean_value,isCategorical)}`+(!isNaN(d.lower_ci)?`<br/>95% CI: [${fmt(d.lower_ci,isCategorical)}, ${fmt(d.upper_ci,isCategorical)}]`:"")+fmtSample(d)+fmtMissing(mrow)+`<br/>Year: ${d.year}${(!small&&onYearClick)?" · click to filter a cross-section":""}`;
         const dotR=small?(isLit?2.5:1.5):(isLit?3.5:2);
         if (symIdx!==undefined&&!small){
           const symPath=d3.symbol().type(SYMBOLS[symIdx]).size(isLit?52:28)();
@@ -789,9 +816,11 @@ function StackedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
  * @param {[number,number]} props.yDomain
  * @param {number|"Average"} [props.year] - which year's cross-section to show
  * @param {string} [props.patId] - unique hatch-pattern id fragment, as in StackedBarChart
+ * @param {object} [props.missingBase] - for numeric variables, this cross-section's Baseline "Missing" row (if any), appended to every Baseline bar's tooltip
+ * @param {object} [props.missingScen] - same, for Scenario
  */
 function GroupedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
-    isCategorical,yDomain,varValues,enabledVarVals,showBaseline,showScenario,width,small,year,patId=""}){
+    isCategorical,yDomain,varValues,enabledVarVals,showBaseline,showScenario,width,small,year,patId="",missingBase=null,missingScen=null}){
   const mar=small?M_SM:M;
   const MB={...mar,bottom:small?48:90};
   const H=small?CHART_H_SM:CHART_H;
@@ -833,7 +862,7 @@ function GroupedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
         const row=getRow(rows,vv); if (!row) return;
         const bx=xInner(key), barY=yScale(row.mean_value), barH=Math.abs(y0-barY);
         const lbl=isBase?"Baseline":"Scenario";
-        const ttHtml=`<strong>${addSpaces(stratLabel(vv))}</strong><br/>${lbl}: ${fmt(row.mean_value,isCategorical)}`+(!isNaN(row.lower_ci)?`<br/>95% CI: [${fmt(row.lower_ci,isCategorical)}, ${fmt(row.upper_ci,isCategorical)}]`:"")+fmtSample(row)+(year?`<br/>Year: ${year}`:"");
+        const ttHtml=`<strong>${addSpaces(stratLabel(vv))}</strong><br/>${lbl}: ${fmt(row.mean_value,isCategorical)}`+(!isNaN(row.lower_ci)?`<br/>95% CI: [${fmt(row.lower_ci,isCategorical)}, ${fmt(row.upper_ci,isCategorical)}]`:"")+fmtSample(row)+fmtMissing(isBase?missingBase:missingScen)+(year?`<br/>Year: ${year}`:"");
         if (isBase){
           g.append("rect").attr("x",ox+bx).attr("y",Math.min(y0,barY)).attr("width",bw).attr("height",Math.max(1,barH)).attr("fill",fc).attr("opacity",isLit?0.85:0.18).attr("rx",2).on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
         } else {
@@ -844,9 +873,12 @@ function GroupedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
             .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
         }
         if (!isNaN(row.lower_ci)&&!isNaN(row.upper_ci)&&isLit){
+          // Darker than the bar's own fill so the whiskers read clearly
+          // against it rather than blending in.
+          const ciColour=d3.color(fc).darker(1.3).toString();
           const cx=ox+bx+bw/2;
-          g.append("line").attr("x1",cx).attr("x2",cx).attr("y1",yScale(row.lower_ci)).attr("y2",yScale(row.upper_ci)).attr("stroke",fc).attr("stroke-width",1.5).attr("opacity",0.7);
-          [yScale(row.upper_ci),yScale(row.lower_ci)].forEach(ty=>{g.append("line").attr("x1",cx-3).attr("x2",cx+3).attr("y1",ty).attr("y2",ty).attr("stroke",fc).attr("stroke-width",1.5).attr("opacity",0.7);});
+          g.append("line").attr("x1",cx).attr("x2",cx).attr("y1",yScale(row.lower_ci)).attr("y2",yScale(row.upper_ci)).attr("stroke",ciColour).attr("stroke-width",1.5).attr("opacity",0.85);
+          [yScale(row.upper_ci),yScale(row.lower_ci)].forEach(ty=>{g.append("line").attr("x1",cx-3).attr("x2",cx+3).attr("y1",ty).attr("y2",ty).attr("stroke",ciColour).attr("stroke-width",1.5).attr("opacity",0.85);});
         }
       };
       if (showBaseline) drawBar(baseData,"baseline",true);
@@ -864,14 +896,14 @@ function GroupedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
         if (!sRow||isNaN(sRow.mean_value)) return;
         const barY=yScale(sRow.mean_value), y0loc=yScale(Math.max(0,yDomain[0]>0?yDomain[0]:0));
         const barH=Math.abs(y0loc-barY);
-        const ttHtml=`<strong>${addSpaces(stratLabel(vv))}</strong><br/>Scenario: ${fmt(sRow.mean_value,isCategorical)}`+(!isNaN(sRow.lower_ci)?`<br/>95% CI: [${fmt(sRow.lower_ci,isCategorical)}, ${fmt(sRow.upper_ci,isCategorical)}]`:"")+fmtSample(sRow)+( year?`<br/>Year: ${year}`:"");
+        const ttHtml=`<strong>${addSpaces(stratLabel(vv))}</strong><br/>Scenario: ${fmt(sRow.mean_value,isCategorical)}`+(!isNaN(sRow.lower_ci)?`<br/>95% CI: [${fmt(sRow.lower_ci,isCategorical)}, ${fmt(sRow.upper_ci,isCategorical)}]`:"")+fmtSample(sRow)+fmtMissing(missingScen)+( year?`<br/>Year: ${year}`:"");
         g.append("rect").attr("x",ox+bx).attr("y",Math.min(y0loc,barY)).attr("width",bw).attr("height",Math.max(1,barH))
           .attr("fill","transparent")
           .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
       });
     }
     if (!small) drawBSKey(g,iW,iH,showBaseline,showScenario);
-  },[baseData,scenData,colourMap,highlighted,yDomain,W,H,isCategorical,varValues,enabledVarVals,small,year,patId,showBaseline,showScenario]);
+  },[baseData,scenData,colourMap,highlighted,yDomain,W,H,isCategorical,varValues,enabledVarVals,small,year,patId,showBaseline,showScenario,missingBase,missingScen]);
   return <svg ref={svgRef} style={{display:"block",overflow:"visible"}}/>;
 }
 
@@ -998,13 +1030,13 @@ function DeltaChart({svgRef,deltaData,colourMap,highlighted,isCategorical,
 /* ═════════════════════════════════════════════════════════════════════════════
    PANEL CHART wrapper
 ═════════════════════════════════════════════════════════════════════════════ */
-/** Thin wrapper that forces `small:true` sizing and picks StackedBarChart vs. LineChart based on `chartType` — this is what each cell of the small-multiples grid actually renders. `allYears` is the global year range (see LineChart's JSDoc) — required here specifically since each panel's own baseData/scenData is already scoped to a single stratum. */
+/** Thin wrapper that forces `small:true` sizing and picks StackedBarChart vs. LineChart based on `chartType` — this is what each cell of the small-multiples grid actually renders. `allYears` is the global year range (see LineChart's JSDoc) — required here specifically since each panel's own baseData/scenData is already scoped to a single stratum. `missingLookup`/`stratValue` (numeric variables only) let each panel's LineChart report the right stratum's missingness in its tooltips despite its own series reporting sv:null internally. */
 function PanelChart({baseData,scenData,colourMap,highlighted,isCategorical,yDomain,
-    varValues,enabledVarVals,showBaseline,showScenario,width,chartType,panelId,allYears}){
+    varValues,enabledVarVals,showBaseline,showScenario,width,chartType,panelId,allYears,missingLookup,stratValue}){
   const svgRef=useRef();
   const props={svgRef,baseData,scenData,colourMap,highlighted,isCategorical,varValues,enabledVarVals,showBaseline,showScenario,width,small:true,allYears};
   if (chartType==="bar") return <StackedBarChart {...props} patId={panelId}/>;
-  return <LineChart {...props} yDomain={yDomain}/>;
+  return <LineChart {...props} yDomain={yDomain} missingLookup={missingLookup} missingStratValue={stratValue}/>;
 }
 
 /* ═════════════════════════════════════════════════════════════════════════════
@@ -1022,7 +1054,7 @@ function PanelChart({baseData,scenData,colourMap,highlighted,isCategorical,yDoma
  */
 function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighted,
     isCategorical,varValues,enabledVarVals,enabledStrats,showBaseline,showScenario,
-    chartType,width,pubPropsFactory,targetVariable,allBaseData,allScenData}){
+    chartType,width,pubPropsFactory,targetVariable,allBaseData,allScenData,missingLookup}){
   const cols=Math.max(1,Math.min(stratValues.length,Math.floor(width/PANEL_MIN_W)));
   const panelW=Math.floor((width-(cols-1)*12)/cols);
   const yDomain=useMemo(()=>buildYDomain([...baseData,...scenData],isCategorical),[baseData,scenData,isCategorical]);
@@ -1079,7 +1111,8 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
                 <PanelChart baseData={bR} scenData={sR} colourMap={colourMap} highlighted={highlighted}
                   isCategorical={isCategorical} yDomain={yDomain} varValues={varValues}
                   enabledVarVals={enabledVarVals} showBaseline={showBaseline} showScenario={showScenario}
-                  width={panelW-24} chartType={chartType} panelId={`p_${slugify(sv)}`} allYears={allYears}/>
+                  width={panelW-24} chartType={chartType} panelId={`p_${slugify(sv)}`} allYears={allYears}
+                  missingLookup={missingLookup} stratValue={sv}/>
               }
             </div>
           );
@@ -1113,6 +1146,29 @@ function CrossSectionPanel({baseData,scenData,colourMap,highlighted,isCategorica
   const filtS=useMemo(()=>filterYear(scenData),[scenData,filterYear]);
   const bRows=useMemo(()=>isAverage?averageAcrossYears(filtB):filtB.filter(d=>isStratified?enabledStrats.has(d.stratifier_value):d.stratifier_value==="Overall"),[filtB,isAverage,isStratified,enabledStrats]);
   const sRows=useMemo(()=>isAverage?averageAcrossYears(filtS):filtS.filter(d=>isStratified?enabledStrats.has(d.stratifier_value):d.stratifier_value==="Overall"),[filtS,isAverage,isStratified,enabledStrats]);
+
+  // For numeric variables, the Overall cross-section (GroupedBarChart, below)
+  // gets one Baseline and one Scenario "Missing" row for its tooltips —
+  // pulled straight from the FULL, unfiltered baseData/scenData props (not
+  // filtB/filtS/bRows/sRows, which already exclude "Missing" via
+  // enabledVarVals) since it isn't itself a bar to plot, just supplementary
+  // context for the real bars. Categorical variables keep "Missing" as one
+  // of their normal, already-plotted categories, so this only applies when
+  // !isCategorical. Stratified small-multiples (StackedBarChart, via
+  // PanelChart) don't use this — see the Δ Baseline → Scenario tooltips,
+  // which also intentionally don't show missingness.
+  const missingBase=useMemo(()=>{
+    if (isCategorical||isStratified) return null;
+    const rows=baseData.filter(d=>d.variable_value==="Missing"&&d.stratifier_value==="Overall");
+    if (!rows.length) return null;
+    return isAverage?(averageAcrossYears(rows)[0]||null):(rows.find(d=>d.year===year)||null);
+  },[baseData,isCategorical,isStratified,isAverage,year]);
+  const missingScen=useMemo(()=>{
+    if (isCategorical||isStratified) return null;
+    const rows=scenData.filter(d=>d.variable_value==="Missing"&&d.stratifier_value==="Overall");
+    if (!rows.length) return null;
+    return isAverage?(averageAcrossYears(rows)[0]||null):(rows.find(d=>d.year===year)||null);
+  },[scenData,isCategorical,isStratified,isAverage,year]);
 
   if (isStratified&&!isAverage){
     const stratVals=[...new Set([...bRows,...sRows].map(d=>d.stratifier_value))].filter(sv=>enabledStrats.has(sv));
@@ -1164,7 +1220,8 @@ function CrossSectionPanel({baseData,scenData,colourMap,highlighted,isCategorica
       <GroupedBarChart svgRef={svgRef} baseData={bRows} scenData={sRows} colourMap={colourMap}
         highlighted={highlighted} isCategorical={isCategorical} yDomain={yDomain}
         varValues={varValues} enabledVarVals={enabledVarVals} showBaseline={showBaseline} showScenario={showScenario}
-        width={width} year={isAverage?"average":year} patId={`cs_${year}_${isAverage}`}/>
+        width={width} year={isAverage?"average":year} patId={`cs_${year}_${isAverage}`}
+        missingBase={missingBase} missingScen={missingScen}/>
       <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
         <DownloadBtn svgRef={svgRef} filename={`cross_section_${year||"avg"}.png`} pubProps={pubPropsFactory(null)}/>
         <button onClick={()=>exportCsv([...bRows,...sRows],`cross_section_${year||"avg"}.csv`)}
@@ -1298,8 +1355,39 @@ export default function DashboardSection({parsedCache,targetVariable}){
   },[targetVariable]);
 
   const combined     =useMemo(()=>[...baselineData,...scenarioData],[baselineData,scenarioData]);
-  const isCategorical=useMemo(()=>combined.some(d=>d.metric_type==="share"),[combined]);
-  const varValues    =useMemo(()=>orderVariableValues(targetVariable,uniqueValues(combined,"variable_value")),[combined,targetVariable]);
+  // Uses the variable's own canonical type (numeric vs. categorical/ordinal)
+  // rather than sniffing metric_type off the data rows — a numeric variable
+  // with any missing values also carries "Missing" share rows (see
+  // parseCore.js), which are metric_type:"share" too, so sniffing alone
+  // would misdetect an otherwise-numeric variable as categorical the moment
+  // it has any missingness at all. Falls back to sniffing only if the
+  // variable has no canonical definition on file.
+  const isCategorical=useMemo(()=>{
+    const def=getVariableDef(targetVariable);
+    if (def.type==="numeric") return false;
+    if (def.type==="categorical"||def.type==="ordinal") return true;
+    return combined.some(d=>d.metric_type==="share"&&d.variable_value!=="Missing");
+  },[combined,targetVariable]);
+  // "Missing" isn't a real value of a numeric variable — it's metadata about
+  // how much data is missing at each point — so it's excluded from the
+  // plottable value list for numeric variables (categorical variables DO
+  // keep "Missing" as a real, plottable category — see parseCore.js's
+  // missing-value handling).
+  const varValues    =useMemo(()=>{
+    const vals=uniqueValues(combined,"variable_value");
+    return orderVariableValues(targetVariable,isCategorical?vals:vals.filter(v=>v!=="Missing"));
+  },[combined,targetVariable,isCategorical]);
+  // Lookup for numeric variables' missingness, keyed by scenario/year/
+  // stratifier-value — used to append "X% missing" to a data point's
+  // tooltip instead of ever plotting "Missing" as its own series. Keyed by
+  // stratifier_value alone (not also stratifier name) since any single
+  // chart render is always scoped to one active stratifier at a time.
+  const missingLookup=useMemo(()=>{
+    if (isCategorical) return null;
+    const m=new Map();
+    combined.forEach(d=>{ if (d.variable_value==="Missing") m.set(`${d.scenario}|${d.year}|${d.stratifier_value}`,d); });
+    return m;
+  },[combined,isCategorical]);
   const stratValues  =useMemo(()=>orderStratifierValues(viewBy,uniqueValues(combined.filter(d=>d.stratifier===viewBy),"stratifier_value")),[combined,viewBy]);
   const colourMap    =useMemo(()=>buildColourMap(targetVariable,varValues),[targetVariable,varValues]);
   const allYears     =useMemo(()=>[...new Set(combined.map(d=>d.year))].filter(Boolean).sort((a,b)=>a-b),[combined]);
@@ -1577,7 +1665,7 @@ export default function DashboardSection({parsedCache,targetVariable}){
                   showBaseline={showBaseline} showScenario={showScenario}
                   width={isOverall?lineW:chartAreaWidth} onYearClick={onYearClick} selectedYear={selectedYear}
                   isStratified={isStratified} stratValues={stratValues} enabledStrats={enabledStrats} viewBy={viewBy}
-                  showCI={showCI} allYears={allYears}/>
+                  showCI={showCI} allYears={allYears} missingLookup={missingLookup}/>
               );
 
               const crossSection=(
@@ -1599,7 +1687,7 @@ export default function DashboardSection({parsedCache,targetVariable}){
                         varValues={varValues} enabledVarVals={enabledVarVals} enabledStrats={enabledStrats}
                         showBaseline={showBaseline} showScenario={showScenario} chartType="line" width={chartAreaWidth}
                         pubPropsFactory={pubPropsFactory} targetVariable={targetVariable}
-                        allBaseData={baseTime} allScenData={scenTime}/>
+                        allBaseData={baseTime} allScenData={scenTime} missingLookup={missingLookup}/>
                     /* Overall or combined-stratified */
                     :<div>
                       {isOverall

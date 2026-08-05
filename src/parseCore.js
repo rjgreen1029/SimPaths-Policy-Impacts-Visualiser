@@ -82,7 +82,7 @@ export const COLUMN_MAP = {
   "healthMentalMcs":"Mental Component Summary (MCS)","healthPhysicalPcs":"Physical Component Summary (PCS)",
   "healthSelfRated":"Self-Rated Health","demLifeSatScore0to10":"Life Satisfaction Score",
   "healthWbScore0to36":"Subjective wellbeing (GHQ)","careNeedFlag":"Need of social care",
-  "careProvidedFlag.y":"Provided social care","careProvidedFlag":"Provided social care",
+  "careProvidedFlag":"Provided social care","careProvidedFlag":"Provided social care",
 };
 
 /** Groups every display variable into the four dashboard domains/tabs (Demographics, Activity status, Income, Health). Anything not listed here falls back to "Other". */
