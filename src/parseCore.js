@@ -82,7 +82,7 @@ export const COLUMN_MAP = {
   "healthMentalMcs":"Mental Component Summary (MCS)","healthPhysicalPcs":"Physical Component Summary (PCS)",
   "healthSelfRated":"Self-Rated Health","demLifeSatScore0to10":"Life Satisfaction Score",
   "healthWbScore0to36":"Subjective wellbeing (GHQ)","careNeedFlag":"Need of social care",
-  "careProvidedFlag":"Provided social care","careProvidedFlag":"Provided social care",
+  "careProvidedFlag.y":"Provided social care","careProvidedFlag":"Provided social care",
 };
 
 /** Groups every display variable into the four dashboard domains/tabs (Demographics, Activity status, Income, Health). Anything not listed here falls back to "Other". */
@@ -153,10 +153,10 @@ function pickRow(raw) {
   return out;
 }
 
-/** Reads `key` from the (already-joined) benefit row first, falling back to the person row — mirrors what `{...p, ...bRow}[key]` would give from a merged object, without ever allocating that merged object. */
+/** Reads `key` from the (already-joined) benefit row first, falling back to the person row — mirrors what `{...p, ...bRow}[key]` would give from a merged object, without ever allocating that merged object. Treats an empty-string benefit-side value the same as "not present" for fallback purposes: a column can exist in BOTH the person and benefit-unit CSVs (e.g. UC Benefits Flag, which is only meaningfully populated on the person side) with the benefit-unit copy simply blank on every row — d3.csvParse gives "" for a blank cell, not undefined, so without this the blank would win outright instead of correctly falling through to the person row's real value. */
 function mget(p, bRow, key) {
   const v = bRow[key];
-  return v !== undefined ? v : p[key];
+  return (v !== undefined && v !== "") ? v : p[key];
 }
 
 /**
