@@ -34,7 +34,7 @@ const DOMAIN_SECTIONS = {
     "Capital Income", "Amount of benefits received per month"
   ],
   "Health": [
-    "Self-Rated Health",  "Disability Status", "Psychological distress flag",
+    "Self-Rated Health",  "Disability Status", 
     "Psychological distress score", "Mental Component Summary (MCS)", "Physical Component Summary (PCS)", "Life Satisfaction Score",
     "Subjective wellbeing (GHQ)", "Need of social care", "Provided social care"
   ]
@@ -66,7 +66,6 @@ export const VARIABLE_DESCRIPTIONS = {
   "Amount of benefits received per month":"Monthly monetary value of welfare benefits received.",
   "Disability Status":                    "Whether the individual reports a limiting long-term illness or disability.",
   "Self-Rated Health":                    "Individual's own assessment of overall health (from excellent to poor).",
-  "Psychological distress flag":          "Indicator of clinically relevant mental distress.",
   "Psychological distress score":         "Continuous score measuring mental distress severity (from 0–12).",
   "Mental Component Summary (MCS)":       "Mental Component Summary: summary score of mental health-related quality of life (from 0–100).",
   "Physical Component Summary (PCS)":     "Physical Component Summary: summary score of physical health-related quality of life (from 0–100).",
