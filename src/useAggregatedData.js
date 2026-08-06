@@ -25,27 +25,58 @@
 import { useState, useEffect } from "react";
 
 // ─── Label maps ───────────────────────────────────────────────────────────────
-/** Maps raw stratifier VALUE codes (household type codes, boolean strings, region codes) to their human-readable display labels. Falls back to the raw key itself if not listed (see stratLabel() below). */
+/**
+ * Maps raw stratifier/variable VALUE codes to their human-readable display
+ * labels — SCOPED per stratifier (or variable), keyed by that stratifier's
+ * or variable's own name (lower-cased). This used to be one flat, unscoped
+ * table shared by every stratifier — e.g. "1" always meant "North East"
+ * (Region's code for it), regardless of which stratifier a "1" actually
+ * came from — so a raw code from a totally different stratifier that
+ * happened to also use "1" would silently get relabelled as if it were a
+ * Region value too. Scoping each entry under its own stratifier/variable
+ * name means a code is only ever translated using ITS OWN stratifier's
+ * table, never anyone else's. Always look these up via stratLabel(key,
+ * scope), never index this object directly.
+ */
 export const STRATIFIER_VALUE_LABELS = {
-  "CoupleChildren":   "Couple with children",
-  "CoupleNoChildren": "Couple, no children",
-  "SingleChildren":   "Single with children",
-  "SingleNoChildren": "Single, no children",
-  "FALSE": "No",  "TRUE":  "Yes",
-  "No disability": "No disability", "Has disability": "Has disability",
-  "Not financially distressed": "Not financially distressed",
-  "Financially distressed": "Financially distressed",
-  "Does not need social care": "Does not need social care",
-  "Needs social care": "Needs social care",
-  "1":"North East","2":"North West","4":"Yorkshire and the Humber",
-  "5":"East Midlands","6":"West Midlands","7":"East of England",
-  "8":"London","9":"South East","10":"South West",
-  "11":"Wales","12":"Scotland","13":"Northern Ireland",
-  "UKC":"North East","UKD":"North West","UKE":"Yorkshire and the Humber",
-  "UKF":"East Midlands","UKG":"West Midlands","UKH":"East of England",
-  "UKI":"London","UKJ":"South East","UKK":"South West",
-  "UKL":"Wales","UKM":"Scotland","UKN":"Northern Ireland",
+  "household type": {
+    "CoupleChildren":   "Couple with children",
+    "CoupleNoChildren": "Couple, no children",
+    "SingleChildren":   "Single with children",
+    "SingleNoChildren": "Single, no children",
+  },
+  "region": {
+    "1":"North East","2":"North West","4":"Yorkshire and the Humber",
+    "5":"East Midlands","6":"West Midlands","7":"East of England",
+    "8":"London","9":"South East","10":"South West",
+    "11":"Wales","12":"Scotland","13":"Northern Ireland",
+    "UKC":"North East","UKD":"North West","UKE":"Yorkshire and the Humber",
+    "UKF":"East Midlands","UKG":"West Midlands","UKH":"East of England",
+    "UKI":"London","UKJ":"South East","UKK":"South West",
+    "UKL":"Wales","UKM":"Scotland","UKN":"Northern Ireland",
+  },
+  "disability status": {
+    "No disability": "No disability", "Has disability": "Has disability",
+  },
+  "financial distress flag": {
+    "Not financially distressed": "Not financially distressed",
+    "Financially distressed": "Financially distressed",
+  },
+  "need of social care": {
+    "Does not need social care": "Does not need social care",
+    "Needs social care": "Needs social care",
+  },
 };
+
+/**
+ * A tiny scope-INDEPENDENT fallback used only when a scoped lookup above
+ * finds nothing for the given `scope` (or no scope was given at all) — kept
+ * deliberately small and free of anything code-like (numbers, short IDs)
+ * that could plausibly collide with a different stratifier's own coding.
+ * Plain "TRUE"/"FALSE" strings are about as safe as a truly generic
+ * fallback gets.
+ */
+const GENERIC_VALUE_LABELS = { "FALSE": "No", "TRUE": "Yes" };
 
 /* ═══════════════════════════════════════════════════════════════════════════
    1. VARIABLE / STRATIFIER DEFINITIONS
@@ -76,7 +107,7 @@ export const VARIABLE_DEFS = {
   "hours worked":                             { type:"numeric" },
   "equivalised yearly disposable income":     { type:"numeric" },
   // "gross personal employment income":         { type:"numeric" },
-  "capital income":                           { type:"numeric" },
+  // "capital income":                           { type:"numeric" }, // temporarily disabled
   "amount of benefits received per month":    { type:"numeric" },
   "psychological distress score":             { type:"numeric" },
   "mental component summary (mcs)":           { type:"numeric" },
@@ -87,7 +118,7 @@ export const VARIABLE_DEFS = {
  // "household type":      { type:"categorical", order:HOUSEHOLD_TYPE_ORDER },
   "employment status":   { type:"categorical", order:["Employed or self employed","Not employed","Retired","Student"] },
   "partnership status":  { type:"categorical", order:["Single","Partnered"] },
-  "uc benefits flag":   { type:"categorical", order:["Benefits received","No benefits received"] },
+  "universal credit benefits flag":   { type:"categorical", order:["Benefits received","No benefits received"] },
   "financial distress flag":  { type:"categorical", order:["Financially distressed","Not financially distressed"] },
   "need of social care":      { type:"categorical", order:["Needs social care","Does not need social care"] },
  // "provided social care":     { type:"categorical", order:["Provides social care","Does not provide social care"] },
@@ -361,8 +392,23 @@ export function useAggregatedData(parsedCache, targetVariable) {
 export function uniqueValues(data, key) {
   return [...new Set(data.map(d => d[key]))].filter(v => v!==undefined && v!==null && v!=="").sort();
 }
-/** Looks up a stratifier VALUE's display label (e.g. "CoupleChildren" → "Couple with children"); falls back to the raw key unchanged if not in STRATIFIER_VALUE_LABELS. */
-export function stratLabel(key) { return STRATIFIER_VALUE_LABELS[key] ?? key; }
+/**
+ * Looks up a stratifier (or variable) VALUE's display label — e.g. "1"
+ * under the "Region" stratifier → "North East". `scope` should be the
+ * stratifier's (or variable's) own display name (e.g. "Region",
+ * "Disability Status") and is REQUIRED for the lookup to use that
+ * stratifier's own table — see STRATIFIER_VALUE_LABELS above for why this
+ * matters: without a scope, a value can only ever match the tiny, generic
+ * GENERIC_VALUE_LABELS fallback (plain "TRUE"/"FALSE"), never a
+ * scope-specific code like a Region number, precisely so a code from one
+ * stratifier can't accidentally get labelled using another's table. Falls
+ * back to the raw key unchanged if nothing matches either table.
+ */
+export function stratLabel(key, scope) {
+  const scoped = scope ? STRATIFIER_VALUE_LABELS[normKey(scope)]?.[key] : undefined;
+  if (scoped !== undefined) return scoped;
+  return GENERIC_VALUE_LABELS[key] ?? key;
+}
 
 /**
  * Collapses a set of per-year rows into a single "Average" row per
@@ -405,19 +451,34 @@ export function averageAcrossYears(rows) {
  * casing used by whoever last exported the CSV can vary.
  */
 export function parseCsvRow(d) {
-  const variable=d.variable||d.Variable;
+  let variable=d.variable||d.Variable;
   let variable_value=d.variable_value||d.Variable_Value||d.variable_values||d.value;
-  // UC Benefits Flag ships from the aggregation pipeline as raw true/false
-  // rather than a relabeled category — every other boolean-style variable
-  // (Disability Status, Financial distress, Need/Provided social care) is
-  // already relabeled upstream before export, so they never hit this; UC
-  // Benefits Flag is the one that isn't. Relabelling it HERE, before it
-  // ever reaches stratLabel(), matters because stratLabel()'s value-label
-  // lookup is global and unscoped — it has no notion of which variable a
-  // value came from — so a raw numeric code could otherwise collide with
-  // an unrelated stratifier's own code (this is what happened previously
-  // with a raw "1" colliding with Region's code for "North East").
-  if (variable==="UC Benefits Flag") {
+  // The bundled default CSV (SimPaths_All_Aggregated_Outputs.csv) predates
+  // this variable being renamed from "UC Benefits Flag" to "Universal
+  // Credit Benefits Flag" everywhere else in the app (App.js, parseCore.js,
+  // VARIABLE_DEFS, etc.) — its own "variable" column still says the old
+  // name. Normalising it HERE, right where every row from that file enters
+  // the app, means every downstream comparison (activeVariable matching in
+  // useAggregatedData(), the relabelling below, VARIABLE_DEFS lookups)
+  // sees the same name regardless of which one the CSV itself contains.
+  // Without this, selecting "Universal Credit Benefits Flag" while using
+  // the default dataset matched zero rows and just showed "No data
+  // available" — a user-uploaded folder was never affected, since
+  // parseCore.js's local-parsing pipeline produces the new name directly.
+  if (variable==="UC Benefits Flag") variable="Universal Credit Benefits Flag";
+  // Universal Credit Benefits Flag ships from the aggregation pipeline as
+  // raw true/false rather than a relabeled category — every other
+  // boolean-style variable (Disability Status, Financial distress,
+  // Need/Provided social care) is already relabeled upstream before export,
+  // so they never hit this; Universal Credit Benefits Flag is the one that
+  // isn't. Relabelling it HERE, before it ever reaches stratLabel(), is
+  // still worth doing even now that stratLabel() looks up per-stratifier
+  // scoped tables (see STRATIFIER_VALUE_LABELS above) rather than one
+  // global unscoped one — Universal Credit Benefits Flag's raw true/false
+  // values aren't in that table at all (categorical booleans are handled
+  // via each variable's own upstream *_MAP in parseCore.js instead), so
+  // without this they'd otherwise just fall through unlabelled.
+  if (variable==="Universal Credit Benefits Flag") {
     const v=String(variable_value).trim().toLowerCase();
     if (v==="true") variable_value="Benefits received";
     else if (v==="false") variable_value="No benefits received";

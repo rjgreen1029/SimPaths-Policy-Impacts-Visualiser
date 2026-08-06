@@ -67,8 +67,15 @@ export const UC_BENEFITS_MAP     = {"false":"No benefits received","true":"Benef
  *
  * Two choices worth noting: Region is read from a raw "region" column (not
  * "i_demRgn"), and "yBenUCReceivedFlag" is treated as its own standalone
- * "UC Benefits Flag" variable rather than being combined with a non-UC flag
- * into a broader "Benefits Received" concept.
+ * "Universal Credit Benefits Flag" variable rather than being combined with
+ * a non-UC flag into a broader "Benefits Received" concept.
+ *
+ * NOTE: "Universal Credit Benefits Flag" is the exact string every local
+ * folder upload will produce for this variable's `variable` field (via
+ * MODULE_MAP/processRunTexts below). The bundled default pre-aggregated CSV
+ * (SimPaths_All_Aggregated_Outputs.csv) must use this SAME string in its
+ * own "variable" column, or rows from that file simply won't match up —
+ * update/re-export that CSV if it still says "UC Benefits Flag".
  */
 export const COLUMN_MAP = {
   "eduHighestC4":"Highest Level of Education","demAge":"Age","demMaleFlag":"Gender",
@@ -77,11 +84,12 @@ export const COLUMN_MAP = {
   "yHhQuintilesMonthC5":"Income Quintile","region":"Region","demPartnerStatus":"Partnership status",
   //"demNChild":"Number of children",
   "labC4":"Employment status","labHrsWorkWeek":"Hours worked",
-  "yCapitalPersMonth":"Capital Income","yDispEquivYear":"Equivalised yearly disposable income",
+ // "yCapitalPersMonth":"Capital Income", // temporarily disabled
+  "yDispEquivYear":"Equivalised yearly disposable income",
  // "yEmpPersGrossMonth":"Gross personal employment income",
  // "yPensYear":"Gross private pension income",
   "yBenAmountMonth":"Amount of benefits received per month",
-  "yBenUCReceivedFlag":"UC Benefits Flag",
+  "yBenUCReceivedFlag":"Universal Credit Benefits Flag",
  // "yFinDstrssFlag":"Financial distress flag",
   "healthPsyDstrss0to12":"Psychological distress score",
   "healthMentalMcs":"Mental Component Summary (MCS)","healthPhysicalPcs":"Physical Component Summary (PCS)",
@@ -98,7 +106,7 @@ export const MODULE_MAP = {
   "Employment status":"Activity status","Hours worked":"Activity status",
   "Capital Income":"Income","Equivalised yearly disposable income":"Income",
   "Gross personal employment income":"Income","Gross private pension income":"Income",
-  "Amount of benefits received per month":"Income","UC Benefits Flag":"Income",
+  "Amount of benefits received per month":"Income","Universal Credit Benefits Flag":"Income",
   "Financial distress flag":"Income","Income Quintile":"Income",
   "Disability Status":"Health","Self-Rated Health":"Health",
   "Psychological distress score":"Health","Mental Component Summary (MCS)":"Health",
@@ -115,8 +123,8 @@ export const NUMERIC_VARS = new Set([
   "Psychological distress score","Life Satisfaction Score","Subjective wellbeing (GHQ)","Hours worked",
 ]);
 
-/** The seven variables offered as "Stratify by" options on the dashboard. */
-export const STRATIFIERS = ["Age","Gender","Household Type","Disability Status","Region","Ethnicity","Income Quintile"];
+/** The variables offered as "Stratify by" options on the dashboard. Household Type was removed from this list (its raw column is also disabled above, in COLUMN_MAP) — it's no longer offered as a stratifier. */
+export const STRATIFIERS = ["Age","Gender","Disability Status","Region","Ethnicity","Income Quintile"];
 /** Stratifiers that can ONLY be used to split another variable, never selected as the main variable to plot themselves (Age/Gender/Region are more useful as breakdowns than as headline outcomes here). */
 export const STRAT_ONLY   = new Set(["Age","Gender","Region"]);
 
@@ -158,11 +166,25 @@ function pickRow(raw) {
   return out;
 }
 
-/** Reads `key` from the (already-joined) benefit row first, falling back to the person row — mirrors what `{...p, ...bRow}[key]` would give from a merged object, without ever allocating that merged object. Treats an empty-string benefit-side value the same as "not present" for fallback purposes: a column can exist in BOTH the person and benefit-unit CSVs (e.g. UC Benefits Flag, which is only meaningfully populated on the person side) with the benefit-unit copy simply blank on every row — d3.csvParse gives "" for a blank cell, not undefined, so without this the blank would win outright instead of correctly falling through to the person row's real value. */
+/** Reads `key` from the (already-joined) benefit row first, falling back to the person row — mirrors what `{...p, ...bRow}[key]` would give from a merged object, without ever allocating that merged object. Treats an empty-string benefit-side value the same as "not present" for fallback purposes: a column can exist in BOTH the person and benefit-unit CSVs with the benefit-unit copy simply blank on every row — d3.csvParse gives "" for a blank cell, not undefined, so without this the blank would win outright instead of correctly falling through to the person row's real value. NOTE: this benefit-first fallback is NOT used for "yBenUCReceivedFlag" — see PERSON_ONLY_KEYS below, which reads that column straight from the person row instead, regardless of whatever (if anything) is in the benefit-unit row. */
 function mget(p, bRow, key) {
   const v = bRow[key];
   return (v !== undefined && v !== "") ? v : p[key];
 }
+
+/**
+ * Raw columns that must be read from the PERSON file ONLY, never the
+ * benefit-unit file — even if the benefit-unit file happens to carry a
+ * (possibly stale or differently-computed) value under the same column
+ * name. "yBenUCReceivedFlag" (Universal Credit Benefits Flag) is the only
+ * one right now: it's a person-level flag, and mget()'s usual
+ * benefit-first-then-person-fallback logic previously only happened to
+ * read it from the person file because the benefit-unit copy was blank on
+ * every row — this makes that intentional rather than incidental, so it
+ * keeps working correctly even if the benefit-unit file ever does carry a
+ * non-blank value in that column.
+ */
+const PERSON_ONLY_KEYS = new Set(["yBenUCReceivedFlag"]);
 
 /**
  * Parses one run's person + benefit CSV text, joins them on
@@ -201,11 +223,13 @@ export function processRunTexts(personText, benefitText, scenarioName, runId) {
   // ── Person CSV → join + rename, single streaming pass ───────────────────────
   // colIndex comes from COLUMN_MAP itself, not from whichever file's header
   // happens to be scanned — a display variable may live only on the benefit
-  // file (Income Quintile, Household Type, Equivalised yearly disposable
-  // income, Amount of benefits received per month), only on the person file,
-  // or on both. mget() below already checks the benefit row before falling
-  // back to the person row, so as long as we always ask for every raw
-  // column, it doesn't matter which file actually has it.
+  // file (Income Quintile, Equivalised yearly disposable income, Amount of
+  // benefits received per month), only on the person file, or on both.
+  // mget() below already checks the benefit row before falling back to the
+  // person row, so as long as we always ask for every raw column, it
+  // doesn't matter which file actually has it — EXCEPT for PERSON_ONLY_KEYS
+  // (currently just Universal Credit Benefits Flag), which is read straight
+  // from the person row and never even looks at the benefit row.
   const colIndex = Object.entries(COLUMN_MAP);
   const runRows = [];
 
@@ -219,7 +243,8 @@ export function processRunTexts(personText, benefitText, scenarioName, runId) {
 
     const renamed = { Year:+yr, wgt };
     for (let j=0;j<colIndex.length;j++) {
-      const val = mget(p, bRow, colIndex[j][0]);
+      const rawKey = colIndex[j][0];
+      const val = PERSON_ONLY_KEYS.has(rawKey) ? p[rawKey] : mget(p, bRow, rawKey);
       if (val!==undefined) renamed[colIndex[j][1]] = val;
     }
 
@@ -230,7 +255,7 @@ export function processRunTexts(personText, benefitText, scenarioName, runId) {
     if (renamed["Financial distress flag"]!=null) renamed["Financial distress flag"]=FINANCIAL_MAP[String(renamed["Financial distress flag"]).toLowerCase()]??renamed["Financial distress flag"];
     if (renamed["Need of social care"]!=null)     renamed["Need of social care"]=SOCIAL_CARE_MAP[String(renamed["Need of social care"]).toLowerCase()]??renamed["Need of social care"];
     if (renamed["Provided social care"]!=null)    renamed["Provided social care"]=PROV_SOCIAL_CARE_MAP[String(renamed["Provided social care"]).toLowerCase()]??renamed["Provided social care"];
-    if (renamed["UC Benefits Flag"]!=null)         renamed["UC Benefits Flag"]=UC_BENEFITS_MAP[String(renamed["UC Benefits Flag"]).toLowerCase()]??renamed["UC Benefits Flag"];
+    if (renamed["Universal Credit Benefits Flag"]!=null) renamed["Universal Credit Benefits Flag"]=UC_BENEFITS_MAP[String(renamed["Universal Credit Benefits Flag"]).toLowerCase()]??renamed["Universal Credit Benefits Flag"];
     if (renamed["Gender"]!=null) {
       const g=String(renamed["Gender"]).toLowerCase();
       renamed["Gender"]=(g==="1"||g==="true"||g==="male")?"Male":"Female";

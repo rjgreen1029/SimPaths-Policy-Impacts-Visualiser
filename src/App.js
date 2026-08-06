@@ -29,13 +29,15 @@ const DOMAIN_SECTIONS = {
   ],
   "Activity status": ["Employment status", "Hours worked"],
   "Income": [
-    "Income Quintile", "UC Benefits Flag", "Financial distress flag",
+    "Income Quintile", "Universal Credit Benefits Flag", "Financial distress flag",
     "Equivalised yearly disposable income",
     // "Gross personal employment income", // temporarily disabled
-    "Capital Income", "Amount of benefits received per month"
+    // "Capital Income", // temporarily disabled
+    "Amount of benefits received per month"
   ],
   "Health": [
-    "Self-Rated Health",  "Disability Status", "Psychological distress flag",
+    "Self-Rated Health",  "Disability Status",
+    // "Psychological distress flag", // temporarily disabled
     "Psychological distress score", "Mental Component Summary (MCS)", "Physical Component Summary (PCS)", "Life Satisfaction Score",
     "Subjective wellbeing (GHQ)", "Need of social care",
     // "Provided social care", // temporarily disabled
@@ -60,15 +62,15 @@ export const VARIABLE_DESCRIPTIONS = {
   "Employment status":                    "Current labour market status (e.g., employed, unemployed, retired, student).",
   "Hours worked":                         "Usual number of paid working hours per week.",
   "Income Quintile":                      "Benefit unit position in the population income distribution split into five equal groups (from lowest (1) to highest (5)).",
-  "UC Benefits Flag":                     "Whether the benefit unit receives Universal Credit.",
+  "Universal Credit Benefits Flag":       "Whether the benefit unit receives Universal Credit.",
   "Financial distress flag":              "Indicator of reported difficulty in meeting basic financial commitments.",
-  "Equivalised yearly disposable income": "Annual income after taxes and transfers.",
+  "Equivalised yearly disposable income": "Annual income after taxes and transfers, in GBP (£).",
   // "Gross personal employment income":     "Earnings from employment before tax and deductions.", // temporarily disabled
-  "Capital Income":                       "Income from assets such as savings, investments, or property.",
-  "Amount of benefits received per month":"Monthly monetary value of welfare benefits received.",
+  // "Capital Income":                       "Income from assets such as savings, investments, or property.", // temporarily disabled
+  "Amount of benefits received per month":"Monthly monetary value of welfare benefits received, in GBP (£).",
   "Disability Status":                    "Whether the individual reports a limiting long-term illness or disability.",
   "Self-Rated Health":                    "Individual's own assessment of overall health (from excellent to poor).",
-  "Psychological distress flag":          "Indicator of clinically relevant mental distress.",
+  // "Psychological distress flag":          "Indicator of clinically relevant mental distress.", // temporarily disabled
   "Psychological distress score":         "Continuous score measuring mental distress severity (from 0–12).",
   "Mental Component Summary (MCS)":       "Mental Component Summary: summary score of mental health-related quality of life (from 0–100).",
   "Physical Component Summary (PCS)":     "Physical Component Summary: summary score of physical health-related quality of life (from 0–100).",
@@ -291,7 +293,7 @@ function App() {
       {/* Left: all the card's text content */}
       <div style={{ flex: 1.7, minWidth: windowWidth < 900 ? "100%" : "320px" }}>
 
-        <p style={{ margin: "0 0 10px", fontSize: "14px", color: TEXT_MID, lineHeight: 1.6 }}>
+        <p style={{ margin: "0 0 10px", fontSize: "clamp(14px, 2vw, 16px)", color: TEXT_MID, lineHeight: 1.6 }}>
           Explore changes across a simulated population under a policy <strong>scenario</strong> against a <strong>baseline</strong> with no change — across variables like income, health, work and family life.
         </p>
 
@@ -301,7 +303,7 @@ function App() {
             This dashboard visualises outputs from <a href="https://simpaths.org/" target="_blank" rel="noopener noreferrer" style={{ color: AQUA, textDecoration: "none", borderBottom: `2px solid ${AQUA}`, paddingBottom: "2px", transition: "opacity 0.2s" }}>SimPaths</a>, a dynamic microsimulation model developed by the Centre for Microsimulation and Policy Analysis (<a href="https://www.microsimulation.ac.uk/" target="_blank" rel="noopener noreferrer" style={{ color: AQUA, textDecoration: "none", borderBottom: `2px solid ${AQUA}`, paddingBottom: "2px", transition: "opacity 0.2s" }}>CeMPA</a>) at the University of Essex. It was built by researchers at the University of Glasgow as part of the <a href="https://www.phiuk.org/policy-modelling-for-health" target="_blank" rel="noopener noreferrer" style={{ color: AQUA, textDecoration: "none", borderBottom: `2px solid ${AQUA}`, paddingBottom: "2px", transition: "opacity 0.2s" }}>Policy Modelling for Health</a> research group.
           </p>
           <p style={{ margin: 0, lineHeight: 1.8, color: TEXT_DARK, fontSize: "clamp(14px, 2vw, 16px)" }}>
-            SimPaths simulates the life-course trajectories of a population — how demographics, employment, income, wealth and health change over time — and how those trajectories may change during a simulated a policy <strong> scenario</strong> (e.g., ). This dashboard lets you explore those simulated outcomes interactively: pick a variable, stratify it by age, gender, region and more, and compare Baseline data against Scenario data over time, at a single point in time, or as the difference between the two.
+            SimPaths simulates the life-course trajectories of a population — how demographics, employment, income, wealth and health change over time — and how those trajectories may change during a simulated a policy <strong> scenario</strong> (e.g., an increase in the minimum wage ). This dashboard lets you explore those simulated outcomes interactively: pick a variable, stratify it by age, gender, region and more, and compare Baseline data against Scenario data over time, at a single point in time, or as the difference between the two.
           </p>
         </div>
 
@@ -359,8 +361,8 @@ function App() {
         <div>
           <p style={{ margin: "0 0 8px", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600, color: TEAL }}>More Resources</p>
           <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-            <a href="https://simpaths.org/" target="_blank" rel="noopener noreferrer" style={smallLinkStyle}>Documentation</a>
-            <a href="https://github.com/simpaths/SimPaths" target="_blank" rel="noopener noreferrer" style={smallLinkStyle}>GitHub Repository</a>
+            <a href="https://simpaths.org/" target="_blank" rel="noopener noreferrer" style={smallLinkStyle}>SimPaths Documentation</a>
+            <a href="https://github.com/rjgreen1029/SimPaths-Policy-Impacts-Visualiser" target="_blank" rel="noopener noreferrer" style={smallLinkStyle}>GitHub Repository</a>
             <a href="https://www.phiuk.org/policy-modelling-for-health" target="_blank" rel="noopener noreferrer" style={smallLinkStyle}>Policy Modelling for Health</a>
             <a href="https://youtu.be/fqfNmjTWUEA" target="_blank" rel="noopener noreferrer" style={smallLinkStyle}>SimPaths Webinar</a>
           </div>
