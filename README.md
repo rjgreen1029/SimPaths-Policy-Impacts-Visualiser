@@ -1,8 +1,8 @@
 # SimPaths Policy Impacts Visualiser
 
-An interactive React + D3 dashboard for exploring outputs from SimPaths, a dynamic microsimulation model developed by the Centre for Microsimulation and Policy Analysis (CeMPA) at the University of Essex. Visualiser built by researchers at the University of Glasgow as part of the Policy Modelling for Health research group.
+An interactive React + D3 dashboard for exploring outputs from [SimPaths](https://simpaths.org/), a dynamic microsimulation model developed by the Centre for Microsimulation and Policy Analysis (CeMPA) at the University of Essex. The visualiser was built by researchers at the University of Glasgow as part of the [Policy Modelling for Health](https://www.phiuk.org/policy-modelling-for-health) research group.
 
-The dashboard compares a Baseline run against a Policy Scenario across demographic, employment, income and health outcomes — as a time series, at a single year, or as the difference between the two — with all aggregation happening entirely client-side, in the browser.
+The dashboard compares a **Baseline** against one or more **Scenario** runs across demographic, employment, income, and health outcomes — as a time series, at a single year, or as the difference between the two — with all aggregation happening entirely client-side in the browser.
 
 ---
 
@@ -18,6 +18,7 @@ The dashboard compares a Baseline run against a Policy Scenario across demograph
   - [Bring your own simulation output](#2-bring-your-own-simulation-output)
 - [How the aggregation pipeline works](#how-the-aggregation-pipeline-works)
 - [Dashboard views & controls](#dashboard-views--controls)
+- [Multi-scenario support](#multi-scenario-support)
 - [Colour system](#colour-system)
 - [Browser support](#browser-support)
 - [Privacy & data handling](#privacy--data-handling)
@@ -30,197 +31,196 @@ The dashboard compares a Baseline run against a Policy Scenario across demograph
 
 ## Features
 
-- Line, stacked-bar and grouped-bar charts for numeric and categorical variables, rendered directly with D3 (no charting library dependency).
-- Three ways to view the data: time series, a single cross-sectional year, and Baseline → Scenario deltas.
-- Stratify any variable by Age, Gender, Household Type, Disability Status, Region, Ethnicity or Income Quintile, shown as small-multiple panels or combined onto one chart.
-- 95% confidence intervals computed across model runs; unreliable estimates (small underlying samples n<=10) are automatically suppressed rather than shown.
+- Line, stacked-bar, grouped-bar, population pyramid, and wage-bin distribution charts rendered directly with D3 (no charting library dependency).
+- Three ways to view the data: time series, single cross-sectional year, and Baseline → Scenario deltas.
+- **Multi-scenario support**: compare Baseline against multiple named scenarios simultaneously; each scenario has a distinct colour and line/fill pattern throughout.
+- Stratify any variable by Age, Gender, Household Type, Disability Status, Region, Ethnicity, or Income Quintile — shown as small-multiple panels or combined onto one chart.
+- Click any year on a panel chart to see a cross-section view for that stratum.
+- 95% confidence intervals computed across model runs; estimates with small underlying samples are automatically suppressed.
 - Two data sources: a pre-packaged default dataset, or point the dashboard at your own local SimPaths output folder — no upload, no server round-trip.
-- Parallelised, memory-lean parsing: your own runs are read and aggregated by a pool of Web Workers, one run's CSV text in memory at a time per worker, so large multi-run folders don't blow out browser memory.
+- Memory-lean serial parsing: each run is read, processed, and accumulated incrementally so large multi-run folders don't exhaust browser memory.
 - Export any chart panel as a PNG, or its underlying data as CSV.
-- Responsive layout, from a compact mobile view up to wide desktop screens.
+- Responsive layout from compact mobile up to wide desktop screens.
 
 ## Tech stack
 
-- React (function components + hooks) for the UI
-- D3.js for both data-side aggregation (`d3.csvParse`, `d3.csv`) and chart rendering (raw SVG, no chart library)
-- Web Workers (native, no bundler-specific worker loader) for parallel CSV parsing/aggregation
-- File System Access API (`window.showDirectoryPicker`) for reading local simulation output folders directly, with no file-by-file upload step
+- **React** (function components + hooks) for the UI
+- **D3.js** for data-side aggregation and chart rendering (raw SVG — no charting library)
+- **File System Access API** (`window.showDirectoryPicker`) for reading local simulation output folders without file-by-file upload
 
-No backend is required. This is a static, client-side application.
+No backend required. This is a fully static, client-side application.
 
 ## Project structure
 
 ```
 src/
-├── index.js               # React entry point (createRoot + <App />)
-├── App.js                 # Page shell: header, intro card, sidebar, main viz, closing banner
-├── DashboardSection.js     # All D3 chart rendering + view/filter controls
-├── useAggregatedData.js    # Variable/stratifier definitions, colour engine, CSV row parser, data hook
-├── parseCore.js            # Pure parsing + per-run aggregation logic (no browser APIs)
-├── localFolderParser.js    # Directory discovery + worker-pool dispatch for local folders
-└── parseWorker.js          # Web Worker: reads + aggregates one batch of runs at a time
+├── index.js               # React entry point — mounts App inside PasscodeGate
+├── App.js                 # Page shell: header, intro card, sidebar, main viz, footer
+├── DashboardSection.js    # All D3 chart rendering + view/filter/scenario controls
+├── useAggregatedData.js   # Variable/stratifier definitions, colour engine,
+│                          #   CSV row parser, data hooks
+├── parseCore.js           # Pure parsing + aggregation logic (no browser APIs)
+│                          #   Incremental accumulator API:
+│                          #   createGroupedAccumulator / accumulateRunMetrics /
+│                          #   finaliseAggregation
+├── localFolderParser.js   # Directory discovery + serial run processing
+└── parseWorker.js         # Web Worker: processes a pre-read batch of runs
 
 public/
+├── SimPaths_All_Aggregated_Outputs.csv   # Default pre-aggregated dataset
 ├── pmh_logo.png                          # Header logo
-├── guidance_notes.pdf                    # Folder/file layout guidance for "Visualise Your Own Data"
-└── bottom_banner_image.png               # Optional — see "Customising the dashboard"
+├── Interpreting-results.html             # In-app guidance page
+├── citation.html                         # Citation information
+└── bottom_banner_image.png               # Optional footer logo
 ```
 
-`parseCore.js` is imported by both `localFolderParser.js` (the main-thread, no-Worker fallback) and `parseWorker.js` (the Worker path), so the CSV join/rename/aggregation logic exists in exactly one place regardless of which path runs.
+`parseCore.js` is imported by both `localFolderParser.js` (main-thread path) and `parseWorker.js` (Worker path), so all CSV join/rename/aggregation logic lives in exactly one place.
 
+## Getting started
+
+```bash
+npm install
+npm start        # development server at http://localhost:3000
+npm run build    # production build to /build
+```
+
+The default dataset (`public/SimPaths_All_Aggregated_Outputs.csv`) is loaded automatically on startup.
+
+## Required public assets
+
+| File | Purpose |
+|---|---|
+| `public/SimPaths_All_Aggregated_Outputs.csv` | Default pre-aggregated dataset |
+| `public/pmh_logo.png` | Logo shown in the header and footer |
+| `public/Interpreting-results.html` | Guidance page linked from the intro card |
+| `public/citation.html` | Citation page linked from the intro card |
 
 ## Data inputs
 
-The dashboard can be driven by either of two data sources, toggled from the Connect Data card in the sidebar.
-
 ### 1. Default pre-aggregated dataset
 
-On load, the app fetches the preaggregated data and parses each row with `parseCsvRow()` in `useAggregatedData.js`. Expected columns (case-insensitive alternates are supported for several — see the parser):
+Parsed by `parseCsvRow()` in `useAggregatedData.js`. Expected columns:
 
 | Column | Meaning |
 |---|---|
 | `Year` | Simulation year |
-| `scenario` | `baseline` or `scenario` |
+| `scenario` | `baseline`, or any scenario name (lowercased) |
 | `module` | Domain grouping (Demographics / Activity status / Income / Health) |
-| `variable` | Variable name, matching the dashboard's variable list |
-| `variable_value` | Category label (or "Mean" for numeric variables) |
+| `variable` | Variable name matching the dashboard's variable list |
+| `variable_value` | Category label (or `Continuous Mean` for numeric variables) |
 | `stratifier` | Stratifier name, or `Overall` |
 | `stratifier_value` | Stratum label, or `Overall` |
-| `metric_type` | `mean` (numeric variables) or `share` (categorical variables) |
-| `n_runs` | Number of model runs the estimate is averaged across |
-| `total_sample`, `min_sample`, `mean_sample` | Sample-size diagnostics used for suppression |
-| `mean_value`, `sd_value` | Cross-run mean and standard deviation |
-| `ci_lower` / `lower_ci`, `ci_upper` / `upper_ci` | 95% confidence interval bounds |
+| `metric_type` | `mean`, `share`, `wage_bin`, `income_bin`, or `pyramid_bin` |
+| `n_runs` | Number of model runs averaged |
+| `total_sample`, `min_sample`, `mean_sample` | Sample-size diagnostics |
+| `mean_value` | Cross-run mean |
+| `lower_ci` / `upper_ci` | 95% CI bounds |
+| `paired_mean_delta`, `paired_lower_ci`, `paired_upper_ci`, `paired_n_runs` | Paired delta stats (scenario rows only) |
 
+The recommended R aggregation script (`SimPathsAggFaster_v10.Rmd`) produces this format directly and discovers all non-Baseline subfolders automatically.
 
 ### 2. Bring your own simulation output
 
-Clicking "Visualise Your Own Data" opens a native folder picker. The selected parent folder must be laid out as:
+Clicking "Visualise Your Own Data" opens a native folder picker. The parent folder must contain a `Baseline` subfolder and at least one scenario subfolder (any name):
 
 ```
 YourSimulationOutput/
 ├── Baseline/
-│   ├── run_1/
-│   │   └── csv/               
-│   │       ├── ..._person_....csv
-│   │       └── ..._benefit_....csv
-│   ├── run_2/
-│   │   └── ...
-│   └── ...
-└── Scenario/
-    ├── run_1/
-    │   └── ...
-    └── ...
+│   ├── run_606_…/
+│   │   └── csv/
+│   │       ├── …_person_….csv
+│   │       └── …_benefit_….csv
+│   └── run_607_…/
+├── Scenario/              ← any name except "Baseline"
+└── Scenario_Education/    ← multiple scenarios supported
 ```
 
-Rules the folder scanner (`localFolderParser.js`) applies:
+Rules applied by `localFolderParser.js`:
 
-- Top level must contain a `Baseline` and/or `Scenario` subfolder (matched case-insensitively).
-- Each run is a subfolder of `Baseline`/`Scenario` — any number of runs is supported, and results are averaged across them.
-- Within each run, CSV files are looked for either directly in the run folder or inside a `csv` subfolder.
-- The person file is the `.csv` file whose name contains "person"; the benefit file is the one whose name contains "benefit" (case-insensitive). Both are required for a run to be included.
+- Exactly one folder named `Baseline` (case-insensitive) required at the top level.
+- Any other subfolder is treated as a named scenario; its folder name (lowercased, spaces → underscores) becomes the scenario label.
+- Run folders must contain a seed pattern like `_606_` in their name for pairing baseline and scenario runs.
+- Person and benefit CSV files are matched by substring (`"person"` / `"benefit"`, case-insensitive), either directly in the run folder or inside a `csv` subfolder.
 
-Expected raw columns (person and/or benefit CSV — see `COLUMN_MAP` in `parseCore.js` for the full, authoritative list):
-
-| Raw column | Dashboard variable |
-|---|---|
-| `eduHighestC4` | Highest Level of Education |
-| `demAge` | Age (used for the Age stratifier) |
-| `demMaleFlag` | Gender |
-| `demEthnC6` | Ethnicity |
-| `healthDsblLongtermFlag` | Disability Status |
-| `dhhtp_c4` | Household Type |
-| `yHhQuintilesMonthC5` | Income Quintile |
-| `i_demRgn` | Region |
-| `demPartnerStatus` | Partnership status |
-| `demNChild` | Number of children |
-| `labC4` | Employment status |
-| `labHrsWorkWeek` | Hours worked |
-| `yCapitalPersMonth` | Capital Income |
-| `yDispEquivYear` | Equivalised yearly disposable income |
-| `yEmpPersGrossMonth` | Gross personal employment income |
-| `yPensYear` | Gross private pension income |
-| `yBenAmountMonth` | Amount of benefits received per month |
-| `yBenNonUCReceivedFlag` / `yBenUCReceivedFlag` | Benefits Received (derived) |
-| `yFinDstrssFlag` | Financial distress flag |
-| `healthPsyDstrss0to12` | Psychological distress score |
-| `healthMentalMcs` | Mental Component Summary (MCS) |
-| `healthPhysicalPcs` | Physical Component Summary (PCS) |
-| `healthSelfRated` | Self-Rated Health |
-| `demLifeSatScore0to10` | Life Satisfaction Score |
-| `healthWbScore0to36` | Subjective wellbeing (GHQ) |
-| `careNeedFlag` | Need of social care |
-| `careProvidedFlag` / `careProvidedFlag.y` | Provided social care |
-
-Plus join/weighting keys: `time`/`Time`/`Year`, `id_BenefitUnit`/`idbu`/`idBu`, and an optional `wgt`/`Wgt` weight column (defaults to 1.0 per row if absent or invalid).
-
+See `COLUMN_MAP` in `parseCore.js` for the full list of expected raw column names.
 
 ## How the aggregation pipeline works
 
-1. **Discovery** (main thread): the folder tree is scanned for `Baseline`/`Scenario` → run subfolders → person/benefit CSV file handles. This step only lists directory contents — no file content is read yet, so it's fast regardless of file size.
-2. **Dispatch**: run handles are batched (2 runs per message by default) and sent to a pool of Web Workers — sized to `min(navigator.hardwareConcurrency, 8)` — so multiple runs are read and aggregated in parallel across CPU cores. If Workers aren't supported (e.g. `file://` without cross-origin isolation headers), the app falls back to processing runs one at a time on the main thread with identical logic.
-3. **Per-run aggregation** (`parseCore.js`, inside each worker): person and benefit CSVs are streamed and joined on `<year>_<benefitUnitId>`, renamed to display variable names, and reduced — in a single pass per year — into weighted means (numeric variables) and weighted shares (categorical variables) per run, each broken down overall and by every stratifier.
-4. **Cross-run aggregation**: once every run's metrics are collected, `performCrossRunAggregation()` groups matching rows across runs and computes the cross-run mean, standard deviation, and a 95% CI (using the standard error of the mean (SD ÷ √n_runs)). Any estimate whose smallest contributing run sample is below 10 is suppressed (`NaN`) rather than shown, to avoid presenting unreliable small-sample estimates.
-5. The result is the same row shape as the default CSV (`year, scenario, module, variable, variable_value, stratifier, stratifier_value, metric_type, n_runs, total_sample, min_sample, mean_sample, mean_value, sd_value, lower_ci, upper_ci`).
-
-At every stage, only a bounded amount of raw CSV text is held in memory at once (roughly one run per worker), rather than the whole dataset — so this scales to folders with many, or large, runs without exhausting browser memory.
+1. **Discovery** — folder tree is scanned for `Baseline`/scenario subfolders and run folders.
+2. **Serial processing** — each run's CSVs are read on the main thread then immediately accumulated. Only one run's text lives in memory at a time.
+3. **Per-run aggregation** (`parseCore.js`) — CSVs are joined, column names mapped, and data reduced into weighted means/shares per year broken down by every stratifier.
+4. **Cross-run aggregation** (`finaliseAggregation`) — computes cross-run mean, SD, and 95% CI. A **paired delta** (Scenario − Baseline matched by seed) is computed for each scenario. Estimates with `min_sample < 100` are suppressed.
 
 ## Dashboard views & controls
 
-Once a variable is selected from the sidebar, `DashboardSection.js` offers:
+- **Stratify by** — Overall, Age, Gender, Household Type, Disability Status, Region, Ethnicity, or Income Quintile.
+- **Chart type** — Line or Stacked bar (categorical only).
+- **View** — Toggle Baseline and each Scenario on/off independently.
+- **Layout** — Panels (small multiples, one per stratum) or Combined. In panel view, click any year to see a cross-section for that stratum.
+- **Delta tab** — all enabled scenarios on one chart versus Baseline.
+- **Filters** — toggle variable values and stratum values; panels resize as strata are toggled.
+- **Highlighting** — click a legend entry to spotlight one series.
+- **Export** — PNG and CSV on every panel.
 
-- **Stratify by** — Overall, or any of Age / Gender / Household Type / Disability Status / Region / Ethnicity / Income Quintile.
-- **Chart type** — Line (numeric or categorical) or Stacked bar (categorical only).
-- **View data** — Both / Baseline only / Scenario only.
-- **Layout** — Panels (small multiples, one per stratum) or Combined (all strata on one chart), when stratified.
-- **Compare** — a dedicated Δ Baseline → Scenario view showing the modelled effect of the policy change directly.
-- **Filters** — toggle individual variable values and/or stratum values on/off.
-- **Highlighting** — click a legend entry to spotlight one series across the whole chart.
-- **Export** — every panel has PNG and CSV export buttons; "download all" buttons export every visible panel at once.
+Special views:
+- **Population Pyramid** — Age variable; all enabled scenarios with distinct fill patterns.
+- **Wage Distribution** — Hourly Earnings; within-scenario earnings distribution.
 
-Baseline and Scenario are always distinguished by the same visual channel throughout — solid vs. dashed lines, full vs. translucent bars — independent of colour, so the two remain distinguishable even for colourblind users or in greyscale printouts.
+## Multi-scenario support
+
+Any number of named scenarios are supported alongside Baseline:
+
+- **Line style**: Scenario 1 = dotted (`2,2`), Scenario 2 = dashed (`6,4`). Defined in `SCENARIO_DASHES` in `DashboardSection.js`.
+- **Bar fill**: Scenario 1 = dot pattern, Scenario 2 = diagonal hatch.
+- **Colours**: for numeric/continuous variables, Baseline = dark grey (`#586369`), scenarios = teal (`#0f93a1`), distinguished by line/fill style. For categorical/ordinal variables, colour encodes the variable value.
+- **Colour identity**: scenario colours and styles are assigned by global index so toggling one scenario off does not reassign another's appearance.
+- **Delta plots**: all enabled scenarios on one chart.
 
 ## Colour system
 
-All chart colours are defined once, centrally, in `useAggregatedData.js` (`buildColourMap()`), and reused by every chart type, so a given variable value always gets the same colour whether it appears in a line chart, a bar chart, or a legend.
+All colours are defined in `useAggregatedData.js` (`buildColourMap()`).
 
-- Numeric variables → solid teal.
-- Binary variables (exactly two values) → a fixed coral/teal pair.
-- Ordinal variables (education, income quintile, self-rated health) → purpose-built ramps (e.g. a red–teal diverging scale for income quintile and for health).
-- Categorical variables → a 10-colour, colourblind-friendly qualitative palette (`BRAND_QUAL`), sliced in a fixed order so colours stay consistent across variables that share values (e.g. household type and employment status).
-- A shared muted grey (`GREY`) is used for any series that's present but not currently highlighted.
+- **Numeric variables** — Baseline: dark grey; scenarios: teal (distinguished by line/fill style).
+- **Binary variables** — fixed coral/teal pair.
+- **Ordinal variables** — purpose-built diverging or sequential ramps.
+- **Categorical variables** — 10-colour, colourblind-friendly qualitative palette (`BRAND_QUAL`).
+- **Muted grey** (`GREY`) for dimmed/unhighlighted series.
 
 ## Browser support
 
-- The default pre-loaded dataset works in any modern browser.
-- "Visualise Your Own Data" requires the File System Access API (`window.showDirectoryPicker`), currently supported in Chromium-based browsers (Chrome, Edge, Opera, Arc, etc.). In browsers without it (e.g. Firefox, Safari), the folder picker itself won't open — the default dataset view still works normally.
-- Within that Chromium path, if Web Workers are unavailable for any reason, the app automatically falls back to slower, single-threaded, main-thread processing — the UI and results are otherwise identical.
-- A screen narrower than 320px shows a "screen too small" message instead of the dashboard; everything from a typical phone width upward gets a responsive layout.
+- Default dataset works in any modern browser.
+- "Visualise Your Own Data" requires the File System Access API — supported in Chromium-based browsers (Chrome, Edge, Arc, etc.).
+- Screens narrower than 320px show a "screen too small" message.
 
 ## Privacy & data handling
 
-This tool is entirely JavaScript-based. All aggregation of your own simulation output happens locally in your browser — nothing you select via "Visualise Your Own Data" is uploaded, stored, or transmitted anywhere.
+Everything runs locally in the browser. Nothing you select via "Visualise Your Own Data" is uploaded, stored, or transmitted anywhere.
 
 ## Customising the dashboard
 
-- **Variables & domains**: edit `DOMAIN_SECTIONS`, `DOMAIN_BLURBS` and `VARIABLE_DESCRIPTIONS` in `App.js` to change which variables appear, how they're grouped, and their descriptions.
-- **Variable/stratifier ordering & types**: edit `VARIABLE_DEFS` / `STRATIFIER_DEFS` in `useAggregatedData.js`.
-- **Colours**: edit the palettes at the top of `useAggregatedData.js` (`BRAND_QUAL`, the `SEQ_*` ramps, `DIV_RED_TEAL`, `INDIGO_EDU`, `HEALTH_DIV`, etc.) — everything downstream picks these up automatically.
-- **Raw CSV → display-variable mapping**: edit `COLUMN_MAP` in `parseCore.js` if your simulation output uses different raw column names.
-- **Suppression threshold**: the `min_sample < 100` check in `performCrossRunAggregation()` (`parseCore.js`) controls when an estimate is suppressed for being based on too small a sample.
-- **Worker batching**: `WORKER_COUNT` and `BATCH_SIZE` in `localFolderParser.js` control parallelism and memory/throughput trade-offs when processing local folders.
-- **Bottom banner logo**: drop an image at `public/bottom_banner_image.png` to populate the (otherwise invisible) logo slot in the closing banner.
+| What | Where |
+|---|---|
+| Variables & domains shown in sidebar | `DOMAIN_SECTIONS`, `VARIABLE_DESCRIPTIONS` in `App.js` |
+| Variables tagged as "Benefit unit" source | `BENEFIT_UNIT_VARS` in `App.js` |
+| Variable/stratifier ordering & types | `VARIABLE_DEFS` / `STRATIFIER_DEFS` in `useAggregatedData.js` |
+| Colours | `BRAND_QUAL`, `SEQ_*`, `DIV_RED_TEAL` etc. in `useAggregatedData.js` |
+| Scenario line styles | `SCENARIO_DASHES` in `DashboardSection.js` |
+| Scenario colours (numeric variables) | `NUMERIC_BASE_COLOUR`, `NUMERIC_SCEN_COLOURS` in `DashboardSection.js` |
+| Raw CSV → display-name mapping | `COLUMN_MAP` in `parseCore.js` |
+| Suppression threshold | `min_sample < 100` in `finaliseAggregation()` in `parseCore.js` |
+| Default dataset description in intro card | Edit the Getting Started section in `App.js` |
 
 ## Known limitations
 
-- Outputs are based on simulated data, intended for research purposes only — they should not be interpreted as  official statistics.
-- Every figure is an average across multiple model runs, shown with a 95% confidence interval; estimates with an insufficient underlying sample in any contributing run are suppressed rather than shown.
-- Differences between Baseline and Scenario reflect the modelled effect of the policy change being tested, not an observed real-world outcome.
+- Outputs are simulated data for research purposes only — not forecasts or official statistics.
+- Every figure is a cross-run mean with a 95% CI; estimates with insufficient sample sizes are suppressed.
+- Baseline → Scenario differences reflect the modelled policy effect, not an observed real-world outcome.
+- "Visualise Your Own Data" requires a Chromium-based browser.
 
 ## Credit & citation
 
-This tool visualises outputs from the SimPaths microsimulation model using data from Understanding Society: the UK Household Longitudinal Study. See the in-app Credit & Citation section for the DOI and citation details, and the SimPaths License for licensing terms.
+This tool visualises outputs from the SimPaths microsimulation model. See the in-app Credit & Citation section for DOI and citation details.
 
 ## Feedback
 
-Bug reports, feature requests, and general feedback are welcome — use the Feedback button in the app, or email healthmod@glasgow.ac.uk.
+Bug reports, feature requests, and general feedback — use the Feedback button in the app, or email [healthmod@glasgow.ac.uk](mailto:healthmod@glasgow.ac.uk?subject=SimPaths%20Policy%20Impacts%20Visualiser).

@@ -26,10 +26,12 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import * as d3 from "d3";
 import {
-  useAggregatedData, uniqueValues, stratLabel, averageAcrossYears,
+  useAggregatedData, useScenarioNames, scenarioLabel,
+  uniqueValues, stratLabel, averageAcrossYears,
   buildColourMap, orderVariableValues, orderStratifierValues, GREY,
   getStratifierDef, getVariableDef,
 } from "./useAggregatedData";
+import { WAGE_BINS } from "./parseCore";
 
 // ─── Layout ───────────────────────────────────────────────────────────────────
 // Both bumped up a bit from their original 380/200 — with few strata (e.g. a
@@ -43,7 +45,7 @@ const CHART_H_SM = 230;  // small-multiple panel height
 const MAX_W      = 480;  // wide enough to use most of the container
 const PANEL_MIN_W= 280;
 const M     = { top:24, right:24, bottom:70, left:92 }; // extra bottom for key; left is generous since the y-axis title's own space now grows with the actual tick-label width (see applyYAxis)
-const M_SM  = { top:12, right:10, bottom:40, left:50 };
+const M_SM  = { top:12, right:10, bottom:46, left:52 };
 
 // ─── Colours / fonts ──────────────────────────────────────────────────────────
 const TEAL    = "#14687c";
@@ -52,7 +54,17 @@ const TEXT_D  = "#1e293b";
 const TEXT_M  = "#475569";
 const TEXT_S  = "#64748b";
 const PUB_FONT= "'Work Sans', Arial, sans-serif";
-const FONT_SZ = "12px"; // single source of truth for all chart text
+const FONT_SZ = "12.5px"; // single source of truth for all chart text
+// Distinct stroke-dasharray patterns for Scenario 1, 2, 3, 4 …
+// Baseline is always solid (no entry needed). Patterns chosen to be
+// distinguishable at small sizes and in greyscale.
+// Scenario 1 = dotted (2,2), Scenario 2 = dashed (6,4), further scenarios use longer patterns
+const SCENARIO_DASHES = ["2,2", "6,4", "8,3,2,3", "4,2,1,2"];
+
+// Colours used for numeric variables (single line per scenario).
+// Baseline = dashboard teal; scenarios = coral/orange shades.
+const NUMERIC_BASE_COLOUR   = "#586369";
+const NUMERIC_SCEN_COLOURS  = ["#0f93a1", "#0f93a1", "#0f93a1", "#0f93a1"];
 
 // Dot symbols for categorical stratifiers (d3 symbol path generators).
 // 12 distinct shapes — Region has 12 values, and with only 6 shapes (the
@@ -71,7 +83,7 @@ const SYMBOLS = [
 // thin as Q1; Age's widths repeated partway through instead of increasing
 // monotonically, which is what made it look "out of order" even though the
 // underlying stratum ordering itself was always correct).
-const ORDINAL_WIDTHS = [1, 1.75, 2.5, 3.25, 4, 4.75, 5.5];
+const ORDINAL_WIDTHS = [1.5, 2.25, 3, 3.75, 4.5, 5.25, 6];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 /** Inserts a space before each internal capital letter — e.g. "CoupleChildren" → "Couple Children" — for display when a raw code doesn't have a friendlier label in STRATIFIER_VALUE_LABELS. */
@@ -92,14 +104,22 @@ function fmtDelta(v,isCat){
 }
 /** Formats a row's sample-size info for a tooltip, e.g. "Sample: 1,234 (12 runs)" — pooled total_sample across every contributing run, plus how many runs contributed. Returns "" (nothing to append) if the row has no usable sample info. */
 /** Formats a row's sample-size info for a tooltip, e.g. "Sample: 103 (avg across 12 runs)" — the average per-run sample size for that specific variable/stratifier/baseline-or-scenario slice, not the pooled total across runs. Returns "" if the row has no usable sample info. */
+const fmt1dp = n => n?.toLocaleString(undefined,{maximumFractionDigits:1}) ?? "";
 function fmtSample(row){
   if (!row||row.mean_sample==null||isNaN(row.mean_sample)) return "";
   const n=row.n_runs;
-  return `<br/>Sample: ${Math.round(row.mean_sample).toLocaleString()}${n!=null?` (avg across ${n} run${n===1?"":"s"})`:""}`;
+  return `<br/>Sample: ${fmt1dp(row.mean_sample)}${n!=null?` (avg across ${n} run${n===1?"":"s"})`:""}`;
 }
-/** Delta-specific variant of fmtSample() — a Δ figure is a difference of two independent samples, so shows both sides' average per-run sample size rather than a single number. */
+/** Delta-specific variant of fmtSample() — shows paired run count when a paired
+ *  delta is available, otherwise both sides' avg sample size. */
 function fmtDeltaSample(row){
-  if (!row||row.base_mean_sample==null||row.scen_mean_sample==null) return "";
+  if (!row) return "";
+  if (row.paired_n_runs>0){
+    const extra=row.base_mean_sample!=null&&row.scen_mean_sample!=null
+      ?` · Sample: B ${fmt1dp(row.base_mean_sample)} / S ${fmt1dp(row.scen_mean_sample)}`:"";
+    return `<br/>Paired runs: ${row.paired_n_runs}${extra}`;
+  }
+  if (row.base_mean_sample==null||row.scen_mean_sample==null) return "";
   return `<br/>Sample: Baseline ${Math.round(row.base_mean_sample).toLocaleString()} · Scenario ${Math.round(row.scen_mean_sample).toLocaleString()}`;
 }
 /**
@@ -126,14 +146,22 @@ function safeYearDomain(yrs){
   if (y0===y1) return [y0-1,y1+1];
   return [y0,y1];
 }
-/** Computes a y-axis domain from a set of rows, padding by 10% above/below the range spanned by each point's CI (or its mean_value alone, for rows without a CI). Categorical/share axes are clamped to a max of 1 (100%) plus padding. */
+/** Computes a y-axis domain from a set of rows, padded so data + CI bands sit
+ * comfortably inside the chart. The ceiling is snapped up to the next round
+ * d3-tick boundary so the evenly-spaced ticks d3 generates always reach near
+ * the top of the data — without needing to add an extra out-of-domain tick
+ * (which was the cause of uneven gridline spacing). */
 function buildYDomain(data,isCat){
   const v=data.filter(d=>!isNaN(d.mean_value));
   if (!v.length) return [0,1];
-  const hi=d3.max(v,d=>isNaN(d.upper_ci)?d.mean_value:d.upper_ci)||1;
-  const lo=d3.min(v,d=>isNaN(d.lower_ci)?d.mean_value:d.lower_ci)||0;
-  const pad=(hi-lo)*0.1||0.05;
-  return [Math.min(lo-pad,0),isCat?Math.min(1,hi+pad):hi+pad];
+  // Use upper_ci as the high-water mark if available — ensures CI bands
+  // are never clipped by the domain.
+  const hi=d3.max(v,d=>isNaN(d.upper_ci)?d.mean_value:Math.max(d.mean_value,d.upper_ci))||1;
+  const lo=d3.min(v,d=>isNaN(d.lower_ci)?d.mean_value:Math.min(d.mean_value,d.lower_ci))||0;
+  const pad=(hi-lo)*0.12||0.05;
+  const yLo=Math.max(0, lo-pad);
+  const yHi=isCat?Math.min(1,hi+pad):hi+pad;
+  return [yLo,yHi];
 }
 /** Turns an arbitrary label into a filesystem-safe filename fragment (used for CSV/PNG download filenames). */
 function slugify(s){ return String(s||"").replace(/\W+/g,"_").toLowerCase(); }
@@ -162,7 +190,23 @@ function slugify(s){ return String(s||"").replace(/\W+/g,"_").toLowerCase(); }
 // rendering at another segment's position, and the second segment left
 // with no hatch of its own).
 let hatchClipCounter=0;
-function drawHatchClipped(svgSel,g,x,y,w,h,colour,opacity=0.4,spacing=6){
+function drawDotPattern(svgSel,g,x,y,w,h,colour,opacity=0.4,spacing=6){
+  if (w<=0||h<=0) return;
+  const clipId=`dc_${++hatchClipCounter}`;
+  let defsEl=svgSel.select("defs");
+  if (defsEl.empty()) defsEl=svgSel.insert("defs","g");
+  defsEl.append("clipPath").attr("id",clipId)
+    .append("rect").attr("x",x).attr("y",y).attr("width",w).attr("height",h);
+  const dg=g.append("g").attr("clip-path",`url(#${clipId})`).style("pointer-events","none");
+  for (let row=y+spacing/2; row<y+h+spacing; row+=spacing){
+    for (let col=x+spacing/2; col<x+w+spacing; col+=spacing){
+      dg.append("circle").attr("cx",col).attr("cy",row).attr("r",1.2)
+        .attr("fill",colour).attr("opacity",opacity);
+    }
+  }
+}
+
+function drawHatchClipped(svgSel,g,x,y,w,h,colour,opacity=0.4,spacing=6,angle=45){
   if (w<=0||h<=0) return;
   const clipId=`hc_${++hatchClipCounter}`;
   let defsEl=svgSel.select("defs");
@@ -170,10 +214,12 @@ function drawHatchClipped(svgSel,g,x,y,w,h,colour,opacity=0.4,spacing=6){
   defsEl.append("clipPath").attr("id",clipId)
     .append("rect").attr("x",x).attr("y",y).attr("width",w).attr("height",h);
   const hg=g.append("g").attr("clip-path",`url(#${clipId})`).style("pointer-events","none");
+  // angle=45 → top-left to bottom-right; angle=135 → top-right to bottom-left
+  const dir = angle===135 ? 1 : -1;
   for (let offset=-(h+spacing); offset<w+h+spacing; offset+=spacing){
     hg.append("line")
       .attr("x1",x+offset).attr("y1",y)
-      .attr("x2",x+offset-h).attr("y2",y+h)
+      .attr("x2",x+offset+dir*h).attr("y2",y+h)
       .attr("stroke",colour).attr("stroke-width",1.4).attr("opacity",opacity);
   }
 }
@@ -440,13 +486,98 @@ function hideTT(){const t=document.getElementById("smpaths-tt");if(t)t.style.opa
 // downloading a CSV from the dashboard.
 const CSV_HEADER_RENAMES={total_sample:"Total Sample: Across Runs",min_sample:"Minimum Sample: Across Runs",mean_sample:"Average Sample: Across Runs"};
 
-/** Serialises `data` (an array of flat objects) to CSV and triggers a browser download — used by every chart's "↓ CSV" button. Column order follows the first row's key order; the three sample-size fields are relabelled via CSV_HEADER_RENAMES for readability. */
-function exportCsv(data,filename){
+/**
+ * Sorts CSV rows for download in a consistent, human-readable order:
+ *   1. year ascending
+ *   2. scenario (baseline rows before scenario/delta rows, alphabetically within each)
+ *   3. variable (alphabetically)
+ *   4. variable_value ascending — ONLY for categorical variables (isContinuous skips this)
+ *   5. stratifier_level ascending (if present)
+ *
+ * @param {object[]} data - array of data rows
+ * @param {boolean} isContinuous - true for numeric/mean variables; skips variable_value sort
+ * @returns {object[]} new sorted array (original is not mutated)
+ */
+function sortCsvRows(data, isContinuous=false){
+  if (!data?.length) return data;
+  // Determine the scenario value that should sort first (the baseline).
+  // We look for a row whose scenario string contains "baseline" (case-insensitive);
+  // if none found we fall back to alphabetic ordering.
+  const scenarioValues=[...new Set(data.map(d=>d.scenario).filter(Boolean))];
+  const baselineScen=scenarioValues.find(s=>/baseline/i.test(s))||null;
+
+  return [...data].sort((a,b)=>{
+    // 1. year
+    const ya=Number(a.year)||0, yb=Number(b.year)||0;
+    if (ya!==yb) return ya-yb;
+
+    // 2. scenario — baseline first, then everything else alphabetically
+    const sa=String(a.scenario??""), sb=String(b.scenario??"");
+    const aIsBase=baselineScen?sa===baselineScen:false;
+    const bIsBase=baselineScen?sb===baselineScen:false;
+    if (aIsBase!==bIsBase) return aIsBase?-1:1;
+    if (sa!==sb) return sa.localeCompare(sb);
+
+    // 3. variable
+    const va=String(a.variable??""), vb=String(b.variable??"");
+    if (va!==vb) return va.localeCompare(vb);
+
+    // 4. variable_value — categorical only; education values use a fixed ordinal
+    //    order (InEducation → Low → Medium → High) instead of alphabetic.
+    if (!isContinuous){
+      const vva=String(a.variable_value??""), vvb=String(b.variable_value??"");
+      if (vva!==vvb){
+        const varName=String(a.variable??b.variable??"").toLowerCase();
+        if (/education/.test(varName)){
+          const EDU_ORDER=["ineducation","low","medium","high"];
+          const ai=EDU_ORDER.indexOf(vva.toLowerCase());
+          const bi=EDU_ORDER.indexOf(vvb.toLowerCase());
+          if (ai!==-1||bi!==-1) return (ai===-1?999:ai)-(bi===-1?999:bi);
+        }
+        return vva.localeCompare(vvb);
+      }
+    }
+
+    // 5. stratifier_level — education uses a fixed ordinal order; everything
+    //    else falls back to alphabetic. Match on the stratifier field
+    //    case-insensitively so "Education", "education", etc. all work.
+    const sla=String(a.stratifier_value??""), slb=String(b.stratifier_value??"");
+    if (sla!==slb){
+      const stratName=String(a.stratifier??b.stratifier??"").toLowerCase();
+      if (/education/.test(stratName)){
+        const EDU_ORDER=["ineducation","low","medium","high"];
+        const ai=EDU_ORDER.indexOf(sla.toLowerCase());
+        const bi=EDU_ORDER.indexOf(slb.toLowerCase());
+        // known values sort by position; unknowns fall to the end alphabetically
+        if (ai!==-1||bi!==-1) return (ai===-1?999:ai)-(bi===-1?999:bi);
+      }
+      return sla.localeCompare(slb);
+    }
+
+    return 0;
+  });
+}
+
+/**
+ * Serialises `data` to CSV and triggers a browser download.
+ * Column order follows the first row's key order; the three sample-size fields
+ * are relabelled via CSV_HEADER_RENAMES for readability.
+ *
+ * @param {object[]} data - rows to export
+ * @param {string} filename
+ * @param {object} [opts]
+ * @param {boolean} [opts.isDelta=false] - if true, overwrites every row's `scenario` field with "delta"
+ * @param {boolean} [opts.isContinuous=false] - if true, skips variable_value in the sort order
+ */
+function exportCsv(data, filename, {isDelta=false, isContinuous=false}={}){
   if (!data?.length) return;
-  const keys=Object.keys(data[0]);
+  // Optionally stamp scenario="delta" before sorting
+  const rows = isDelta ? data.map(d=>({...d, scenario:"delta"})) : data;
+  const sorted = sortCsvRows(rows, isContinuous);
+  const keys=Object.keys(sorted[0]);
   const header=keys.map(k=>CSV_HEADER_RENAMES[k]||k);
-  const rows=[header.join(","),...data.map(d=>keys.map(k=>JSON.stringify(d[k]??"")).join(","))];
-  const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([rows.join("\n")],{type:"text/csv"})); a.download=filename; a.click(); URL.revokeObjectURL(a.href);
+  const csvRows=[header.join(","),...sorted.map(d=>keys.map(k=>JSON.stringify(d[k]??"")).join(","))];
+  const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([csvRows.join("\n")],{type:"text/csv"})); a.download=filename; a.click(); URL.revokeObjectURL(a.href);
 }
 
 /** Placeholder shown instead of a chart/panel when its underlying sample is too small to display reliably (see parseCore.js's min_sample<100 suppression rule). */
@@ -488,7 +619,12 @@ function LegendRow({label,entries,highlighted,onToggle,showSymbols=false,stratDe
               transition:"all 0.15s",flexShrink:0,maxWidth:180,
             }}>
               {showSymbols&&symIdx!==undefined
-                ? <svg width="14" height="14" style={{flexShrink:0}}><path d={d3.symbol().type(SYMBOLS[symIdx%SYMBOLS.length]).size(64)()} transform="translate(7,7)" fill={active?TEXT_M:GREY} opacity={active?1:0.4}/></svg>
+                /* Categorical stratifier (e.g. Region): show a short line with the
+                   shape centred on it — matches exactly what the combined line chart draws */
+                ? <svg width="28" height="14" style={{flexShrink:0}}>
+                    <line x1="0" y1="7" x2="28" y2="7" stroke={active?TEXT_M:GREY} strokeWidth="1.8" opacity={active?1:0.4}/>
+                    <path d={d3.symbol().type(SYMBOLS[symIdx%SYMBOLS.length]).size(52)()} transform="translate(14,7)" fill={active?TEXT_M:GREY} opacity={active?1:0.4}/>
+                  </svg>
                 : sw!==undefined
                   ? <svg width="22" height="12" style={{flexShrink:0}}><line x1="0" y1="6" x2="22" y2="6" stroke={active?TEXT_M:GREY} strokeWidth={sw} opacity={active?1:0.4}/></svg>
                   : <span style={{width:13,height:13,borderRadius:4,background:active?color:GREY,flexShrink:0,display:"inline-block",transition:"background 0.15s"}}/>
@@ -510,8 +646,8 @@ function LegendRow({label,entries,highlighted,onToggle,showSymbols=false,stratDe
 function applyTimeXAxis(g,xScale,iH,small,allYears){
   const xTicks=allYears.length<=8?allYears:d3.ticks(allYears[0],allYears[allYears.length-1],6).filter(t=>t%1===0);
   g.append("g").attr("transform",`translate(0,${iH})`).call(d3.axisBottom(xScale).tickValues(xTicks).tickFormat(d3.format("d")).tickSize(3))
-    .call(ax=>{ax.select(".domain").remove();ax.selectAll("text").style("font-size",small?"9px":FONT_SZ).style("fill",TEXT_S).style("font-family",PUB_FONT);ax.selectAll(".tick line").style("stroke","#e2ddd5");});
-  if (!small) g.append("text").attr("x",xScale.range()[1]/2).attr("y",iH+44).attr("text-anchor","middle").style("font-size",FONT_SZ).style("fill",TEXT_M).style("font-family",PUB_FONT).text("Year");
+    .call(ax=>{ax.select(".domain").remove();ax.selectAll("text").style("font-size",small?"9px":FONT_SZ).style("fill",TEXT_M).style("font-family",PUB_FONT);ax.selectAll(".tick line").style("stroke","#e2ddd5");});
+  g.append("text").attr("x",xScale.range()[1]/2).attr("y",iH+(small?32:44)).attr("text-anchor","middle").style("font-size",small?"9px":FONT_SZ).style("fill",TEXT_M).style("font-family",PUB_FONT).text("Year");
 }
 /**
  * Builds a y-axis label that names BOTH the variable being plotted and
@@ -529,11 +665,19 @@ function applyTimeXAxis(g,xScale,iH,small,allYears){
  * @param {boolean} isCat - true for categorical/share metrics, false for numeric means
  * @param {boolean} [isDelta] - true for the Δ Baseline → Scenario chart's axis, which shows a difference rather than a level
  */
+// Variables whose y-axis label should include an IHS transformation note.
+// These must match the addSpaces()-processed form of the variable name exactly
+// as it appears in the data (i.e. after addSpaces() title-cases each word).
+const IHS_VARS = new Set([
+  "Gross Personal Employment Income",
+  "Gross Private Pension Income",
+]);
 function yAxisLabel(varLabel,isCat,isDelta=false){
   const metric = isDelta
-    ? (isCat?"Δ percentage points":"Δ mean value")
-    : (isCat?"Share of sample, %":"Mean value");
-  return varLabel ? `${varLabel} (${metric})` : metric;
+    ? (isCat?"Δ percentage points":"Δ Average value")
+    : (isCat?"Share of sample, %":"Average value");
+  const ihsSuffix = (!isCat && IHS_VARS.has(varLabel)) ? ", Inverse Hyperbolic Sine Transformed" : "";
+  return varLabel ? `${varLabel} (${metric}${ihsSuffix})` : metric;
 }
 /**
  * Splits a y-axis label built by yAxisLabel() into [variablePart,
@@ -574,27 +718,45 @@ function splitAxisLabel(lbl) {
  * metric line closest to the axis and the variable name further out.
  */
 function applyYAxis(g,yScale,iW,iH,isCat,small,yLabelText){
-  const axisG=g.append("g").call(d3.axisLeft(yScale).ticks(5).tickFormat(v=>isCat?`${(v*100).toFixed(1)}%`:d3.format(",.2f")(v)).tickSize(-iW))
-    .call(ax=>{ax.select(".domain").remove();ax.selectAll("text").style("font-size",small?"9px":FONT_SZ).style("fill",TEXT_S).style("font-family",PUB_FONT);ax.selectAll(".tick line").style("stroke","#f0ece4").style("stroke-dasharray","3,3");});
-  if (!small){
+  // Let d3.ticks() pick evenly-spaced round values within the domain.
+  // Previously an extra tick was appended at lastTick+step when the domain
+  // ceiling wasn't a round multiple — that tick landed above the scale
+  // domain and d3 rendered it at a clipped position, creating visually
+  // uneven spacing between the top two gridlines. Simply using d3's own
+  // ticks (which are always within the domain) keeps spacing consistent.
+  const [domLo,domHi]=yScale.domain();
+  const yTicks=d3.ticks(domLo,domHi,5);
+  const axisG=g.append("g").call(d3.axisLeft(yScale).tickValues(yTicks).tickFormat(v=>isCat?`${(v*100).toFixed(1)}%`:d3.format(",.2f")(v)).tickSize(-iW))
+    .call(ax=>{ax.select(".domain").remove();ax.selectAll("text").style("font-size",small?"9px":FONT_SZ).style("fill",TEXT_M).style("font-family",PUB_FONT);ax.selectAll(".tick line").style("stroke","#f0ece4").style("stroke-dasharray","3,3");});
+  if (small) {
+    // Panel charts: same label as the combined plot, split across two lines
+    // at a smaller font size. yLabelText already contains the full label.
+    const lbl = yLabelText || yAxisLabel(null, isCat);
+    const split = splitAxisLabel(lbl);
+    const SMALL_GAP = 10;
+    const txt = g.append("text").attr("transform","rotate(-90)").attr("x",-iH/2).attr("y",-32)
+      .attr("text-anchor","middle").style("font-size","9px").style("fill",TEXT_M).style("font-family",PUB_FONT);
+    if (split) {
+      txt.append("tspan").attr("x",-iH/2).attr("dy",0).text(split[0]);
+      txt.append("tspan").attr("x",-iH/2).attr("dy",SMALL_GAP).text(split[1]);
+    } else {
+      txt.text(lbl);
+    }
+  } else {
     let maxTickW=0;
     axisG.selectAll("text").each(function(){
       let bw=0;
-      try { bw=this.getBBox().width; } catch(e) { bw=(this.textContent||"").length*6.2; } // getBBox unavailable in some environments — rough per-character fallback
+      try { bw=this.getBBox().width; } catch(e) { bw=(this.textContent||"").length*6.2; }
       if (bw>maxTickW) maxTickW=bw;
     });
     const lbl=yLabelText||yAxisLabel(null,isCat);
     const split=splitAxisLabel(lbl);
-    const GAP=17;      // clearance between the widest tick label and the axis title's nearest line
-    const LINE_GAP=13; // spacing between the two stacked axis-title lines
-    const nearOffset=-(maxTickW+GAP);           // where the closer line (the metric) sits
-    const farOffset=split?nearOffset-LINE_GAP:nearOffset; // where the farther line (the variable name) sits, if there are two
-    const txt=g.append("text").attr("transform","rotate(-90)").attr("x",-iH/2).attr("y",farOffset).attr("text-anchor","middle").style("font-size","11px").style("fill",TEXT_M).style("font-family",PUB_FONT);
+    const GAP=17;
+    const LINE_GAP=13;
+    const nearOffset=-(maxTickW+GAP);
+    const farOffset=split?nearOffset-LINE_GAP:nearOffset;
+    const txt=g.append("text").attr("transform","rotate(-90)").attr("x",-iH/2).attr("y",farOffset).attr("text-anchor","middle").style("font-size","12px").style("fill",TEXT_D).style("font-family",PUB_FONT);
     if (split){
-      // dy on a tspan inside a rotate(-90) text element shifts the RENDERED
-      // x-position (i.e. moves the next line closer to the axis), not the
-      // y-position — this is what stacks the two lines side-by-side rather
-      // than literally on top of each other.
       txt.append("tspan").attr("x",-iH/2).attr("dy",0).text(split[0]);
       txt.append("tspan").attr("x",-iH/2).attr("dy",LINE_GAP).text(split[1]);
     } else {
@@ -604,19 +766,24 @@ function applyYAxis(g,yScale,iW,iH,isCat,small,yLabelText){
 }
 
 /** Draws the small "— Baseline / ┄ Scenario" key at the bottom of a line/delta chart's plot area, explaining the solid-vs-dashed visual convention. Tagged "pub-skip" since the PNG export builds its own, more detailed legend instead of duplicating this compact in-chart one. */
-function drawBSKey(g,iW,iH,showBaseline,showScenario){
-  if (!showBaseline&&!showScenario) return;
+// scenarios = [{name, dash, label, colour?}] for each enabled scenario, or boolean (legacy)
+function drawBSKey(g,iW,iH,showBaseline,scenarios,baseColour=TEXT_M){
+  const scenList=Array.isArray(scenarios)?scenarios:(scenarios?[{dash:"6,4",label:"Scenario",colour:TEXT_M}]:[]);
+  if (!showBaseline&&!scenList.length) return;
   const skip=g.append("g").attr("class","pub-skip");
+  // Fixed at iH+52 for all chart types — keeps legend on the same y-line
+  // regardless of chart height differences between line and bar charts.
   let kx=4, ky=iH+52;
   if (showBaseline){
-    skip.append("line").attr("x1",kx).attr("x2",kx+16).attr("y1",ky).attr("y2",ky).attr("stroke",TEXT_M).attr("stroke-width",2);
+    skip.append("line").attr("x1",kx).attr("x2",kx+16).attr("y1",ky).attr("y2",ky).attr("stroke",baseColour).attr("stroke-width",2);
     skip.append("text").attr("x",kx+20).attr("y",ky+4).style("font-size","11px").style("fill",TEXT_M).style("font-family",PUB_FONT).text("Baseline");
     kx+=80;
   }
-  if (showScenario){
-    skip.append("line").attr("x1",kx).attr("x2",kx+16).attr("y1",ky).attr("y2",ky).attr("stroke",TEXT_M).attr("stroke-width",2).attr("stroke-dasharray","5,3");
-    skip.append("text").attr("x",kx+20).attr("y",ky+4).style("font-size","11px").style("fill",TEXT_M).style("font-family",PUB_FONT).text("Scenario");
-  }
+  scenList.forEach(({dash,label,colour=TEXT_M})=>{
+    skip.append("line").attr("x1",kx).attr("x2",kx+16).attr("y1",ky).attr("y2",ky).attr("stroke",colour).attr("stroke-width",2).attr("stroke-dasharray",dash);
+    skip.append("text").attr("x",kx+20).attr("y",ky+4).style("font-size","11px").style("fill",TEXT_M).style("font-family",PUB_FONT).text(label);
+    kx+=Math.max(80, label.length*7+28);
+  });
 }
 
 /* ═════════════════════════════════════════════════════════════════════════════
@@ -683,7 +850,10 @@ function drawBSKey(g,iW,iH,showBaseline,showScenario){
 function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
     isCategorical,yDomain,varValues,enabledVarVals,showBaseline,showScenario,
     width,small,onYearClick,selectedYear,
-    isStratified=false,stratValues=[],enabledStrats=new Set(),viewBy="",showCI=true,allYears:allYearsProp,missingLookup=null,missingStratValue,varLabel=""}){
+    isStratified=false,stratValues=[],enabledStrats=new Set(),viewBy="",showCI=true,allYears:allYearsProp,missingLookup=null,missingStratValue,varLabel="",
+    scenarioMap=null,enabledScenarios=null,allScenarioNames=[]}){
+  // If scenarioMap provided, build ordered list of [name, rows, dashPattern] for enabled scenarios
+  // Falls back to single scenData for backwards compat
   const mar=small?M_SM:M;
   const H=small?CHART_H_SM:CHART_H;
   const W=small?width:Math.min(width,MAX_W);
@@ -703,7 +873,7 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
     // when no explicit list was passed in.
     const allYears=allYearsProp&&allYearsProp.length?allYearsProp:[...new Set([...baseData,...scenData].map(d=>d.year))].filter(Boolean).sort((a,b)=>a-b);
     const xScale=d3.scaleLinear().domain(safeYearDomain(allYears)).range([0,iW]);
-    const yScale=d3.scaleLinear().domain(yDomain).range([iH,0]).clamp(true);
+    const yScale=d3.scaleLinear().domain(yDomain).range([iH,0]).clamp(false);
     applyTimeXAxis(g,xScale,iH,small,allYears);
     applyYAxis(g,yScale,iW,iH,isCategorical,small,yAxisLabel(varLabel,isCategorical));
 
@@ -730,12 +900,17 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
       return allYears.map(yr=>byYear.get(yr)||{year:yr,mean_value:NaN,lower_ci:NaN,upper_ci:NaN});
     };
 
-    const buildSeriesList=(rows)=>{
+    // scenarioIdx: -1 = baseline, 0+ = scenario index (used to pick numeric colour)
+    const buildSeriesList=(rows,scenarioIdx=-1)=>{
+      const numColour=scenarioIdx<0
+        ? NUMERIC_BASE_COLOUR
+        : NUMERIC_SCEN_COLOURS[scenarioIdx%NUMERIC_SCEN_COLOURS.length];
+      const resolveColour=(vv)=>isCategorical?(colourMap[vv]||GREY):numColour;
       if (!isStratified||small){
         const grouped=d3.group(rows,d=>d.variable_value);
         return Array.from(grouped.entries()).map(([vv,pts])=>({
-          key:`vv:${vv}`,vv,sv:null,pts:densify(pts),colour:colourMap[vv]||GREY,
-          symIdx:undefined,strokeW:2,
+          key:`vv:${vv}`,vv,sv:null,pts:densify(pts),colour:resolveColour(vv),
+          symIdx:undefined,strokeW:2.5,
           isLit:allLit||highlighted.has(vv),
           label:addSpaces(stratLabel(vv,varLabel)),
         }));
@@ -747,34 +922,33 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
           if (!enabledVarVals.has(vv)) return;
           const pts=rows.filter(d=>d.stratifier_value===sv&&d.variable_value===vv);
           if (!pts.length) return;
-          // Highlight logic: AND when both types selected, OR when only one type
           const hV=highlighted.has(vv), hS=highlighted.has(sv);
           const hasVarH=[...highlighted].some(h=>varValues.includes(h));
           const hasStratH=[...highlighted].some(h=>stratValues.includes(h));
           const isLit=allLit
-            ||(hasVarH&&hasStratH&&hV&&hS)  // both types → only exact combo
-            ||(hasVarH&&!hasStratH&&hV)      // only var → all strats for that var
-            ||(!hasVarH&&hasStratH&&hS);     // only strat → all vars for that strat
+            ||(hasVarH&&hasStratH&&hV&&hS)
+            ||(hasVarH&&!hasStratH&&hV)
+            ||(!hasVarH&&hasStratH&&hS);
           const symIdx=isCatStrat?si%SYMBOLS.length:undefined;
           const strokeW=isCatStrat?2:ORDINAL_WIDTHS[si%ORDINAL_WIDTHS.length];
-          series.push({key:`${sv}::${vv}`,vv,sv,pts:densify(pts),colour:colourMap[vv]||GREY,symIdx,strokeW,isLit,label:`${addSpaces(stratLabel(vv,varLabel))} — ${addSpaces(stratLabel(sv,viewBy))}`});
+          series.push({key:`${sv}::${vv}`,vv,sv,pts:densify(pts),colour:resolveColour(vv),symIdx,strokeW,isLit,label:`${addSpaces(stratLabel(vv,varLabel))} — ${addSpaces(stratLabel(sv,viewBy))}`});
         });
       });
       return series;
     };
 
-    const drawRibbon=(s,dashed)=>{
+    // dash is a strokeDasharray string ("none" for baseline, "6,4" / "2,2" etc. for scenarios)
+    const drawRibbon=(s,dash)=>{
       const {vv,pts,colour,isLit}=s;
       if (!enabledVarVals.has(vv)||!isLit) return;
       const sorted=[...pts].sort((a,b)=>a.year-b.year);
       if (!sorted.some(d=>!isNaN(d.lower_ci))) return;
       const area=d3.area().defined(d=>!isNaN(d.lower_ci)&&!isNaN(d.upper_ci)).x(d=>xScale(d.year)).y0(d=>yScale(d.lower_ci)).y1(d=>yScale(d.upper_ci)).curve(d3.curveMonotoneX);
       const band=g.append("path").datum(sorted).attr("d",area).attr("fill",colour).attr("opacity",0.13).style("pointer-events","none");
-      // Scenario ribbons get a dashed outline (same solid/dashed convention as the lines) so overlapping baseline/scenario bands stay distinguishable
-      if (dashed) band.attr("stroke",colour).attr("stroke-width",1).attr("stroke-dasharray","3,3").attr("stroke-opacity",0.55);
+      if (dash&&dash!=="none") band.attr("stroke",colour).attr("stroke-width",1).attr("stroke-dasharray",dash).attr("stroke-opacity",0.55);
     };
 
-    const drawLine=(s,dashed)=>{
+    const drawLine=(s,dash)=>{
       const {vv,pts,colour,isLit,strokeW}=s;
       if (!enabledVarVals.has(vv)) return;
       const fc=isLit?colour:GREY;
@@ -783,7 +957,7 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
       const sorted=[...pts].sort((a,b)=>a.year-b.year);
       if (!sorted.length) return;
       g.append("path").datum(sorted).attr("d",lineFn).attr("fill","none").attr("stroke",fc)
-        .attr("stroke-width",sw).attr("stroke-dasharray",dashed?"6,4":"none").attr("opacity",opacity).style("pointer-events","none");
+        .attr("stroke-width",sw).attr("stroke-dasharray",(dash&&dash!=="none")?dash:"none").attr("opacity",opacity).style("pointer-events","none");
     };
 
     const drawDots=(s,scenLabel)=>{
@@ -797,7 +971,8 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
       // point. missingStratValue overrides sv for panels, where sv is
       // always null internally even though the panel represents one
       // specific stratum — see the prop's JSDoc above.
-      const scenarioKey=scenLabel==="Baseline"?"baseline":"scenario";
+      // Map display label back to the raw scenario key for missingLookup
+      const scenarioKey=scenLabel==="Baseline"?"baseline":(scenData?.length?scenData[0]?.scenario:"scenario");
       const stratValKey=missingStratValue??sv??"Overall";
       // Always draw dots + always add an invisible hit area so tooltips work
       // regardless of opacity, size, or baseline vs scenario
@@ -806,18 +981,16 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
         const mrow=missingLookup?missingLookup.get(`${scenarioKey}|${d.year}|${stratValKey}`):null;
         const ttHtml=`<strong>${label}</strong><br/>${scenLabel}: ${fmt(d.mean_value,isCategorical)}`+(!isNaN(d.lower_ci)?`<br/>95% CI: [${fmt(d.lower_ci,isCategorical)}, ${fmt(d.upper_ci,isCategorical)}]`:"")+fmtSample(d)+fmtMissing(mrow)+`<br/>Year: ${d.year}${onYearClick?" · click to filter a cross-section":""}`;
         const dotR=small?(isLit?2.5:1.5):(isLit?3.5:2);
+        // Only draw visible markers on combined/stratified-categorical plots
+        // (where symIdx is set). Plain line charts get no visible dots —
+        // the invisible hit area below still handles tooltips and year-click.
         if (symIdx!==undefined&&!small){
           const symPath=d3.symbol().type(SYMBOLS[symIdx]).size(isLit?52:28)();
           g.append("path").attr("d",symPath).attr("transform",`translate(${cx},${cy})`)
             .attr("fill",fc).attr("opacity",opacity).style("pointer-events","none");
-        } else {
-          g.append("circle").attr("cx",cx).attr("cy",cy).attr("r",dotR)
-            .attr("fill",fc).attr("opacity",opacity).style("pointer-events","none");
         }
-        // Invisible hit area — always present, covers both baseline and scenario dots,
-        // and (since it's drawn in the topmost layer) is never covered by a CI ribbon.
-        // Click-to-pin-a-year now works at small size too (e.g. small-multiple
-        // panels), not just full-size charts — see onYearClick's callers.
+        // Invisible hit area — always present regardless of whether a visible
+        // dot is drawn, so tooltips and year-click always work.
         g.append("circle").attr("cx",cx).attr("cy",cy).attr("r",Math.max(8,dotR+5))
           .attr("fill","transparent")
           .style("cursor",onYearClick?"pointer":"default")
@@ -826,11 +999,20 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
       });
     };
 
-    const byLitOrder=(a,b)=>(a.isLit?1:-1); // dim first so lit draws on top within its layer
-    const baseSeries=showBaseline?buildSeriesList(baseData):[];
-    const scenSeries=showScenario?buildSeriesList(scenData):[];
+    const byLitOrder=(a,b)=>(a.isLit?1:-1);
+    const baseSeries=showBaseline?buildSeriesList(baseData,-1):[];
 
-    // Click strips BEFORE everything else so dots paint on top and catch mouse events first
+    // Build one series list per enabled scenario, with its dash pattern and colour index
+    const scenSeriesList = (scenarioMap && scenarioMap.size > 0)
+      ? allScenarioNames
+          .filter(n=>enabledScenarios?.has(n))
+          .map((name)=>{const gi=allScenarioNames.indexOf(name);return({
+            name, dash:SCENARIO_DASHES[gi%SCENARIO_DASHES.length],
+            series:buildSeriesList(scenarioMap.get(name)??[],gi),
+            label:scenarioLabel(name),
+          });})
+      : (showScenario ? [{name:"scenario",dash:SCENARIO_DASHES[0],series:buildSeriesList(scenData,0),label:"Scenario"}] : []);
+
     if (onYearClick){
       allYears.forEach(yr=>{
         g.append("rect").attr("x",xScale(yr)-10).attr("y",0).attr("width",20).attr("height",iH)
@@ -840,26 +1022,33 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
       });
     }
 
-    // Layer 1 — CI ribbons for BOTH baseline and scenario, drawn first so they sit
-    // behind every trajectory line (and their pointer-events:none means they never
-    // block the dot hit-areas drawn in layer 3 anyway).
+    // Draw dim series first, lit series last so highlighted series sit on top.
+    // Within each pass: ribbon immediately before its own line so every line
+    // always renders above every CI ribbon (including those of other scenarios).
+    const allSeriesEntries=[
+      ...baseSeries.map(s=>({s,dash:"none",label:"Baseline"})),
+      ...scenSeriesList.flatMap(({series,dash,label})=>series.map(s=>({s,dash,label}))),
+    ];
+    // Ribbons for dim series first
     if (showCI&&!small){
-      [...baseSeries].sort(byLitOrder).forEach(s=>drawRibbon(s,false));
-      [...scenSeries].sort(byLitOrder).forEach(s=>drawRibbon(s,true));
+      allSeriesEntries.filter(({s})=>!s.isLit).forEach(({s,dash})=>drawRibbon(s,dash));
     }
+    // Lines for dim series
+    allSeriesEntries.filter(({s})=>!s.isLit).forEach(({s,dash})=>drawLine(s,dash));
+    // Ribbons for lit series
+    if (showCI&&!small){
+      allSeriesEntries.filter(({s})=>s.isLit).forEach(({s,dash})=>drawRibbon(s,dash));
+    }
+    // Lines for lit series — always on top of all ribbons
+    allSeriesEntries.filter(({s})=>s.isLit).forEach(({s,dash})=>drawLine(s,dash));
+    // Dots + hit areas topmost
+    allSeriesEntries.forEach(({s,label})=>drawDots(s,label));
 
-    // Layer 2 — trajectory lines, on top of all ribbons
-    [...baseSeries].sort(byLitOrder).forEach(s=>drawLine(s,false));
-    [...scenSeries].sort(byLitOrder).forEach(s=>drawLine(s,true));
+    if (!small) drawBSKey(g,iW,iH,showBaseline,
+      scenSeriesList.map(({name,dash,label})=>{const gi=allScenarioNames.indexOf(name);return{name,dash,label,colour:isCategorical?TEXT_M:NUMERIC_SCEN_COLOURS[gi%NUMERIC_SCEN_COLOURS.length]};}),
+      isCategorical?TEXT_M:NUMERIC_BASE_COLOUR);
 
-    // Layer 3 — dots + hit areas, topmost so tooltips always remain reachable
-    [...baseSeries].sort(byLitOrder).forEach(s=>drawDots(s,"Baseline"));
-    [...scenSeries].sort(byLitOrder).forEach(s=>drawDots(s,"Scenario"));
-
-    // Baseline/scenario key at BOTTOM of plot, tagged pub-skip
-    if (!small) drawBSKey(g,iW,iH,showBaseline,showScenario);
-
-  },[baseData,scenData,colourMap,highlighted,yDomain,W,H,isCategorical,enabledVarVals,small,selectedYear,onYearClick,showBaseline,showScenario,isStratified,stratValues,enabledStrats,varValues,isCatStrat,showCI,varLabel,viewBy]);
+  },[baseData,scenData,colourMap,highlighted,yDomain,W,H,isCategorical,enabledVarVals,small,selectedYear,onYearClick,showBaseline,showScenario,isStratified,stratValues,enabledStrats,varValues,isCatStrat,showCI,varLabel,viewBy,scenarioMap,enabledScenarios,allScenarioNames]);
 
   return <svg ref={svgRef} style={{display:"block",overflow:"visible"}}/>;
 }
@@ -885,10 +1074,11 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
  * @param {string} [props.varLabel] - the target variable's display name — see LineChart's JSDoc for how this feeds stratLabel() scoping and the y-axis label
  */
 function StackedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
-    isCategorical,varValues,enabledVarVals,showBaseline,showScenario,width,small,patId="",allYears:allYearsProp,varLabel=""}){
+    isCategorical,varValues,enabledVarVals,showBaseline,showScenario,width,small,patId="",allYears:allYearsProp,varLabel="",
+    scenarioMap=null,enabledScenarios=null,allScenarioNames=[]}){
   const mar=small?M_SM:M;
   const H=small?CHART_H_SM:CHART_H;
-  const W=small?width:Math.min(width,MAX_W);
+  const W=small?width:width;  // match LineChart — no MAX_W cap
   const allLit=highlighted.size===0;
 
   useEffect(()=>{
@@ -899,11 +1089,23 @@ function StackedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
     const g=svg.append("g").attr("transform",`translate(${mar.left},${mar.top})`);
     const filteredVV=varValues.filter(v=>enabledVarVals.has(v));
     if (!filteredVV.length) return;
-    const innerKeys=[]; if (showBaseline) innerKeys.push("baseline"); if (showScenario) innerKeys.push("scenario");
+    // Build ordered list of enabled scenarios with their hatch angle
+    const scenEntries = scenarioMap && scenarioMap.size > 0
+      ? allScenarioNames.filter(n=>enabledScenarios?.has(n)).map((name)=>{const gi=allScenarioNames.indexOf(name);return({
+          name, label:scenarioLabel(name), rows:scenarioMap.get(name)??[],
+          hatchAngle:45, fillStyle:gi===0?"dot":"hatch", gi,
+          scenColour:isCategorical?null:NUMERIC_SCEN_COLOURS[gi%NUMERIC_SCEN_COLOURS.length],
+        });})
+      : (showScenario?[{name:"scenario",label:"Scenario",rows:scenData,hatchAngle:45,fillStyle:"dot",gi:0,scenColour:isCategorical?null:NUMERIC_SCEN_COLOURS[0]}]:[]);
+    const innerKeys=[]; if (showBaseline) innerKeys.push("baseline");
+    scenEntries.forEach(({name})=>innerKeys.push(name));
     if (!innerKeys.length) return;
     const allYears=allYearsProp&&allYearsProp.length?allYearsProp:[...new Set([...baseData,...scenData].map(d=>d.year))].filter(Boolean).sort((a,b)=>a-b);
     const buildStack=(rows)=>allYears.map(yr=>{
-      const yearRows=rows.filter(d=>d.year===yr&&filteredVV.includes(d.variable_value));
+      // Filter to Overall rows only — strat-specific rows (from other views)
+      // can co-exist in the same data array and would inflate the shares if
+      // included here.
+      const yearRows=rows.filter(d=>d.year===yr&&filteredVV.includes(d.variable_value)&&d.stratifier_value==="Overall");
       let acc=0;
       return filteredVV.map(vv=>{
         const r=yearRows.find(d=>d.variable_value===vv);
@@ -911,16 +1113,16 @@ function StackedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
         const seg={year:yr,vv,val,y0:acc,y1:acc+val,row:r}; acc+=val; return seg;
       });
     });
-    const baseStack=buildStack(baseData), scenStack=buildStack(scenData);
-    const yScale=d3.scaleLinear().domain([0,1]).range([iH,0]).clamp(true);
+    const baseStack=buildStack(baseData);
+    const yScale=d3.scaleLinear().domain([0,1]).range([iH,0]).clamp(false);
     const xOuter=d3.scaleBand().domain(allYears.map(String)).range([0,iW]).paddingInner(0.2).paddingOuter(0.1);
     const xInner=d3.scaleBand().domain(innerKeys).range([0,xOuter.bandwidth()]).paddingInner(0.06);
     g.append("g").attr("transform",`translate(0,${iH})`).call(d3.axisBottom(xOuter).tickFormat(d3.format("d")).tickSize(3))
-      .call(ax=>{ax.select(".domain").remove();ax.selectAll("text").style("font-size",small?"9px":FONT_SZ).style("fill",TEXT_S).style("font-family",PUB_FONT);ax.selectAll(".tick line").style("stroke","#e2ddd5");});
+      .call(ax=>{ax.select(".domain").remove();ax.selectAll("text").style("font-size",small?"9px":FONT_SZ).style("fill",TEXT_M).style("font-family",PUB_FONT);ax.selectAll(".tick line").style("stroke","#e2ddd5");});
     if (!small) g.append("text").attr("x",iW/2).attr("y",iH+44).attr("text-anchor","middle").style("font-size",FONT_SZ).style("fill",TEXT_M).style("font-family",PUB_FONT).text("Year");
     applyYAxis(g,yScale,iW,iH,true,small,yAxisLabel(varLabel,true));
 
-    const drawStack=(stack,key,isBase)=>{
+    const drawStack=(stack,key,isBase,scenLbl="Scenario",hatchAngle=45,fillStyle="hatch",scenColour=null)=>{
       stack.forEach(yearSegs=>{
         const yr=yearSegs[0]?.year, ox=xOuter(String(yr));
         if (ox===undefined) return;
@@ -928,20 +1130,21 @@ function StackedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
         yearSegs.forEach(seg=>{
           if (!seg.val) return;
           const isLit=allLit||highlighted.has(seg.vv);
-          const colour=colourMap[seg.vv]||GREY, fc=isLit?colour:GREY;
+          const colour=scenColour||(colourMap[seg.vv]||GREY);
+          const baseC=isBase?(isCategorical?(colourMap[seg.vv]||GREY):NUMERIC_BASE_COLOUR):colour;
+          const fc=isLit?baseC:GREY;
           const barY=yScale(seg.y1), barH=Math.abs(yScale(seg.y0)-yScale(seg.y1));
           const bh=Math.max(0.5,barH);
-          const ttHtml=`<strong>${addSpaces(stratLabel(seg.vv,varLabel))}</strong><br/>${isBase?"Baseline":"Scenario"}: ${fmt(seg.val,true)}`+(seg.row&&!isNaN(seg.row.lower_ci)?`<br/>95% CI: [${fmt(seg.row.lower_ci,true)}, ${fmt(seg.row.upper_ci,true)}]`:"")+fmtSample(seg.row)+`<br/>Year: ${yr}`;
+          const ttHtml=`<strong>${addSpaces(stratLabel(seg.vv,varLabel))}</strong><br/>${isBase?"Baseline":scenLbl}: ${fmt(seg.val,true)}`+(seg.row&&!isNaN(seg.row.lower_ci)?`<br/>95% CI: [${fmt(seg.row.lower_ci,true)}, ${fmt(seg.row.upper_ci,true)}]`:"")+fmtSample(seg.row)+`<br/>Year: ${yr}`;
           if (isBase){
             g.append("rect").attr("x",ox+bx).attr("y",barY).attr("width",bw).attr("height",bh)
               .attr("fill",fc).attr("opacity",isLit?0.88:0.18)
               .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
           } else {
-            // Scenario: lighter fill + inline diagonal hatch (no url() refs) + border
             g.append("rect").attr("x",ox+bx).attr("y",barY).attr("width",bw).attr("height",bh)
               .attr("fill",fc).attr("opacity",isLit?0.32:0.07);
-            // Inline hatch — survives SVG serialisation
-            drawHatchClipped(svg,g,ox+bx,barY,bw,bh,fc,isLit?0.55:0.1);
+            if (fillStyle==="dot") drawDotPattern(svg,g,ox+bx,barY,bw,bh,fc,isLit?0.7:0.15,5);
+            else drawHatchClipped(svg,g,ox+bx,barY,bw,bh,fc,isLit?0.55:0.1,4,hatchAngle);
             g.append("rect").attr("x",ox+bx).attr("y",barY).attr("width",bw).attr("height",bh)
               .attr("fill","none").attr("stroke",fc).attr("stroke-width",1).attr("opacity",isLit?0.65:0.12)
               .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
@@ -949,30 +1152,29 @@ function StackedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
         });
       });
     };
-    // Draw baseline first (lower z), scenario second (higher z = on top, tooltip reachable)
     if (showBaseline) drawStack(baseStack,"baseline",true);
-    if (showScenario) drawStack(scenStack,"scenario",false);
-    // Raise scenario tooltip rects to very top using a separate overlay pass
-    if (showScenario){
-      scenStack.forEach(yearSegs=>{
+    scenEntries.forEach(({name,label,rows,hatchAngle,fillStyle,scenColour})=>{
+      const stack=buildStack(rows);
+      drawStack(stack,name,false,label,hatchAngle,fillStyle,scenColour);
+      // Tooltip overlay pass
+      stack.forEach(yearSegs=>{
         const yr=yearSegs[0]?.year, ox=xOuter(String(yr));
         if (ox===undefined) return;
-        const bx=xInner("scenario"), bw=xInner.bandwidth();
+        const bx=xInner(name), bw=xInner.bandwidth();
         yearSegs.forEach(seg=>{
           if (!seg.val) return;
           const isLit=allLit||highlighted.has(seg.vv);
           const colour=colourMap[seg.vv]||GREY, fc=isLit?colour:GREY;
           const barY=yScale(seg.y1), barH=Math.abs(yScale(seg.y0)-yScale(seg.y1));
-          const ttHtml=`<strong>${addSpaces(stratLabel(seg.vv,varLabel))}</strong><br/>Scenario: ${fmt(seg.val,true)}`+(seg.row&&!isNaN(seg.row.lower_ci)?`<br/>95% CI: [${fmt(seg.row.lower_ci,true)}, ${fmt(seg.row.upper_ci,true)}]`:"")+fmtSample(seg.row)+`<br/>Year: ${yr}`;
-          // Transparent overlay rect — painted last, always on top
+          const ttHtml=`<strong>${addSpaces(stratLabel(seg.vv,varLabel))}</strong><br/>${label}: ${fmt(seg.val,true)}`+(seg.row&&!isNaN(seg.row.lower_ci)?`<br/>95% CI: [${fmt(seg.row.lower_ci,true)}, ${fmt(seg.row.upper_ci,true)}]`:"")+fmtSample(seg.row)+`<br/>Year: ${yr}`;
           g.append("rect").attr("x",ox+bx).attr("y",barY).attr("width",bw).attr("height",Math.max(0.5,barH))
             .attr("fill","transparent")
             .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
         });
       });
-    }
-    if (!small) drawBSKey(g,iW,iH,showBaseline,showScenario);
-  },[baseData,scenData,colourMap,highlighted,W,H,varValues,enabledVarVals,small,showBaseline,showScenario,patId,varLabel]);
+    });
+    if (!small) drawBSKey(g,iW,iH,showBaseline,scenEntries.map(({name,label})=>({name,dash:"none",label})));
+  },[baseData,scenData,colourMap,highlighted,W,H,varValues,enabledVarVals,small,showBaseline,showScenario,patId,varLabel,scenarioMap,enabledScenarios,allScenarioNames]);
   return <svg ref={svgRef} style={{display:"block",overflow:"visible"}}/>;
 }
 
@@ -1017,11 +1219,55 @@ function StackedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
  */
 function GroupedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
     isCategorical,yDomain,varValues,enabledVarVals,showBaseline,showScenario,width,small,year,patId="",missingBase=null,missingScen=null,varLabel="",
-    isStratified=false,stratValues=[],enabledStrats=new Set(),viewBy=""}){
+    isStratified=false,stratValues=[],enabledStrats=new Set(),viewBy="",
+    scenarioMap=null,enabledScenarios=null,allScenarioNames=[]}){
   const mar=small?M_SM:M;
-  const MB={...mar,bottom:small?48:90};
-  const H=small?CHART_H_SM:CHART_H;
-  const W=small?width:Math.min(width,MAX_W);
+
+  // ── Dynamic label geometry ─────────────────────────────────────────────────
+  // Use the full available width so bars have room and labels don't crowd.
+  const W = small ? width : width;
+
+  // Estimate band width after allocating margins and d3 band padding.
+  // xOuter uses paddingInner 0.28 (non-stratified) or 0.35 (stratified),
+  // so multiply by (1 - padding) to get the actual bandwidth available
+  // for labels — this is what prevents labels overrunning adjacent bars.
+  const estIW = Math.max(60, W - mar.left - mar.right);
+  const nVV = Math.max(1, varValues.filter(v=>enabledVarVals.has(v)).length);
+  const nSV = Math.max(1, stratValues.filter(v=>enabledStrats.has(v)).length);
+  const nGroups = isStratified ? nSV : nVV;
+  const paddingFactor = isStratified ? (1 - 0.35) : (1 - 0.28);
+  // estBandW = the width of one outer band (one label slot)
+  const estBandW = (estIW / nGroups) * paddingFactor;
+
+  // Font: clamp 8–11px based on band width
+  const labelFontSz = Math.min(11, Math.max(8, Math.floor(estBandW * 0.22)));
+  // Characters per line: band width / approx px-per-char
+  const maxCharsPerLine = Math.max(4, Math.floor(estBandW / (labelFontSz * 0.62)));
+
+  // Compute the worst-case number of label lines across all visible values
+  const wrapCount = (label) => {
+    const words = label.split(" ");
+    let lines = 0, cur = "";
+    for (const w of words) {
+      if (cur && (cur + " " + w).length > maxCharsPerLine) { lines++; cur = w; }
+      else { cur = cur ? cur + " " + w : w; }
+    }
+    return lines + 1;
+  };
+  const maxLines = small ? 1 : Math.max(1, ...( isStratified
+    ? stratValues.filter(v=>enabledStrats.has(v)).map(v=>wrapCount(addSpaces(stratLabel(v,viewBy))))
+    : varValues.filter(v=>enabledVarVals.has(v)).map(v=>wrapCount(addSpaces(stratLabel(v,varValues[0]||""))))
+  ));
+  // Bottom margin: must fit the BSKey legend (at iH+52) plus x-axis labels below it.
+  // Keep iH the same as LineChart (CHART_H - mar.top - mar.bottom = 316) so the
+  // BSKey legend sits on the same y-line across both chart types.
+  // Labels sit below the legend, so extra lines grow the total SVG height downward.
+  const lineHeightPx = labelFontSz * 1.35;
+  // Base bottom = same as M.bottom (70) so iH matches LineChart; add extra per label line beyond 1.
+  const extraLabelPx = small ? 0 : Math.max(0, (maxLines - 1) * lineHeightPx);
+  const bottomMargin = small ? 46 : mar.bottom + extraLabelPx;
+  const MB = { ...mar, bottom: bottomMargin };
+  const H = small ? CHART_H_SM : CHART_H + extraLabelPx;
   const allLit=highlighted.size===0;
   useEffect(()=>{
     const svg=d3.select(svgRef.current); svg.selectAll("*").remove();
@@ -1031,7 +1277,17 @@ function GroupedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
     const g=svg.append("g").attr("transform",`translate(${MB.left},${MB.top})`);
     const filteredVV=varValues.filter(v=>enabledVarVals.has(v));
     if (!filteredVV.length) return;
-    const innerKeys=[]; if (showBaseline) innerKeys.push("baseline"); if (showScenario) innerKeys.push("scenario"); if (!innerKeys.length) return;
+    // Build ordered list of enabled scenarios with their data and hatch angle
+    const scenEntries = scenarioMap && scenarioMap.size > 0
+      ? allScenarioNames.filter(n=>enabledScenarios?.has(n)).map((name)=>{const gi=allScenarioNames.indexOf(name);return({
+          name, label:scenarioLabel(name), rows:scenarioMap.get(name)??[],
+          hatchAngle:45, fillStyle:gi===0?"dot":"hatch", gi,
+          scenColour:isCategorical?null:NUMERIC_SCEN_COLOURS[gi%NUMERIC_SCEN_COLOURS.length],
+        });})
+      : (showScenario?[{name:"scenario",label:"Scenario",rows:scenData,hatchAngle:45,fillStyle:"dot",gi:0,scenColour:isCategorical?null:NUMERIC_SCEN_COLOURS[0]}]:[]);
+    const innerKeys=[]; if (showBaseline) innerKeys.push("baseline");
+    scenEntries.forEach(({name})=>innerKeys.push(name));
+    if (!innerKeys.length) return;
 
     // ── Stratified ("combined") layout — everything in one chart ───────────
     if (isStratified) {
@@ -1040,7 +1296,7 @@ function GroupedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
       const xOuter=d3.scaleBand().domain(filteredSV).range([0,iW]).paddingInner(0.35).paddingOuter(0.1);
       const xMid=d3.scaleBand().domain(filteredVV).range([0,xOuter.bandwidth()]).paddingInner(0.15);
       const xInner=d3.scaleBand().domain(innerKeys).range([0,xMid.bandwidth()]).paddingInner(0.08);
-      const yScale=d3.scaleLinear().domain(yDomain).range([iH,0]).clamp(true);
+      const yScale=d3.scaleLinear().domain(yDomain).range([iH,0]).clamp(false);
       g.append("g").attr("transform",`translate(0,${iH})`).call(d3.axisBottom(xOuter).tickFormat(()=>"").tickSize(3))
         .call(ax=>{ax.select(".domain").remove();ax.selectAll(".tick line").style("stroke","#e2ddd5");});
       // One (up-to-2-line) label per stratum, same wrap approach as the non-stratified x labels below
@@ -1051,13 +1307,14 @@ function GroupedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
         const line1=words.slice(0,mid).join(" "), line2=words.slice(mid).join(" ");
         const lbl=g.append("text").attr("text-anchor","middle")
           .attr("x",cx).attr("y",iH+14)
-          .style("font-size",small?"9px":"11px").style("fill",TEXT_S).style("font-family",PUB_FONT);
+          .style("font-size",`${labelFontSz}px`).style("fill",TEXT_S).style("font-family",PUB_FONT);
         lbl.append("tspan").attr("x",cx).attr("dy","0").text(line1);
         if (line2) lbl.append("tspan").attr("x",cx).attr("dy","1.2em").text(line2);
       });
       applyYAxis(g,yScale,iW,iH,isCategorical,small,yAxisLabel(varLabel,isCategorical));
       const y0=yScale(Math.max(0,yDomain[0]>0?yDomain[0]:0));
       const getRow=(rows,sv,vv)=>{const r=rows.find(d=>d.stratifier_value===sv&&d.variable_value===vv);return r&&!isNaN(r.mean_value)?r:null;};
+
 
       filteredSV.forEach(sv=>{
         const ox=xOuter(sv)||0;
@@ -1066,71 +1323,81 @@ function GroupedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
           const isLit=allLit||highlighted.has(vv)||highlighted.has(sv);
           const fc=isLit?colour:GREY;
           const mx=xMid(vv)||0, bw=xInner.bandwidth();
-          const drawBar=(rows,key,isBase)=>{
-            const row=getRow(rows,sv,vv); if (!row) return;
+          const drawBar=(rows,key,isBase,lbl="Scenario",hatchAngle=45,fillStyle="hatch",scenColour=null)=>{
+            const row=rows.find(d=>d.stratifier_value===sv&&d.variable_value===vv);
+            if (!row||isNaN(row.mean_value)) return;
             const bx=xInner(key), barY=yScale(row.mean_value), barH=Math.abs(y0-barY);
-            const lbl=isBase?"Baseline":"Scenario";
+            const barColour=isBase?(isCategorical?fc:(isLit?NUMERIC_BASE_COLOUR:GREY)):(scenColour&&isLit?scenColour:fc);
             const ttHtml=`<strong>${addSpaces(stratLabel(vv,varLabel))} — ${addSpaces(stratLabel(sv,viewBy))}</strong><br/>${lbl}: ${fmt(row.mean_value,isCategorical)}`+(!isNaN(row.lower_ci)?`<br/>95% CI: [${fmt(row.lower_ci,isCategorical)}, ${fmt(row.upper_ci,isCategorical)}]`:"")+fmtSample(row)+(year?`<br/>Year: ${year}`:"");
             const gx=ox+mx+bx;
             if (isBase){
-              g.append("rect").attr("x",gx).attr("y",Math.min(y0,barY)).attr("width",bw).attr("height",Math.max(1,barH)).attr("fill",fc).attr("opacity",isLit?0.85:0.18).attr("rx",2).on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
+              g.append("rect").attr("x",gx).attr("y",Math.min(y0,barY)).attr("width",bw).attr("height",Math.max(1,barH)).attr("fill",barColour).attr("opacity",isLit?0.85:0.18).attr("rx",2).on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
             } else {
               const _gy=Math.min(y0,barY), _gh=Math.max(1,barH);
-              g.append("rect").attr("x",gx).attr("y",_gy).attr("width",bw).attr("height",_gh).attr("fill",fc).attr("opacity",isLit?0.32:0.07).attr("rx",2);
-              drawHatchClipped(svg,g,gx,_gy,bw,_gh,fc,isLit?0.55:0.1);
-              g.append("rect").attr("x",gx).attr("y",_gy).attr("width",bw).attr("height",_gh).attr("fill","none").attr("stroke",fc).attr("stroke-width",1.5).attr("opacity",isLit?0.9:0.2).attr("rx",2)
+              g.append("rect").attr("x",gx).attr("y",_gy).attr("width",bw).attr("height",_gh).attr("fill",barColour).attr("opacity",isLit?0.32:0.07).attr("rx",2);
+              if (fillStyle==="dot") drawDotPattern(svg,g,gx,_gy,bw,_gh,barColour,isLit?0.7:0.15,5);
+              else drawHatchClipped(svg,g,gx,_gy,bw,_gh,barColour,isLit?0.55:0.1,4,hatchAngle);
+              g.append("rect").attr("x",gx).attr("y",_gy).attr("width",bw).attr("height",_gh).attr("fill","none").attr("stroke",barColour).attr("stroke-width",1.5).attr("opacity",isLit?0.9:0.2).attr("rx",2)
                 .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
             }
             if (!isNaN(row.lower_ci)&&!isNaN(row.upper_ci)&&isLit){
-              const ciColour=d3.color(fc).darker(1.3).toString();
+              const ciColour=d3.color(barColour).darker(0.8).toString();
               const cx=gx+bw/2;
               g.append("line").attr("x1",cx).attr("x2",cx).attr("y1",yScale(row.lower_ci)).attr("y2",yScale(row.upper_ci)).attr("stroke",ciColour).attr("stroke-width",1.5).attr("opacity",0.85);
               [yScale(row.upper_ci),yScale(row.lower_ci)].forEach(ty=>{g.append("line").attr("x1",cx-3).attr("x2",cx+3).attr("y1",ty).attr("y2",ty).attr("stroke",ciColour).attr("stroke-width",1.5).attr("opacity",0.85);});
             }
           };
-          if (showBaseline) drawBar(baseData,"baseline",true);
-          if (showScenario) drawBar(scenData,"scenario",false);
+          if (showBaseline) drawBar(baseData,"baseline",true,"Baseline",0,"hatch",null);
+          scenEntries.forEach(({name,label,rows,hatchAngle,fillStyle,scenColour})=>drawBar(rows,name,false,label,hatchAngle,fillStyle,scenColour));
         });
       });
-      // Scenario tooltip overlay — raised above everything, same reasoning as the non-stratified path below
-      if (showScenario){
+      // Scenario tooltip overlays
+      scenEntries.forEach(({name,label,rows})=>{
         filteredSV.forEach(sv=>{
           const ox=xOuter(sv)||0;
           filteredVV.forEach(vv=>{
-            const mx=xMid(vv)||0, bx=xInner("scenario"), bw=xInner.bandwidth();
+            const mx=xMid(vv)||0, bx=xInner(name), bw=xInner.bandwidth();
             if (bx===undefined) return;
-            const sRow=scenData.find(d=>d.stratifier_value===sv&&d.variable_value===vv);
+            const sRow=rows.find(d=>d.stratifier_value===sv&&d.variable_value===vv);
             if (!sRow||isNaN(sRow.mean_value)) return;
             const barY=yScale(sRow.mean_value), y0loc=yScale(Math.max(0,yDomain[0]>0?yDomain[0]:0));
             const barH=Math.abs(y0loc-barY);
-            const ttHtml=`<strong>${addSpaces(stratLabel(vv,varLabel))} — ${addSpaces(stratLabel(sv,viewBy))}</strong><br/>Scenario: ${fmt(sRow.mean_value,isCategorical)}`+(!isNaN(sRow.lower_ci)?`<br/>95% CI: [${fmt(sRow.lower_ci,isCategorical)}, ${fmt(sRow.upper_ci,isCategorical)}]`:"")+fmtSample(sRow)+(year?`<br/>Year: ${year}`:"");
+            const ttHtml=`<strong>${addSpaces(stratLabel(vv,varLabel))} — ${addSpaces(stratLabel(sv,viewBy))}</strong><br/>${label}: ${fmt(sRow.mean_value,isCategorical)}`+(!isNaN(sRow.lower_ci)?`<br/>95% CI: [${fmt(sRow.lower_ci,isCategorical)}, ${fmt(sRow.upper_ci,isCategorical)}]`:"")+fmtSample(sRow)+(year?`<br/>Year: ${year}`:"");
             g.append("rect").attr("x",ox+mx+bx).attr("y",Math.min(y0loc,barY)).attr("width",bw).attr("height",Math.max(1,barH))
               .attr("fill","transparent")
               .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
           });
         });
-      }
-      if (!small) drawBSKey(g,iW,iH,showBaseline,showScenario);
+      });
+      if (!small) drawBSKey(g,iW,iH,showBaseline,scenEntries.map(({name,label,gi})=>({name,dash:SCENARIO_DASHES[Math.max(gi,0)%SCENARIO_DASHES.length],label})));
       return;
     }
 
     // ── Non-stratified layout — one group of bars per variable value ───────
     const xOuter=d3.scaleBand().domain(filteredVV).range([0,iW]).paddingInner(0.28).paddingOuter(0.1);
     const xInner=d3.scaleBand().domain(innerKeys).range([0,xOuter.bandwidth()]).paddingInner(0.08);
-    const yScale=d3.scaleLinear().domain(yDomain).range([iH,0]).clamp(true);
+    const yScale=d3.scaleLinear().domain(yDomain).range([iH,0]).clamp(false);
     g.append("g").attr("transform",`translate(0,${iH})`).call(d3.axisBottom(xOuter).tickFormat(()=>"").tickSize(3))
       .call(ax=>{ax.select(".domain").remove();ax.selectAll(".tick line").style("stroke","#e2ddd5");});
-    // Two-line wrapping x-axis labels for grouped bar
+    // X-axis labels: always horizontal, wrapped across as many lines as needed.
+    // Split into ~maxChars-per-line chunks at word boundaries so long category
+    // names (e.g. Household Type) never overlap with each other or the legend.
     xOuter.domain().forEach(vv=>{
       const fullLabel=addSpaces(stratLabel(vv,varLabel));
       const cx=(xOuter(vv)||0)+xOuter.bandwidth()/2;
-      const words=fullLabel.split(" "); const mid=Math.ceil(words.length/2);
-      const line1=words.slice(0,mid).join(" "), line2=words.slice(mid).join(" ");
+      const words=fullLabel.split(" ");
+      const lines=[]; let cur="";
+      for (const w of words){
+        if (cur&&(cur+" "+w).length>maxCharsPerLine){ lines.push(cur); cur=w; }
+        else { cur=cur?cur+" "+w:w; }
+      }
+      if (cur) lines.push(cur);
       const lbl=g.append("text").attr("text-anchor","middle")
         .attr("x",cx).attr("y",iH+14)
-        .style("font-size",small?"9px":"11px").style("fill",TEXT_S).style("font-family",PUB_FONT);
-      lbl.append("tspan").attr("x",cx).attr("dy","0").text(line1);
-      if (line2) lbl.append("tspan").attr("x",cx).attr("dy","1.2em").text(line2);
+        .style("font-size",`${labelFontSz}px`).style("fill",TEXT_S).style("font-family",PUB_FONT);
+      lines.forEach((line,i)=>{
+        lbl.append("tspan").attr("x",cx).attr("dy",i===0?"0":"1.15em").text(line);
+      });
     });
     applyYAxis(g,yScale,iW,iH,isCategorical,small,yAxisLabel(varLabel,isCategorical));
     const y0=yScale(Math.max(0,yDomain[0]>0?yDomain[0]:0));
@@ -1138,52 +1405,49 @@ function GroupedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
     filteredVV.forEach(vv=>{
       const colour=colourMap[vv]||GREY, isLit=allLit||highlighted.has(vv), fc=isLit?colour:GREY;
       const ox=xOuter(vv), bw=xInner.bandwidth();
-      const drawBar=(rows,key,isBase)=>{
+      const drawBar=(rows,key,isBase,lbl="Scenario",hatchAngle=45,fillStyle="hatch",scenColour=null)=>{
         const row=getRow(rows,vv); if (!row) return;
         const bx=xInner(key), barY=yScale(row.mean_value), barH=Math.abs(y0-barY);
-        const lbl=isBase?"Baseline":"Scenario";
-        const ttHtml=`<strong>${addSpaces(stratLabel(vv,varLabel))}</strong><br/>${lbl}: ${fmt(row.mean_value,isCategorical)}`+(!isNaN(row.lower_ci)?`<br/>95% CI: [${fmt(row.lower_ci,isCategorical)}, ${fmt(row.upper_ci,isCategorical)}]`:"")+fmtSample(row)+fmtMissing(isBase?missingBase:missingScen)+(year?`<br/>Year: ${year}`:"");
+        const barColour=isBase?(isCategorical?fc:(isLit?NUMERIC_BASE_COLOUR:GREY)):(scenColour&&isLit?scenColour:fc);
+        const ttHtml=`<strong>${addSpaces(stratLabel(vv,varLabel))}</strong><br/>${lbl}: ${fmt(row.mean_value,isCategorical)}`+(!isNaN(row.lower_ci)?`<br/>95% CI: [${fmt(row.lower_ci,isCategorical)}, ${fmt(row.upper_ci,isCategorical)}]`:"")+fmtSample(row)+fmtMissing(isBase?missingBase:null)+(year?`<br/>Year: ${year}`:"");
         if (isBase){
-          g.append("rect").attr("x",ox+bx).attr("y",Math.min(y0,barY)).attr("width",bw).attr("height",Math.max(1,barH)).attr("fill",fc).attr("opacity",isLit?0.85:0.18).attr("rx",2).on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
+          g.append("rect").attr("x",ox+bx).attr("y",Math.min(y0,barY)).attr("width",bw).attr("height",Math.max(1,barH)).attr("fill",barColour).attr("opacity",isLit?0.85:0.18).attr("rx",2).on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
         } else {
           const _gx=ox+bx, _gy=Math.min(y0,barY), _gh=Math.max(1,barH);
-          g.append("rect").attr("x",_gx).attr("y",_gy).attr("width",bw).attr("height",_gh).attr("fill",fc).attr("opacity",isLit?0.32:0.07).attr("rx",2);
-          drawHatchClipped(svg,g,_gx,_gy,bw,_gh,fc,isLit?0.55:0.1);
-          g.append("rect").attr("x",_gx).attr("y",_gy).attr("width",bw).attr("height",_gh).attr("fill","none").attr("stroke",fc).attr("stroke-width",1.5).attr("opacity",isLit?0.9:0.2).attr("rx",2)
+          g.append("rect").attr("x",_gx).attr("y",_gy).attr("width",bw).attr("height",_gh).attr("fill",barColour).attr("opacity",isLit?0.32:0.07).attr("rx",2);
+          if (fillStyle==="dot") drawDotPattern(svg,g,_gx,_gy,bw,_gh,barColour,isLit?0.7:0.15,5);
+          else drawHatchClipped(svg,g,_gx,_gy,bw,_gh,barColour,isLit?0.55:0.1,4,hatchAngle);
+          g.append("rect").attr("x",_gx).attr("y",_gy).attr("width",bw).attr("height",_gh).attr("fill","none").attr("stroke",barColour).attr("stroke-width",1.5).attr("opacity",isLit?0.9:0.2).attr("rx",2)
             .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
         }
         if (!isNaN(row.lower_ci)&&!isNaN(row.upper_ci)&&isLit){
-          // Darker than the bar's own fill so the whiskers read clearly
-          // against it rather than blending in.
-          const ciColour=d3.color(fc).darker(1.3).toString();
+          const ciColour=d3.color(barColour).darker(0.8).toString();
           const cx=ox+bx+bw/2;
           g.append("line").attr("x1",cx).attr("x2",cx).attr("y1",yScale(row.lower_ci)).attr("y2",yScale(row.upper_ci)).attr("stroke",ciColour).attr("stroke-width",1.5).attr("opacity",0.85);
           [yScale(row.upper_ci),yScale(row.lower_ci)].forEach(ty=>{g.append("line").attr("x1",cx-3).attr("x2",cx+3).attr("y1",ty).attr("y2",ty).attr("stroke",ciColour).attr("stroke-width",1.5).attr("opacity",0.85);});
         }
       };
-      if (showBaseline) drawBar(baseData,"baseline",true);
-      if (showScenario) drawBar(scenData,"scenario",false);
+      if (showBaseline) drawBar(baseData,"baseline",true,"Baseline",0,"hatch",null);
+      scenEntries.forEach(({name,label,rows,hatchAngle,fillStyle,scenColour})=>drawBar(rows,name,false,label,hatchAngle,fillStyle,scenColour));
     });
-    // Scenario tooltip overlay — transparent rects raised above everything
-    if (showScenario){
+    // Scenario tooltip overlays
+    scenEntries.forEach(({name,label,rows})=>{
       filteredVV.forEach(vv=>{
-        const isLit=allLit||highlighted.has(vv);
         const ox=xOuter(vv), bw=xInner.bandwidth();
-        const bx=xInner("scenario");
+        const bx=xInner(name);
         if (bx===undefined) return;
-        const row=filteredVV&&baseData?undefined:undefined; // scope trick
-        const sRow=scenData.find(d=>d.variable_value===vv);
+        const sRow=rows.find(d=>d.variable_value===vv);
         if (!sRow||isNaN(sRow.mean_value)) return;
         const barY=yScale(sRow.mean_value), y0loc=yScale(Math.max(0,yDomain[0]>0?yDomain[0]:0));
         const barH=Math.abs(y0loc-barY);
-        const ttHtml=`<strong>${addSpaces(stratLabel(vv,varLabel))}</strong><br/>Scenario: ${fmt(sRow.mean_value,isCategorical)}`+(!isNaN(sRow.lower_ci)?`<br/>95% CI: [${fmt(sRow.lower_ci,isCategorical)}, ${fmt(sRow.upper_ci,isCategorical)}]`:"")+fmtSample(sRow)+fmtMissing(missingScen)+( year?`<br/>Year: ${year}`:"");
+        const ttHtml=`<strong>${addSpaces(stratLabel(vv,varLabel))}</strong><br/>${label}: ${fmt(sRow.mean_value,isCategorical)}`+(!isNaN(sRow.lower_ci)?`<br/>95% CI: [${fmt(sRow.lower_ci,isCategorical)}, ${fmt(sRow.upper_ci,isCategorical)}]`:"")+fmtSample(sRow)+(year?`<br/>Year: ${year}`:"");
         g.append("rect").attr("x",ox+bx).attr("y",Math.min(y0loc,barY)).attr("width",bw).attr("height",Math.max(1,barH))
           .attr("fill","transparent")
           .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
       });
-    }
-    if (!small) drawBSKey(g,iW,iH,showBaseline,showScenario);
-  },[baseData,scenData,colourMap,highlighted,yDomain,W,H,isCategorical,varValues,enabledVarVals,small,year,patId,showBaseline,showScenario,missingBase,missingScen,varLabel,isStratified,stratValues,enabledStrats,viewBy]);
+    });
+    if (!small) drawBSKey(g,iW,iH,showBaseline,scenEntries.map(({name,label},i)=>({name,dash:SCENARIO_DASHES[i%SCENARIO_DASHES.length],label})));
+  },[baseData,scenData,colourMap,highlighted,yDomain,W,H,isCategorical,varValues,enabledVarVals,small,year,patId,showBaseline,showScenario,missingBase,missingScen,varLabel,isStratified,stratValues,enabledStrats,viewBy,scenarioMap,enabledScenarios,allScenarioNames,labelFontSz,maxCharsPerLine]);
   return <svg ref={svgRef} style={{display:"block",overflow:"visible"}}/>;
 }
 
@@ -1207,7 +1471,8 @@ function GroupedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
  * @param {object} ...rest - see LineChart's JSDoc for the remaining shared props (colourMap, highlighted, isCategorical, varValues, enabledVarVals, stratValues, enabledStrats, viewBy, width)
  */
 function DeltaChart({svgRef,deltaData,colourMap,highlighted,isCategorical,
-    varValues,enabledVarVals,stratValues=[],enabledStrats=new Set(),viewBy="",width,varLabel=""}){
+    varValues,enabledVarVals,stratValues=[],enabledStrats=new Set(),viewBy="",width,varLabel="",allScenarioNames=[],
+    onYearClick,selectedYear}){
   const H=CHART_H, W=Math.min(width,MAX_W);
   const allLit=highlighted.size===0;
   const isStratified=viewBy!=="Overall"&&stratValues.length>0;
@@ -1233,12 +1498,33 @@ function DeltaChart({svgRef,deltaData,colourMap,highlighted,isCategorical,
     const filtered=raw.filter(d=>!isNaN(d.mean_value));
     const allYears=[...new Set(raw.map(d=>d.year))].sort((a,b)=>a-b);
     const vals=filtered.flatMap(d=>[isNaN(d.lower_ci)?d.mean_value:d.lower_ci,isNaN(d.upper_ci)?d.mean_value:d.upper_ci]).filter(v=>!isNaN(v));
-    const yMax=Math.max(Math.abs(d3.min(vals)||0),Math.abs(d3.max(vals)||0.1))*1.15;
+    const dataMin=d3.min(vals)??0;
+    const dataMax=d3.max(vals)??0.1;
+    const pad=Math.max(Math.abs(dataMax-dataMin)*0.12, Math.abs(dataMax)*0.05, 1e-6);
+    // Always include zero so the reference line is visible
+    const yLo=Math.min(dataMin-pad, 0);
+    const yHi=Math.max(dataMax+pad, 0);
     const xScale=d3.scaleLinear().domain(safeYearDomain(allYears)).range([0,iW]);
-    const yScale=d3.scaleLinear().domain([-yMax,yMax]).range([iH,0]).clamp(true);
+    const yScale=d3.scaleLinear().domain([yLo,yHi]).range([iH,0]).clamp(false);
     applyTimeXAxis(g,xScale,iH,false,allYears);
     applyYAxis(g,yScale,iW,iH,isCategorical,false,yAxisLabel(varLabel,isCategorical,true));
     g.append("line").attr("x1",0).attr("x2",iW).attr("y1",yScale(0)).attr("y2",yScale(0)).attr("stroke","#64748b").attr("stroke-width",1).attr("stroke-dasharray","4,3");
+
+    // Selected year indicator
+    if (selectedYear) {
+      const sx=xScale(selectedYear);
+      g.append("line").attr("x1",sx).attr("x2",sx).attr("y1",0).attr("y2",iH)
+        .attr("stroke",TEAL).attr("stroke-width",1.5).attr("stroke-dasharray","3,3").attr("opacity",0.7).style("pointer-events","none");
+      g.append("circle").attr("cx",sx).attr("cy",0).attr("r",4).attr("fill",TEAL).attr("opacity",0.8).style("pointer-events","none");
+    }
+    // Invisible click zones per year
+    if (onYearClick) {
+      allYears.forEach(yr=>{
+        g.append("rect").attr("x",xScale(yr)-10).attr("y",0).attr("width",20).attr("height",iH)
+          .attr("fill","transparent").style("cursor","pointer")
+          .on("click",()=>onYearClick(yr===selectedYear?null:yr));
+      });
+    }
     const lineFn=d3.line().defined(d=>!isNaN(d.mean_value)).x(d=>xScale(d.year)).y(d=>yScale(d.mean_value)).curve(d3.curveMonotoneX);
 
     // Same reasoning as LineChart: fill any year missing from a series with an
@@ -1249,62 +1535,108 @@ function DeltaChart({svgRef,deltaData,colourMap,highlighted,isCategorical,
       return allYears.map(yr=>byYear.get(yr)||{year:yr,mean_value:NaN,lower_ci:NaN,upper_ci:NaN});
     };
 
-    // Build series: stratified → strat×var combos; overall → just varVal
+    // Get distinct scenario names present in the data (preserving order)
+    const scenarioNames=[...new Set(deltaData.map(d=>d.scenarioName).filter(Boolean))];
+    // If no scenarioName tags (single-scenario legacy path), treat all as one unnamed scenario
+    const useScenDash=scenarioNames.length>1;
+
+    // Build series: one set per scenario, within each scenario strat×var or just varVal
     const series=[];
-    if (isStratified){
-      stratValues.forEach((sv,si)=>{
-        if (!enabledStrats.has(sv)) return;
-        varValues.forEach(vv=>{
-          if (!enabledVarVals.has(vv)) return;
-          const pts=filtered.filter(d=>d.stratifier_value===sv&&d.variable_value===vv);
-          if (!pts.length) return;
-          const hV=highlighted.has(vv), hS=highlighted.has(sv);
-          const hasVarH=[...highlighted].some(h=>varValues.includes(h));
-          const hasStratH=[...highlighted].some(h=>stratValues.includes(h));
-          const isLit=allLit||(hasVarH&&hasStratH&&hV&&hS)||(hasVarH&&!hasStratH&&hV)||(!hasVarH&&hasStratH&&hS);
-          const symIdx=isCatStrat?si%SYMBOLS.length:undefined;
-          const strokeW=isCatStrat?2:ORDINAL_WIDTHS[si%ORDINAL_WIDTHS.length];
-          series.push({vv,sv,pts:densify(pts),isLit,colour:colourMap[vv]||GREY,symIdx,strokeW,label:`${addSpaces(stratLabel(vv,varLabel))} — ${addSpaces(stratLabel(sv,viewBy))}`});
+    const buildForScen=(scenRows,scenIdx)=>{
+      const filtScen=scenRows.filter(d=>!isNaN(d.mean_value));
+      const dash=useScenDash?SCENARIO_DASHES[scenIdx%SCENARIO_DASHES.length]:"none";
+      // Use the global allScenarioNames order for colour index so colours
+      // match the line chart and toggle buttons exactly.
+      const sName=scenarioNames[scenIdx];
+      const globalIdx=allScenarioNames.indexOf(sName);
+      const colourIdx=globalIdx>=0?globalIdx:scenIdx;
+      const scenColour=isCategorical?null:NUMERIC_SCEN_COLOURS[colourIdx%NUMERIC_SCEN_COLOURS.length];
+      const resolveColour=(vv)=>scenColour||(colourMap[vv]||GREY);
+      if (isStratified){
+        stratValues.forEach((sv,si)=>{
+          if (!enabledStrats.has(sv)) return;
+          varValues.forEach(vv=>{
+            if (!enabledVarVals.has(vv)) return;
+            const pts=filtScen.filter(d=>d.stratifier_value===sv&&d.variable_value===vv);
+            if (!pts.length) return;
+            const hV=highlighted.has(vv), hS=highlighted.has(sv);
+            const hasVarH=[...highlighted].some(h=>varValues.includes(h));
+            const hasStratH=[...highlighted].some(h=>stratValues.includes(h));
+            const isLit=allLit||(hasVarH&&hasStratH&&hV&&hS)||(hasVarH&&!hasStratH&&hV)||(!hasVarH&&hasStratH&&hS);
+            const symIdx=isCatStrat?si%SYMBOLS.length:undefined;
+            const strokeW=isCatStrat?2:ORDINAL_WIDTHS[si%ORDINAL_WIDTHS.length];
+            const scenLabel=scenarioNames[scenIdx]?` (${scenarioLabel(scenarioNames[scenIdx])})`:""
+            series.push({vv,sv,pts:densify(pts),isLit,colour:resolveColour(vv),symIdx,strokeW,dash,label:`${addSpaces(stratLabel(vv,varLabel))} — ${addSpaces(stratLabel(sv,viewBy))}${scenLabel}`});
+          });
         });
+      } else {
+        const grouped=d3.group(filtScen,d=>d.variable_value);
+        grouped.forEach((pts,vv)=>{
+          if (!enabledVarVals.has(vv)) return;
+          const isLit=allLit||highlighted.has(vv);
+          const scenLbl=scenarioNames[scenIdx]?` (${scenarioLabel(scenarioNames[scenIdx])})`:""
+          series.push({vv,sv:null,pts:densify(pts),isLit,colour:resolveColour(vv),symIdx:undefined,strokeW:2.5,dash,label:`${addSpaces(stratLabel(vv,varLabel))}${scenLbl}`});
+        });
+      }
+    };
+
+    if (scenarioNames.length>0){
+      scenarioNames.forEach((sName,si)=>{
+        buildForScen(filtered.filter(d=>d.scenarioName===sName),si);
       });
     } else {
-      const grouped=d3.group(filtered,d=>d.variable_value);
-      grouped.forEach((pts,vv)=>{
-        if (!enabledVarVals.has(vv)) return;
-        const isLit=allLit||highlighted.has(vv);
-        series.push({vv,sv:null,pts:densify(pts),isLit,colour:colourMap[vv]||GREY,symIdx:undefined,strokeW:2,label:addSpaces(stratLabel(vv,varLabel))});
-      });
+      buildForScen(filtered,0);
     }
 
-    // CI bands first
-    series.forEach(({pts,isLit,colour,vv})=>{
+    // CI bands first — dashed outline for scenarios to match line style
+    series.forEach(({pts,isLit,colour,vv,dash})=>{
       const fc=isLit?colour:GREY;
       const sorted=[...pts].sort((a,b)=>a.year-b.year);
       if (sorted.some(d=>!isNaN(d.lower_ci)&&!isNaN(d.upper_ci))){
         const area=d3.area().defined(d=>!isNaN(d.lower_ci)&&!isNaN(d.upper_ci)).x(d=>xScale(d.year)).y0(d=>yScale(d.lower_ci)).y1(d=>yScale(d.upper_ci)).curve(d3.curveMonotoneX);
-        g.append("path").datum(sorted).attr("d",area).attr("fill",fc).attr("opacity",isLit?0.13:0.04).style("pointer-events","none");
+        const band=g.append("path").datum(sorted).attr("d",area).attr("fill",fc).attr("opacity",isLit?0.11:0.04).style("pointer-events","none");
+        if (dash&&dash!=="none") band.attr("stroke",fc).attr("stroke-width",0.8).attr("stroke-dasharray",dash).attr("stroke-opacity",0.4);
       }
     });
     // Lines + dots
-    [...series].sort((a,b)=>a.isLit?1:-1).forEach(({pts,isLit,colour,symIdx,strokeW,label})=>{
+    [...series].sort((a,b)=>a.isLit?1:-1).forEach(({pts,isLit,colour,symIdx,strokeW,dash,label})=>{
       const fc=isLit?colour:GREY, opacity=isLit?1:0.18;
       const sw=isLit?strokeW:0.8;
       const sorted=[...pts].sort((a,b)=>a.year-b.year);
-      g.append("path").datum(sorted).attr("d",lineFn).attr("fill","none").attr("stroke",fc).attr("stroke-width",sw).attr("opacity",opacity).style("pointer-events","none");
+      g.append("path").datum(sorted).attr("d",lineFn).attr("fill","none").attr("stroke",fc).attr("stroke-width",sw)
+        .attr("stroke-dasharray",(dash&&dash!=="none")?dash:"none")
+        .attr("opacity",opacity).style("pointer-events","none");
       sorted.filter(d=>!isNaN(d.mean_value)).forEach(d=>{
         const cx=xScale(d.year), cy=yScale(d.mean_value);
-        const ttHtml=`<strong>${label}</strong><br/>Δ: ${fmtDelta(d.mean_value,isCategorical)}`+(!isNaN(d.lower_ci)?`<br/>95% CI: [${fmtDelta(d.lower_ci,isCategorical)}, ${fmtDelta(d.upper_ci,isCategorical)}]`:"")+fmtDeltaSample(d)+`<br/>Year: ${d.year}`;
+        const ttHtml=`<strong>${label}</strong><br/>Δ: ${fmtDelta(d.mean_value,isCategorical)}`+(!isNaN(d.lower_ci)?`<br/>95% UI: [${fmtDelta(d.lower_ci,isCategorical)}, ${fmtDelta(d.upper_ci,isCategorical)}]`:"")+fmtDeltaSample(d)+`<br/>Year: ${d.year}`;
         if (symIdx!==undefined){
           const sp=d3.symbol().type(SYMBOLS[symIdx]).size(isLit?48:24)();
-          g.append("path").attr("d",sp).attr("transform",`translate(${cx},${cy})`).attr("fill",fc).attr("opacity",opacity)
-            .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
-        } else {
-          g.append("circle").attr("cx",cx).attr("cy",cy).attr("r",isLit?3.5:2).attr("fill",fc).attr("opacity",opacity)
-            .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
+          g.append("path").attr("d",sp).attr("transform",`translate(${cx},${cy})`).attr("fill",fc).attr("opacity",opacity).style("pointer-events","none");
         }
+        // Invisible hit area for tooltips
+        g.append("circle").attr("cx",cx).attr("cy",cy).attr("r",8).attr("fill","transparent")
+          .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
       });
     });
-  },[deltaData,colourMap,highlighted,isCategorical,varValues,enabledVarVals,stratValues,enabledStrats,viewBy,isStratified,isCatStrat,W,varLabel]);
+
+    // In-chart legend for multiple scenarios
+    if (useScenDash){
+      const legY=iH+52, legX=4;
+      const skip=g.append("g").attr("class","pub-skip");
+      let kx=legX;
+      scenarioNames.forEach((sName)=>{
+        const gi=allScenarioNames.indexOf(sName); const ci=gi>=0?gi:0;
+        const dash=SCENARIO_DASHES[ci%SCENARIO_DASHES.length];
+        const lbl=scenarioLabel(sName);
+        const c=isCategorical?TEXT_M:NUMERIC_SCEN_COLOURS[ci%NUMERIC_SCEN_COLOURS.length];
+        skip.append("line").attr("x1",kx).attr("x2",kx+16).attr("y1",legY).attr("y2",legY)
+          .attr("stroke",c).attr("stroke-width",2).attr("stroke-dasharray",dash);
+        skip.append("text").attr("x",kx+20).attr("y",legY+4)
+          .style("font-size","11px").style("fill",TEXT_M).style("font-family",PUB_FONT).text(lbl);
+        kx+=Math.max(90,lbl.length*7+28);
+      });
+    }
+  },[deltaData,colourMap,highlighted,isCategorical,varValues,enabledVarVals,stratValues,enabledStrats,viewBy,isStratified,isCatStrat,W,varLabel,onYearClick,selectedYear]);
   return <svg ref={svgRef} style={{display:"block",overflow:"visible"}}/>;
 }
 
@@ -1330,30 +1662,24 @@ function DeltaChart({svgRef,deltaData,colourMap,highlighted,isCategorical,
  * correctly scoped either way.
  */
 function PanelChart({baseData,scenData,colourMap,highlighted,isCategorical,yDomain,
-    varValues,enabledVarVals,showBaseline,showScenario,width,chartType,panelId,allYears,missingLookup,stratValue,onYearClick,selectedYear,varLabel="",viewBy=""}){
+    varValues,enabledVarVals,showBaseline,showScenario,width,chartType,panelId,allYears,missingLookup,stratValue,onYearClick,selectedYear,varLabel="",viewBy="",
+    scenarioMap=null,enabledScenarios=null,allScenarioNames=[]}){
   const svgRef=useRef();
-  const props={svgRef,baseData,scenData,colourMap,highlighted,isCategorical,varValues,enabledVarVals,showBaseline,showScenario,width,small:true,allYears,varLabel};
+  const scenProps={scenarioMap,enabledScenarios,allScenarioNames};
+  const props={svgRef,baseData,scenData,colourMap,highlighted,isCategorical,varValues,enabledVarVals,showBaseline,showScenario,width,small:true,allYears,varLabel,...scenProps};
   if (chartType==="bar") return <StackedBarChart {...props} patId={panelId}/>;
   return <LineChart {...props} yDomain={yDomain} missingLookup={missingLookup} missingStratValue={stratValue} onYearClick={onYearClick} selectedYear={selectedYear} viewBy={viewBy}/>;
 }
 
-/**
- * Small wrapper mirroring PanelChart above, but rendering a GroupedBarChart
- * (the single-point-in-time Baseline vs. Scenario comparison, grouped by
- * variable_value) rather than a time-series line/stacked-bar. Used by
- * SmallMultiplesPanel for each individual line panel's own
- * click-to-drill-down cross-section (one stratum at a time, since that's
- * all a single small-multiples panel ever represents). Owns its own <svg>
- * ref internally for the same reason PanelChart does — a caller can't call
- * useRef() once per item inside a .map() loop.
- */
 function CrossSectionBarPanel({baseData,scenData,colourMap,highlighted,isCategorical,yDomain,
-    varValues,enabledVarVals,showBaseline,showScenario,width,year,patId,varLabel=""}){
+    varValues,enabledVarVals,showBaseline,showScenario,width,year,patId,varLabel="",
+    scenarioMap=null,enabledScenarios=null,allScenarioNames=[]}){
   const svgRef=useRef();
   return <GroupedBarChart svgRef={svgRef} baseData={baseData} scenData={scenData} colourMap={colourMap}
     highlighted={highlighted} isCategorical={isCategorical} yDomain={yDomain} varValues={varValues}
     enabledVarVals={enabledVarVals} showBaseline={showBaseline} showScenario={showScenario}
-    width={width} small year={year} patId={patId} varLabel={varLabel}/>;
+    width={width} small year={year} patId={patId} varLabel={varLabel}
+    scenarioMap={scenarioMap} enabledScenarios={enabledScenarios} allScenarioNames={allScenarioNames}/>;
 }
 
 /* ═════════════════════════════════════════════════════════════════════════════
@@ -1372,7 +1698,8 @@ function CrossSectionBarPanel({baseData,scenData,colourMap,highlighted,isCategor
  */
 function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighted,
     isCategorical,varValues,enabledVarVals,enabledStrats,showBaseline,showScenario,
-    chartType,width,pubPropsFactory,targetVariable,allBaseData,allScenData,missingLookup,viewBy=""}){
+    chartType,width,pubPropsFactory,targetVariable,allBaseData,allScenData,missingLookup,viewBy="",
+    scenarioMap=null,enabledScenarios=null,allScenarioNames=[]}){
   const varLabel=addSpaces(targetVariable||"");
   // Which year is pinned in EACH panel's own line chart, keyed by stratum
   // value — deliberately separate from the page-level `selectedYear` used by
@@ -1381,23 +1708,27 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
   // meaningful for chartType==="line" (a stacked-bar-over-years panel has no
   // "click a single point" interaction).
   const [panelYears,setPanelYears]=useState({});
-  const cols=Math.max(1,Math.min(stratValues.length,Math.floor(width/PANEL_MIN_W)));
-  const panelW=Math.floor((width-(cols-1)*12)/cols);
+  // Scale columns and panel width to the number of VISIBLE panels so that
+  // filtering strata out makes the remaining panels grow to fill the space.
+  // Cap panel width at 520px so a single panel doesn't become enormous.
+  const PANEL_MAX_W = 520;
+  const visible = stratValues.filter(sv => enabledStrats.has(sv));
+  const nVisible = Math.max(1, visible.length);
+  const cols = Math.max(1, Math.min(nVisible, Math.floor(width / PANEL_MIN_W)));
+  const rawPanelW = Math.floor((width - (cols - 1) * 12) / cols);
+  const panelW = Math.min(rawPanelW, PANEL_MAX_W);
   // Shared y-axis across every visible panel — restricted to enabled
   // variable values AND enabled strata (i.e. only the panels/series actually
   // being drawn), so toggling a Filter Variables or Filter Stratifiers chip
   // on/off shrinks or grows this axis instead of leaving it sized for data
   // that's no longer shown anywhere in the grid.
+  const allScenRows=useMemo(()=>scenarioMap?[...scenarioMap.values()].flat():scenData,[scenarioMap,scenData]);
   const yDomain=useMemo(
-    ()=>buildYDomain([...baseData,...scenData].filter(d=>enabledVarVals.has(d.variable_value)&&enabledStrats.has(d.stratifier_value)),isCategorical),
-    [baseData,scenData,isCategorical,enabledVarVals,enabledStrats]
+    ()=>buildYDomain([...baseData,...allScenRows].filter(d=>enabledVarVals.has(d.variable_value)&&enabledStrats.has(d.stratifier_value)),isCategorical),
+    [baseData,allScenRows,isCategorical,enabledVarVals,enabledStrats]
   );
-  // Global year range across ALL strata combined — computed here, before any
-  // per-stratum filtering below, and passed to every panel so a panel's own
-  // (possibly empty-for-some-year) stratum can't silently drop that year
-  // from its x-axis. See LineChart's JSDoc for the full reasoning.
-  const allYears=useMemo(()=>[...new Set([...baseData,...scenData].map(d=>d.year))].filter(Boolean).sort((a,b)=>a-b),[baseData,scenData]);
-  const visible=stratValues.filter(sv=>enabledStrats.has(sv));
+  // Global year range across ALL strata and scenarios combined.
+  const allYears=useMemo(()=>[...new Set([...baseData,...allScenRows].map(d=>d.year))].filter(Boolean).sort((a,b)=>a-b),[baseData,allScenRows]);
   const panelSvgRefs=useRef({});
 
   const handleDownloadAll=useCallback(()=>{
@@ -1413,7 +1744,7 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
   const handleDownloadAllCsv=useCallback(()=>{
     const slug=slugify(targetVariable||"chart");
     const allData=[...allBaseData,...allScenData].filter(d=>enabledStrats.has(d.stratifier_value)&&enabledVarVals.has(d.variable_value));
-    exportCsv(allData,`${slug}_all_panels.csv`);
+    exportCsv(allData,`${slug}_all_panels.csv`,{isContinuous:!isCategorical});
   },[allBaseData,allScenData,enabledStrats,enabledVarVals,targetVariable]);
 
   return (
@@ -1427,7 +1758,10 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
         {visible.map(sv=>{
           const bR=baseData.filter(d=>d.stratifier_value===sv);
           const sR=scenData.filter(d=>d.stratifier_value===sv);
-          const suppressed=[...bR,...sR].every(d=>isNaN(d.mean_value));
+          // Build per-panel scenarioMap slice for this stratum
+          const panelScenMap=scenarioMap?new Map([...scenarioMap].map(([name,rows])=>[name,rows.filter(d=>d.stratifier_value===sv)])):null;
+          const allSvRows=[bR,...(panelScenMap?[...panelScenMap.values()]:[sR]).map(r=>r)].flat();
+          const suppressed=allSvRows.every(d=>isNaN(d.mean_value));
           const afterRender=(el)=>{if (el){const s=el.querySelector("svg");if(s)panelSvgRefs.current[sv]=s;}};
           const isLine=chartType==="line";
           const selYear=panelYears[sv]??null;
@@ -1441,7 +1775,9 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
           const csFilter=rows=>rows.filter(d=>enabledVarVals.has(d.variable_value));
           const csBase=isLine&&selYear!=null?csFilter(bR).filter(d=>d.year===selYear):[];
           const csScen=isLine&&selYear!=null?csFilter(sR).filter(d=>d.year===selYear):[];
-          const csYDomain=isLine&&selYear!=null?buildYDomain([...csBase,...csScen],isCategorical):[0,1];
+          const csScenMap=isLine&&selYear!=null&&panelScenMap?new Map([...panelScenMap].map(([n,r])=>[n,csFilter(r).filter(d=>d.year===selYear)])):null;
+          const csAllScen=csScenMap?[...csScenMap.values()].flat():csScen;
+          const csYDomain=isLine&&selYear!=null?buildYDomain([...csBase,...csAllScen],isCategorical):[0,1];
           return (
             <div key={sv} ref={afterRender} style={{width:panelW,background:BG_CARD,borderRadius:10,padding:"10px 12px",border:"1px solid #f0ece4",position:"relative",flexShrink:0}}>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
@@ -1449,7 +1785,7 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
                 {!suppressed&&(
                   <div style={{display:"flex",gap:4}}>
                     <DownloadBtn small svgRef={panelSvgRefs} svgKey={sv} filename={`${slugify(targetVariable||"chart")}_${slugify(stratLabel(sv,viewBy))}.png`} pubProps={pubPropsFactory(sv)}/>
-                    <button onClick={()=>exportCsv([...bR,...sR].filter(d=>enabledVarVals.has(d.variable_value)),`${slugify(targetVariable||"chart")}_${slugify(stratLabel(sv,viewBy))}.csv`)}
+                    <button onClick={()=>exportCsv([...bR,...sR].filter(d=>enabledVarVals.has(d.variable_value)),`${slugify(targetVariable||"chart")}_${slugify(stratLabel(sv,viewBy))}.csv`,{isContinuous:!isCategorical})}
                       style={{fontSize:10,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:4,padding:"1px 6px",cursor:"pointer",lineHeight:1.6}}>↓ CSV</button>
                   </div>
                 )}
@@ -1460,7 +1796,8 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
                   enabledVarVals={enabledVarVals} showBaseline={showBaseline} showScenario={showScenario}
                   width={panelW-24} chartType={chartType} panelId={`p_${slugify(sv)}`} allYears={allYears}
                   missingLookup={missingLookup} stratValue={sv}
-                  onYearClick={onPanelYearClick} selectedYear={selYear} varLabel={varLabel} viewBy={viewBy}/>
+                  onYearClick={onPanelYearClick} selectedYear={selYear} varLabel={varLabel} viewBy={viewBy}
+                  scenarioMap={panelScenMap} enabledScenarios={enabledScenarios} allScenarioNames={allScenarioNames}/>
               }
               {/* This panel's own year breakdown — only appears once a point
                   on the line above has actually been clicked, and only for
@@ -1476,7 +1813,8 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
                   <CrossSectionBarPanel baseData={csBase} scenData={csScen} colourMap={colourMap} highlighted={highlighted}
                     isCategorical={isCategorical} yDomain={csYDomain} varValues={varValues}
                     enabledVarVals={enabledVarVals} showBaseline={showBaseline} showScenario={showScenario}
-                    width={panelW-24} year={selYear} patId={`pcs_${slugify(sv)}`} varLabel={varLabel}/>
+                    width={panelW-24} year={selYear} patId={`pcs_${slugify(sv)}`} varLabel={varLabel}
+                    scenarioMap={csScenMap} enabledScenarios={enabledScenarios} allScenarioNames={allScenarioNames}/>
                 </div>
               )}
             </div>
@@ -1502,7 +1840,8 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
  */
 function CrossSectionPanel({baseData,scenData,colourMap,highlighted,isCategorical,
     varValues,enabledVarVals,enabledStrats,viewBy,showBaseline,showScenario,
-    width,year,isAverage,pubPropsFactory,targetVariable}){
+    width,year,isAverage,pubPropsFactory,targetVariable,
+    scenarioMap=null,enabledScenarios=null,allScenarioNames=[]}){
   const svgRef=useRef();
   const isStratified=viewBy!=="Overall";
   const varLabel=addSpaces(targetVariable||"");
@@ -1518,6 +1857,13 @@ function CrossSectionPanel({baseData,scenData,colourMap,highlighted,isCategorica
   ),[year,isAverage,enabledVarVals,isStratified,viewBy]);
   const filtB=useMemo(()=>filterYear(baseData),[baseData,filterYear]);
   const filtS=useMemo(()=>filterYear(scenData),[scenData,filterYear]);
+  // Build filtered scenarioMap for cross-section
+  const filtScenMap=useMemo(()=>{
+    if (!scenarioMap) return null;
+    const m=new Map();
+    for (const [name,rows] of scenarioMap) m.set(name,filterYear(rows));
+    return m;
+  },[scenarioMap,filterYear]);
   // Averaging (when isAverage) happens BEFORE the enabledStrats filter is
   // applied below — averageAcrossYears already groups by stratifier_value,
   // so a currently-disabled stratum's years never bleed into an enabled
@@ -1531,6 +1877,18 @@ function CrossSectionPanel({baseData,scenData,colourMap,highlighted,isCategorica
     const rows=isAverage?averageAcrossYears(filtS):filtS;
     return rows.filter(d=>isStratified?enabledStrats.has(d.stratifier_value):d.stratifier_value==="Overall");
   },[filtS,isAverage,isStratified,enabledStrats]);
+  // Processed scenarioMap for rendering — same averaging/filtering as sRows
+  const processedScenMap=useMemo(()=>{
+    if (!filtScenMap) return null;
+    const m=new Map();
+    for (const [name,rows] of filtScenMap) {
+      const processed=isAverage?averageAcrossYears(rows):rows;
+      m.set(name,processed.filter(d=>isStratified?enabledStrats.has(d.stratifier_value):d.stratifier_value==="Overall"));
+    }
+    return m;
+  },[filtScenMap,isAverage,isStratified,enabledStrats]);
+  // All scenario rows combined for yDomain calculation
+  const allScenRows=useMemo(()=>processedScenMap?[...processedScenMap.values()].flat():sRows,[processedScenMap,sRows]);
 
   // For numeric variables, the Overall cross-section (GroupedBarChart, below)
   // gets one Baseline and one Scenario "Missing" row for its tooltips —
@@ -1563,8 +1921,8 @@ function CrossSectionPanel({baseData,scenData,colourMap,highlighted,isCategorica
   // multiples/"Panels" layout is for instead — see SmallMultiplesPanel).
   // Shown whether a specific year is pinned OR averaged across all years.
   if (isStratified){
-    const stratVals=[...new Set([...bRows,...sRows].map(d=>d.stratifier_value))].filter(sv=>enabledStrats.has(sv));
-    const yDomain=buildYDomain([...bRows,...sRows],isCategorical);
+    const stratVals=[...new Set([...bRows,...allScenRows].map(d=>d.stratifier_value))].filter(sv=>enabledStrats.has(sv));
+    const yDomain=buildYDomain([...bRows,...allScenRows],isCategorical);
     const yrTag=isAverage?"avg":year;
     if (!stratVals.length) return <p style={{fontSize:13,color:TEXT_S,fontStyle:"italic",margin:0}}>No data{isAverage?"":` for year ${year}`}.</p>;
     return (
@@ -1573,30 +1931,621 @@ function CrossSectionPanel({baseData,scenData,colourMap,highlighted,isCategorica
           highlighted={highlighted} isCategorical={isCategorical} yDomain={yDomain}
           varValues={varValues} enabledVarVals={enabledVarVals} showBaseline={showBaseline} showScenario={showScenario}
           width={width} year={isAverage?"average":year} patId={`cs_${yrTag}`} varLabel={varLabel}
-          isStratified stratValues={stratVals} enabledStrats={enabledStrats} viewBy={viewBy}/>
+          isStratified stratValues={stratVals} enabledStrats={enabledStrats} viewBy={viewBy}
+          scenarioMap={processedScenMap} enabledScenarios={enabledScenarios} allScenarioNames={allScenarioNames}/>
         <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
           <DownloadBtn svgRef={svgRef} filename={`cross_section_${yrTag}.png`} pubProps={pubPropsFactory(null)}/>
-          <button onClick={()=>exportCsv([...bRows,...sRows],`cross_section_${yrTag}.csv`)}
+          <button onClick={()=>exportCsv([...bRows,...sRows],`cross_section_${yrTag}.csv`,{isContinuous:!isCategorical})}
             style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer"}}>↓ CSV</button>
         </div>
       </div>
     );
   }
 
-  const yDomain=buildYDomain([...bRows,...sRows],isCategorical);
-  if (!bRows.length&&!sRows.length) return <p style={{fontSize:13,color:TEXT_S,fontStyle:"italic",margin:0}}>No data.</p>;
+  const yDomain=buildYDomain([...bRows,...allScenRows],isCategorical);
+  if (!bRows.length&&!allScenRows.length) return <p style={{fontSize:13,color:TEXT_S,fontStyle:"italic",margin:0}}>No data.</p>;
   return (
     <div style={{display:"flex",flexDirection:"column",gap:4}}>
       <GroupedBarChart svgRef={svgRef} baseData={bRows} scenData={sRows} colourMap={colourMap}
         highlighted={highlighted} isCategorical={isCategorical} yDomain={yDomain}
         varValues={varValues} enabledVarVals={enabledVarVals} showBaseline={showBaseline} showScenario={showScenario}
         width={width} year={isAverage?"average":year} patId={`cs_${year}_${isAverage}`}
-        missingBase={missingBase} missingScen={missingScen} varLabel={varLabel}/>
+        missingBase={missingBase} missingScen={missingScen} varLabel={varLabel}
+        scenarioMap={processedScenMap} enabledScenarios={enabledScenarios} allScenarioNames={allScenarioNames}/>
       <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
         <DownloadBtn svgRef={svgRef} filename={`cross_section_${year||"avg"}.png`} pubProps={pubPropsFactory(null)}/>
-        <button onClick={()=>exportCsv([...bRows,...sRows],`cross_section_${year||"avg"}.csv`)}
+        <button onClick={()=>exportCsv([...bRows,...sRows],`cross_section_${year||"avg"}.csv`,{isContinuous:!isCategorical})}
           style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer"}}>↓ CSV</button>
       </div>
+    </div>
+  );
+}
+
+/* ═════════════════════════════════════════════════════════════════════════════
+   POPULATION PYRAMID
+   Renders a classic mirrored horizontal bar chart: Female bars extend left,
+   Male bars extend right, with age bands on the y-axis.  Data comes from the
+   existing aggregated rows where variable="Age" and stratifier="Gender" —
+   those rows are already produced by parseCore's aggregateSingleRun for every
+   run, so no new pipeline work is needed here.
+
+   Props:
+     baselineData / scenarioData — full filtered dataset for targetVariable="Age"
+       (i.e. all rows where variable==="Age", any stratifier).  The pyramid
+       itself only uses the rows where stratifier==="Gender".
+     year          — the pinned year (number) or null (→ average across years)
+     showBaseline / showScenario — which series to draw
+     width         — available container width
+═════════════════════════════════════════════════════════════════════════════ */
+const AGE_ORDER = ["Under 18","18-24","25-34","35-44","45-54","55-64","65+"];
+
+function PopulationPyramid({ baselineData, scenarioData, year, showBaseline, showScenario, width=600, svgRef: externalRef,
+    scenarioMap=null, enabledScenarios=null, allScenarioNames=[] }) {
+  const internalRef = useRef();
+  const svgRef = externalRef || internalRef;
+
+  // pyramid_bin rows: variable="Age", stratifier="Gender",
+  // variable_value=age band, stratifier_value="Male"/"Female".
+  // No further filtering by stratifier needed — baselineData/scenarioData
+  // are already pre-filtered to metric_type="pyramid_bin" by the parent.
+  const slice = useCallback((data) => {
+    if (year === null) return averageAcrossYears(data);
+    return data.filter(d => d.year === year);
+  }, [year]);
+
+  const baseRows = useMemo(() => slice(baselineData), [baselineData, slice]);
+  const scenEntries = useMemo(() => {
+    if (scenarioMap && scenarioMap.size > 0 && allScenarioNames.length > 0) {
+      return allScenarioNames.filter(n => enabledScenarios?.has(n)).map(name => {
+        const gi = allScenarioNames.indexOf(name);
+        return { name, label: scenarioLabel(name), rows: slice(scenarioMap.get(name) ?? []), fillStyle: gi === 0 ? "hatch" : "dot", gi };
+      });
+    }
+    return showScenario ? [{ name:"scenario", label:"Scenario", rows: slice(scenarioData), fillStyle:"dot", gi:0 }] : [];
+  }, [scenarioMap, enabledScenarios, allScenarioNames, scenarioData, showScenario, slice]);
+
+  useEffect(() => {
+    const svg = d3.select(svgRef.current);
+    svg.selectAll("*").remove();
+    const hasBase = showBaseline && baseRows.some(d => !isNaN(d.mean_value));
+    const hasScenAny = scenEntries.some(e => e.rows.some(d => !isNaN(d.mean_value)));
+    if (!hasBase && !hasScenAny) return;
+
+    const MP = { top:20, right:20, bottom:40, left:20 };
+    const H  = 320;
+    const iW = Math.max(200, width - MP.left - MP.right);
+    const iH = H - MP.top - MP.bottom;
+
+    svg.attr("width", width).attr("height", H);
+    const root = svg.append("g").attr("transform", `translate(${MP.left},${MP.top})`);
+
+    // Build lookup: gender → ageBand → mean_value
+    // variable_value = age band, stratifier_value = "Male"/"Female"
+    const build = (rows) => {
+      const m = {};
+      for (const r of rows) {
+        if (isNaN(r.mean_value)) continue;
+        const g = r.stratifier_value; // "Male" or "Female"
+        const a = r.variable_value;   // age band e.g. "25-34"
+        if (!m[g]) m[g] = {};
+        m[g][a] = r.mean_value;
+      }
+      return m;
+    };
+    const buildCounts = (rows) => {
+      const m = {};
+      for (const r of rows) {
+        if (isNaN(r.mean_value)) continue;
+        if (!m[r.stratifier_value]) m[r.stratifier_value] = {};
+        m[r.stratifier_value][r.variable_value] = r.mean_sample ?? r.n_runs ?? null;
+      }
+      return m;
+    };
+
+    const baseLookup  = hasBase ? build(baseRows) : {};
+    const scenLookups = scenEntries.map(e => ({ ...e, lookup: build(e.rows), counts: buildCounts(e.rows) }));
+
+    const cx = iW / 2;
+    const halfW = cx - 40;
+
+    // Max share across ALL years and series so the x-axis stays fixed
+    // as the user scrubs through years — use the full unsliced data props.
+    const isPyramidR = r => r.metric_type==="pyramid_bin"||(r.variable==="Age"&&r.stratifier==="Gender");
+    const allRows = [...baselineData, ...scenEntries.flatMap(e=>
+      (scenarioMap?.get(e.name) ?? []).filter(isPyramidR)
+    )];
+    const maxShare = d3.max(allRows, d => isNaN(d.mean_value)?0:d.mean_value) || 0.15;
+    const xScale = d3.scaleLinear().domain([0, maxShare * 1.12]).range([0, halfW]);
+
+    const yScale = d3.scaleBand().domain(AGE_ORDER).range([0, iH]).padding(0.18);
+    const bh = yScale.bandwidth();
+
+    // Divide bandwidth among baseline + N scenarios
+    const totalSeries = (hasBase ? 1 : 0) + scenLookups.length;
+    const barSlotH = totalSeries > 1 ? bh * 0.96 / totalSeries : bh * 0.88;
+    const gap = totalSeries > 1 ? bh * 0.04 : 0;
+
+    const baseCounts  = hasBase ? buildCounts(baseRows) : {};
+
+    const femColour = "#ff6e51";
+    const malColour = TEAL;
+
+    const drawSide = (lookup, countLookup, slotIndex, isScenario, label, fillStyle, gi) => {
+      const offY   = slotIndex * (barSlotH + gap);
+      const opacity = isScenario ? 0.75 : 0.88;
+      const scenCol = isScenario ? NUMERIC_SCEN_COLOURS[gi % NUMERIC_SCEN_COLOURS.length] : null;
+
+      for (const ageBand of AGE_ORDER) {
+        const y0 = yScale(ageBand);
+        if (y0 == null) continue;
+
+        const fVal = lookup["Female"]?.[ageBand] ?? 0;
+        const fPx  = xScale(fVal);
+        const fX   = cx - 40 - fPx;
+        const fN   = countLookup["Female"]?.[ageBand];
+        const mVal = lookup["Male"]?.[ageBand] ?? 0;
+        const mPx  = xScale(mVal);
+        const mX   = cx + 40;
+        const mN   = countLookup["Male"]?.[ageBand];
+        const barY = y0 + offY;
+
+        // Female bars use femColour, male bars use malColour.
+        // Scenarios: use NUMERIC_SCEN_COLOURS tinted bar with hatch/dot fill pattern.
+        if (isScenario) {
+          [[fPx, fX, femColour], [mPx, mX, malColour]].forEach(([px, bx, col]) => {
+            if (px <= 0) return;
+            root.append("rect").attr("x",bx).attr("y",barY).attr("width",px).attr("height",barSlotH)
+              .attr("fill",col).attr("opacity",0.18);
+            if (fillStyle === "dot") drawDotPattern(svg, root, bx, barY, px, barSlotH, col, 0.65, 5);
+            else drawHatchClipped(svg, root, bx, barY, px, barSlotH, col, 0.55, 4);
+            root.append("rect").attr("x",bx).attr("y",barY).attr("width",px).attr("height",barSlotH)
+              .attr("fill","none").attr("stroke",col).attr("stroke-width",1.2).attr("opacity",opacity);
+          });
+        } else {
+          if (fPx > 0) root.append("rect").attr("x",fX).attr("y",barY).attr("width",fPx).attr("height",barSlotH).attr("fill",femColour).attr("opacity",opacity).attr("rx",2);
+          if (mPx > 0) root.append("rect").attr("x",mX).attr("y",barY).attr("width",mPx).attr("height",barSlotH).attr("fill",malColour).attr("opacity",opacity).attr("rx",2);
+        }
+
+        if (fPx > 0) {
+          const fStr = fN != null ? `<br/>n = ${fN.toLocaleString(undefined,{maximumFractionDigits:1})}` : "";
+          root.append("rect").attr("x",fX).attr("y",barY).attr("width",fPx).attr("height",barSlotH)
+            .attr("fill","transparent").style("cursor","default")
+            .on("mouseover", e => showTT(`<strong>${ageBand}</strong> — Female<br/>${label}: ${(fVal*100).toFixed(1)}%${fStr}`, e))
+            .on("mousemove", moveTT).on("mouseout", hideTT);
+        }
+        if (mPx > 0) {
+          const mStr = mN != null ? `<br/>n = ${mN.toLocaleString(undefined,{maximumFractionDigits:1})}` : "";
+          root.append("rect").attr("x",mX).attr("y",barY).attr("width",mPx).attr("height",barSlotH)
+            .attr("fill","transparent").style("cursor","default")
+            .on("mouseover", e => showTT(`<strong>${ageBand}</strong> — Male<br/>${label}: ${(mVal*100).toFixed(1)}%${mStr}`, e))
+            .on("mousemove", moveTT).on("mouseout", hideTT);
+        }
+      }
+    };
+
+    let slotIdx = 0;
+    if (hasBase) { drawSide(baseLookup, baseCounts, slotIdx++, false, "Baseline", "solid", -1); }
+    scenLookups.forEach(({ lookup, counts, label, fillStyle, gi }) => {
+      drawSide(lookup, counts, slotIdx++, true, label, fillStyle, gi);
+    });
+
+    // Age-band labels in centre gap
+    for (const ageBand of AGE_ORDER) {
+      const y0 = yScale(ageBand);
+      root.append("text")
+        .attr("x", cx).attr("y", y0 + bh / 2).attr("dy","0.35em")
+        .attr("text-anchor","middle").attr("font-size","11px")
+        .attr("fill",TEXT_M).attr("font-family",PUB_FONT)
+        .text(ageBand);
+    }
+
+    // X-axis tick labels (percentage) — left side (Female) and right side (Male)
+    const tickVals = xScale.ticks(4);
+    const axisG = root.append("g").attr("transform",`translate(0,${iH})`);
+    // Left ticks (Female side — values read outward from centre)
+    for (const t of tickVals) {
+      if (t === 0) continue;
+      const px = xScale(t);
+      axisG.append("text").attr("x", cx - 40 - px).attr("y", 14)
+        .attr("text-anchor","middle").attr("font-size","10px").attr("fill",TEXT_S).attr("font-family",PUB_FONT)
+        .text(`${(t*100).toFixed(0)}%`);
+    }
+    // Right ticks (Male side)
+    for (const t of tickVals) {
+      if (t === 0) continue;
+      const px = xScale(t);
+      axisG.append("text").attr("x", cx + 40 + px).attr("y", 14)
+        .attr("text-anchor","middle").attr("font-size","10px").attr("fill",TEXT_S).attr("font-family",PUB_FONT)
+        .text(`${(t*100).toFixed(0)}%`);
+    }
+
+    // Column labels: "← Female" and "Male →"
+    root.append("text").attr("x", cx - 40 - halfW / 2).attr("y", -6)
+      .attr("text-anchor","middle").attr("font-size","12px").attr("font-weight","700")
+      .attr("fill","#ff6e51").attr("font-family",PUB_FONT).text("← Female");
+    root.append("text").attr("x", cx + 40 + halfW / 2).attr("y", -6)
+      .attr("text-anchor","middle").attr("font-size","12px").attr("font-weight","700")
+      .attr("fill",TEAL).attr("font-family",PUB_FONT).text("Male →");
+
+    // Centre divider line removed — age labels in the gap provide sufficient separation
+
+  }, [baseRows, baselineData, scenEntries, showBaseline, showScenario, width, year, scenarioMap]);
+
+  // Hatch swatch helper — renders a small rectangle filled with diagonal
+  // lines matching the actual drawHatchClipped visual used in the chart.
+  const HatchSwatch = ({ colour }) => (
+    <svg width="22" height="13" style={{flexShrink:0}}>
+      <defs>
+        <pattern id={`hp_${colour.replace("#","")}`} x="0" y="0" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+          <line x1="0" y1="0" x2="0" y2="4" stroke={colour} strokeWidth="1.4" opacity="0.55"/>
+        </pattern>
+      </defs>
+      <rect x="0" y="0" width="22" height="13" fill={`url(#hp_${colour.replace("#","")})`}/>
+      <rect x="0" y="0" width="22" height="13" fill="none" stroke={colour} strokeWidth="1.2"/>
+    </svg>
+  );
+
+  const showBothLegend = showBaseline && scenEntries.length > 0;
+  // Legend is split into two groups matching other plot legends:
+  //   Left group: colour = gender (solid swatch, colour only)
+  //   Right group: fill style = Baseline (solid) vs Scenario (hatched)
+  return (
+    <div>
+      <div style={{display:"flex",gap:20,marginBottom:6,flexWrap:"wrap",alignItems:"center"}}>
+        {/* Gender colour key */}
+        <div style={{display:"flex",gap:12,alignItems:"center"}}>
+          <div style={{display:"flex",alignItems:"center",gap:5}}>
+            <span style={{width:22,height:13,background:TEAL,display:"inline-block",borderRadius:2,opacity:0.88}}/>
+            <span style={{fontSize:12,color:TEXT_S,fontWeight:500}}>Male</span>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:5}}>
+            <span style={{width:22,height:13,background:"#ff6e51",display:"inline-block",borderRadius:2,opacity:0.88}}/>
+            <span style={{fontSize:12,color:TEXT_S,fontWeight:500}}>Female</span>
+          </div>
+        </div>
+        {/* Baseline / Scenario fill-style key — only when both are shown.
+            Uses solid vs hatched swatch matching the line-type convention
+            used in all other chart legends. */}
+        {showBothLegend && (
+          <div style={{display:"flex",gap:12,alignItems:"center",borderLeft:"1px solid #e2ddd5",paddingLeft:16,flexWrap:"wrap"}}>
+            <div style={{display:"flex",alignItems:"center",gap:5}}>
+              <span style={{width:22,height:13,background:TEXT_M,display:"inline-block",borderRadius:2,opacity:0.88}}/>
+              <span style={{fontSize:12,color:TEXT_S,fontWeight:500}}>Baseline</span>
+            </div>
+            {scenEntries.map(({name, label, fillStyle, gi}) => (
+              <div key={name} style={{display:"flex",alignItems:"center",gap:5}}>
+                {fillStyle==="dot"
+                  ? <svg width="22" height="13" style={{flexShrink:0}}>
+                      <rect x="0" y="0" width="22" height="13" fill="none" stroke={TEXT_M} strokeWidth="1.2"/>
+                      {[4,10,16].map(cx=>[3,9].map(cy=><circle key={`${cx}${cy}`} cx={cx} cy={cy} r="1.2" fill={TEXT_M} opacity="0.65"/>))}
+                    </svg>
+                  : <HatchSwatch colour={TEXT_M}/>}
+                <span style={{fontSize:12,color:TEXT_S,fontWeight:500}}>{label}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <svg ref={svgRef}/>
+    </div>
+  );
+}
+
+/* ═════════════════════════════════════════════════════════════════════════════
+   WAGE DISTRIBUTION CHART
+   Renders the binned hourly-earnings distribution as a grouped bar chart.
+   One group per wage bin on the x-axis; bars per scenario (baseline = solid,
+   scenario = hatched).  An optional "all years" small-multiples mode renders
+   one mini histogram per year instead.
+
+   Data: rows with metric_type="wage_bin" and variable="Hourly earnings" that
+   were emitted by the new wage-bin accumulator pass in parseCore.js.
+
+   Props:
+     baselineData / scenarioData — pre-filtered to variable="Hourly earnings"
+     year            — number | null (null = show all years as small multiples)
+     showAllYears    — boolean; if true, renders small multiples instead of a
+                       single-year histogram
+     showBaseline / showScenario
+     viewBy          — current stratifier ("Overall" or a stratifier name)
+     enabledStrats   — Set of enabled stratifier values
+     width           — container width
+═════════════════════════════════════════════════════════════════════════════ */
+const WAGE_BIN_LABELS = WAGE_BINS.map(b => b[2]); // ["£0–5", "£5–10", …]
+
+function WageDistributionChart({ baselineData, scenarioData, year, showAllYears,
+    showBaseline, showScenario, viewBy, enabledStrats, width=600, svgRef: externalRef,
+    scenarioMap=null, enabledScenarios=null, allScenarioNames=[] }) {
+
+  const internalRef = useRef();
+  const svgRef = externalRef || internalRef;
+  const isStratified = viewBy !== "Overall";
+
+  // Extract wage_bin rows and (if stratified) filter to enabled strata
+  const wageBinRows = useCallback((data, scenario) => {
+    let rows = data.filter(d => d.metric_type === "wage_bin" && d.variable === "Hourly earnings");
+    if (isStratified) {
+      rows = rows.filter(d => d.stratifier === viewBy && enabledStrats.has(d.stratifier_value));
+    } else {
+      rows = rows.filter(d => d.stratifier === "Overall");
+    }
+    return rows;
+  }, [isStratified, viewBy, enabledStrats]);
+
+  const baseWage = useMemo(() => wageBinRows(baselineData), [baselineData, wageBinRows]);
+  // Build one wage dataset per enabled scenario
+  const enabledScenEntries = useMemo(() => {
+    if (scenarioMap && scenarioMap.size > 0 && allScenarioNames.length > 0) {
+      return allScenarioNames
+        .filter(n => enabledScenarios?.has(n))
+        .map((name) => {const gi=allScenarioNames.indexOf(name);return({
+          name, label: scenarioLabel(name),
+          rows: wageBinRows(scenarioMap.get(name) ?? []),
+          fillStyle: gi === 0 ? "hatch" : "dot",
+          colour: NUMERIC_SCEN_COLOURS[gi % NUMERIC_SCEN_COLOURS.length],
+        });});
+    }
+    return showScenario ? [{
+      name: "scenario", label: "Scenario",
+      rows: wageBinRows(scenarioData),
+      fillStyle: "hatch",
+      colour: NUMERIC_SCEN_COLOURS[0],
+    }] : [];
+  }, [scenarioMap, enabledScenarios, allScenarioNames, scenarioData, wageBinRows, showScenario]);
+  // Combined scen rows for backwards-compat usages (allYears, stratVals etc.)
+  const scenWage = useMemo(() => enabledScenEntries.flatMap(e => e.rows), [enabledScenEntries]);
+
+  // All years present in either dataset (sorted)
+  const allYears = useMemo(() => {
+    const ys = new Set([...baseWage, ...scenWage].map(d => d.year));
+    return [...ys].sort((a,b)=>a-b);
+  }, [baseWage, scenWage]);
+
+  // Build lookup: year → stratVal → binLabel → row (stores mean_value, lower_ci, upper_ci)
+  const buildLookup = useCallback((rows) => {
+    const m = new Map();
+    for (const r of rows) {
+      const svKey = isStratified ? r.stratifier_value : "Overall";
+      if (!m.has(r.year)) m.set(r.year, new Map());
+      if (!m.get(r.year).has(svKey)) m.get(r.year).set(svKey, new Map());
+      m.get(r.year).get(svKey).set(r.variable_value, r);
+    }
+    return m;
+  }, [isStratified]);
+
+  const baseLU = useMemo(() => buildLookup(baseWage), [baseWage, buildLookup]);
+  // Per-scenario lookups
+  const scenLUs = useMemo(() => enabledScenEntries.map(e => buildLookup(e.rows)), [enabledScenEntries, buildLookup]);
+  // Keep scenLU for backwards-compat
+  const scenLU = useMemo(() => scenLUs[0] ?? new Map(), [scenLUs]);
+
+  // Build a synthetic "Average" year entry by averaging mean_value across
+  // all years for each (stratVal, binLabel) combination.
+  const buildAvgLookup = useCallback((rows) => {
+    // Accumulate: stratVal → binLabel → { sum, count, loSum, hiSum }
+    const acc = new Map();
+    for (const r of rows) {
+      if (isNaN(r.mean_value)) continue;
+      const sv  = isStratified ? r.stratifier_value : "Overall";
+      const bin = r.variable_value;
+      if (!acc.has(sv)) acc.set(sv, new Map());
+      const bMap = acc.get(sv);
+      if (!bMap.has(bin)) bMap.set(bin, { sum: 0, count: 0, loSum: 0, hiSum: 0, n_runs: r.n_runs });
+      const entry = bMap.get(bin);
+      entry.sum   += r.mean_value;
+      entry.count += 1;
+      if (!isNaN(r.lower_ci)) entry.loSum += r.lower_ci;
+      if (!isNaN(r.upper_ci)) entry.hiSum += r.upper_ci;
+    }
+    // Convert to the same shape buildLookup produces, keyed under "Average"
+    const avgMap = new Map();
+    for (const [sv, bMap] of acc) {
+      if (!avgMap.has("Average")) avgMap.set("Average", new Map());
+      const svMap = avgMap.get("Average");
+      const out   = new Map();
+      for (const [bin, { sum, count, loSum, hiSum, n_runs }] of bMap) {
+        out.set(bin, count > 0 ? {
+          mean_value: sum / count,
+          lower_ci:   count > 0 ? loSum / count : NaN,
+          upper_ci:   count > 0 ? hiSum / count : NaN,
+          n_runs,
+        } : { mean_value: NaN, lower_ci: NaN, upper_ci: NaN });
+      }
+      svMap.set(sv, out);
+    }
+    return avgMap;
+  }, [isStratified]);
+
+  const baseAvgLU = useMemo(() => buildAvgLookup(baseWage), [baseWage, buildAvgLookup]);
+  const scenAvgLUs = useMemo(() => enabledScenEntries.map(e => buildAvgLookup(e.rows)), [enabledScenEntries, buildAvgLookup]);
+  const scenAvgLU  = useMemo(() => scenAvgLUs[0] ?? new Map(), [scenAvgLUs]);
+
+  // Strata to show
+  const stratVals = useMemo(() => {
+    if (!isStratified) return ["Overall"];
+    const sv = new Set([...baseWage,...scenWage].map(d=>d.stratifier_value));
+    return [...sv].filter(s => enabledStrats.has(s));
+  }, [isStratified, baseWage, scenWage, enabledStrats]);
+
+  // Colour per stratum (reuse the teal palette)
+  const stratColours = useMemo(() => {
+    const palette = [TEAL,"#e67e22","#27ae60","#8e44ad","#c0392b","#2980b9","#16a085","#d35400"];
+    const m = {};
+    stratVals.forEach((sv,i) => m[sv] = palette[i % palette.length]);
+    return m;
+  }, [stratVals]);
+
+  // Draw a single histogram panel into `g` for a given year + size.
+  // yr="Average" uses the pre-averaged lookup (baseAvgLU/scenAvgLU).
+  const drawHistogram = useCallback((svgSel, g, yr, panelW, panelH, small=false) => {
+    const bins = WAGE_BIN_LABELS;
+    const margin = small ? {l:32,r:4,t:14,b:28} : {l:48,r:8,t:8,b:36};
+    const iW = panelW - margin.l - margin.r;
+    const iH = panelH - margin.t - margin.b;
+    if (iW <= 0 || iH <= 0) return;
+
+    const isAvg = yr === "Average";
+    const pg = g.append("g").attr("transform",`translate(${margin.l},${margin.t})`);
+
+    // Collect all values for y-scale
+    const allVals = [];
+    const scenarios = [];
+    if (showBaseline) scenarios.push({ lk: isAvg ? baseAvgLU : baseLU, isScen:false, label:"Baseline", fillStyle:"solid", colour:NUMERIC_BASE_COLOUR });
+    enabledScenEntries.forEach((e, i) => {
+      const gi = allScenarioNames.indexOf(e.name);
+      scenarios.push({ lk: isAvg ? scenAvgLUs[i] : scenLUs[i], isScen:true, label:e.label, fillStyle:e.fillStyle, colour:NUMERIC_SCEN_COLOURS[gi>=0?gi:i] });
+    });
+
+    for (const { lk } of scenarios) {
+      const yMap = lk.get(yr);
+      if (!yMap) continue;
+      for (const sv of stratVals) {
+        const binMap = yMap.get(sv);
+        if (!binMap) continue;
+        for (const bl of bins) { const r = binMap.get(bl); if (r != null) { const v = typeof r==="object"?r.mean_value:r; if (!isNaN(v)) allVals.push(v); } }
+      }
+    }
+    const maxVal = d3.max(allVals) || 0.01;
+
+    // X: bin positions
+    const xBin   = d3.scaleBand().domain(bins).range([0,iW]).padding(0.12);
+    const yScale  = d3.scaleLinear().domain([0, maxVal * 1.12]).range([iH,0]);
+
+    // Y-axis
+    const yTicks = small ? 3 : 5;
+    pg.append("g").call(
+      d3.axisLeft(yScale).ticks(yTicks).tickFormat(v=>`${(v*100).toFixed(0)}%`).tickSize(2)
+    ).call(ax=>{
+      ax.select(".domain").remove();
+      ax.selectAll("text").style("font-size", small?"8px":"10px").style("fill",TEXT_S).style("font-family",PUB_FONT);
+      ax.selectAll(".tick line").style("stroke","#e2ddd5");
+    });
+
+    // Gridlines
+    pg.append("g").call(d3.axisLeft(yScale).ticks(yTicks).tickSize(-iW).tickFormat(""))
+      .call(ax=>{ ax.select(".domain").remove(); ax.selectAll("line").style("stroke","#ece8e0").style("stroke-dasharray","3,3"); });
+
+    // Bars — one group per bin, one bar per (scenario × stratum)
+    const groupCount = scenarios.length * stratVals.length;
+    const xGroup = d3.scaleBand().domain(d3.range(groupCount)).range([0, xBin.bandwidth()]).padding(0.06);
+    const bw = xGroup.bandwidth();
+
+    let groupIdx = 0;
+    for (const { lk, isScen, label:scenLbl, fillStyle, colour:scenarioColour } of scenarios) {
+      for (const sv of stratVals) {
+        const colour   = isStratified ? (stratColours[sv] || TEAL) : scenarioColour;
+        const stratTip = sv === "Overall" ? "" : `<br/>${sv}`;
+        const gIdx     = groupIdx++;
+        const yMap = lk.get(yr);
+        if (!yMap) continue;
+        const binMap = yMap.get(sv);
+        if (!binMap) continue;
+
+        for (const bl of bins) {
+          const row = binMap.get(bl);
+          if (row == null) continue;
+          const v = typeof row === "object" ? row.mean_value : row;
+          if (isNaN(v)) continue;
+          const bx = xBin(bl);
+          const gx = xGroup(gIdx);
+          const by = yScale(v);
+          const bh = iH - by;
+          if (bh <= 0) continue;
+
+          const ttHtml = `<strong>${bl}</strong>${stratTip}<br/>${scenLbl}: ${(v*100).toFixed(1)}%`;
+
+          if (isScen) {
+            pg.append("rect").attr("x",bx+gx).attr("y",by).attr("width",bw).attr("height",bh)
+              .attr("fill",colour).attr("opacity",0.15);
+            if (fillStyle==="dot") drawDotPattern(svgSel,pg,bx+gx,by,bw,bh,colour,0.75,5);
+            else drawHatchClipped(svgSel,pg,bx+gx,by,bw,bh,colour,0.7,4);
+            pg.append("rect").attr("x",bx+gx).attr("y",by).attr("width",bw).attr("height",bh)
+              .attr("fill","none").attr("stroke",colour).attr("stroke-width",1).attr("opacity",0.7);
+          } else {
+            pg.append("rect").attr("x",bx+gx).attr("y",by).attr("width",bw).attr("height",bh)
+              .attr("fill",colour).attr("opacity",0.82).attr("rx",1.5);
+          }
+
+          if (!small) {
+            pg.append("rect").attr("x",bx+gx).attr("y",by).attr("width",bw).attr("height",bh)
+              .attr("fill","transparent").style("cursor","default")
+              .on("mouseover", e => showTT(ttHtml, e))
+              .on("mousemove", moveTT)
+              .on("mouseout",  hideTT);
+          }
+        }
+      }
+    }
+
+    // X axis: bin labels — rotate on small panels
+    pg.append("g").attr("transform",`translate(0,${iH})`).call(
+      d3.axisBottom(xBin).tickSize(2)
+    ).call(ax=>{
+      ax.select(".domain").remove();
+      ax.selectAll("text")
+        .style("font-size", small?"7.5px":"10px").style("fill",TEXT_S).style("font-family",PUB_FONT)
+        .attr("transform","rotate(-35)").attr("text-anchor","end").attr("dy","0.8em").attr("dx","-0.3em");
+      ax.selectAll(".tick line").style("stroke","#e2ddd5");
+    });
+
+    // Year label for small-multiples panels
+    if (small) {
+      pg.append("text").attr("x",iW/2).attr("y",-4)
+        .attr("text-anchor","middle").attr("font-size","10px").attr("font-weight","700")
+        .attr("fill",TEXT_D).attr("font-family",PUB_FONT).text(yr);
+    }
+  }, [baseLU, scenLUs, baseAvgLU, scenAvgLUs, showBaseline, showScenario, stratVals, stratColours, enabledScenEntries]);
+
+  useEffect(() => {
+    const svg = d3.select(svgRef.current);
+    svg.selectAll("*").remove();
+
+    const hasAny = (showBaseline && baseWage.length > 0) || (showScenario && scenWage.length > 0);
+    if (!hasAny) return;
+
+    if (showAllYears) {
+      // Small-multiples: one mini histogram per year
+      const nYears = allYears.length;
+      const cols   = Math.min(nYears, Math.max(2, Math.floor(width / 190)));
+      const rows   = Math.ceil(nYears / cols);
+      const cellW  = Math.floor(width / cols);
+      const cellH  = 160;
+      const totalH = rows * cellH;
+      svg.attr("width", width).attr("height", totalH);
+      allYears.forEach((yr, i) => {
+        const col = i % cols, row = Math.floor(i / cols);
+        const g = svg.append("g").attr("transform",`translate(${col*cellW},${row*cellH})`);
+        drawHistogram(svg, g, yr, cellW, cellH, true);
+      });
+    } else {
+      // Single histogram: use the selected year or the cross-year average.
+      const H = 300;
+      svg.attr("width", width).attr("height", H);
+      const g = svg.append("g");
+      const targetYear = year ?? "Average";
+      drawHistogram(svg, g, targetYear, width, H, false);
+    }
+  }, [showAllYears, allYears, year, width, drawHistogram, baseWage, scenWage, showBaseline, showScenario]);
+
+  // Legend
+  const showBoth = showBaseline && showScenario;
+  return (
+    <div>
+      <div style={{display:"flex",gap:12,marginBottom:6,flexWrap:"wrap",alignItems:"center"}}>
+        {stratVals.map(sv=>(
+          <div key={sv} style={{display:"flex",alignItems:"center",gap:5}}>
+            <span style={{width:14,height:14,background:stratColours[sv]||TEAL,display:"inline-block",borderRadius:2,opacity:0.82}}/>
+            <span style={{fontSize:12,color:TEXT_S}}>{sv==="Overall"?"":sv}</span>
+          </div>
+        ))}
+        {showBoth && (
+          <>
+            <span style={{fontSize:11,color:TEXT_S}}>— solid = Baseline</span>
+            <span style={{fontSize:11,color:TEXT_S}}>— hatched = Scenario</span>
+          </>
+        )}
+      </div>
+      <svg ref={svgRef}/>
     </div>
   );
 }
@@ -1610,52 +2559,108 @@ function CrossSectionPanel({baseData,scenData,colourMap,highlighted,isCategorica
  * combination), legend, and download controls — renders for the "Δ
  * Baseline → Scenario" tab.
  */
+// Small info icon with tooltip for the CI methodology explanation
+function CiInfoTooltip(){
+  const [show,setShow]=useState(false);
+  const text="Baseline and Scenario runs are matched by random seed. For each matched pair, the run-level difference (Scenario − Baseline mean) is computed. The average of these paired differences is plotted, with a 95% uncertainty interval calculated as mean_delta ± 1.96 × SE, where SE = SD of paired differences / √(number of matched runs). This paired approach cancels stochastic variation shared between matched runs, so only the policy effect remains.";
+  return (
+    <span style={{position:"relative",display:"inline-flex",alignItems:"center",marginLeft:6}}>
+      <span
+        onMouseEnter={()=>setShow(true)}
+        onMouseLeave={()=>setShow(false)}
+        style={{display:"inline-flex",alignItems:"center",justifyContent:"center",
+          width:16,height:16,borderRadius:"50%",border:`1px solid ${TEXT_S}`,
+          fontSize:10,fontWeight:700,color:TEXT_S,cursor:"help",lineHeight:1,flexShrink:0}}>
+        ?
+      </span>
+      {show&&(
+        <span style={{position:"absolute",bottom:"calc(100% + 6px)",left:"50%",transform:"translateX(-50%)",
+          background:"#1e293b",color:"#fff",fontSize:12,lineHeight:1.55,padding:"10px 13px",borderRadius:7,
+          whiteSpace:"normal",width:300,zIndex:9999,boxShadow:"0 4px 16px rgba(0,0,0,0.22)"}}>
+          {text}
+        </span>
+      )}
+    </span>
+  );
+}
+
+// Helper: compute delta rows for one scenario vs baseline
+function computeDeltaRows(filtB, filtScen, scenarioName) {
+  const bMap=new Map();
+  filtB.forEach(d=>bMap.set(`${d.year}||${d.variable_value}||${d.stratifier_value}`,d));
+  const sMap=new Map();
+  filtScen.forEach(d=>sMap.set(`${d.year}||${d.variable_value}||${d.stratifier_value}`,d));
+  const allKeys=new Set([...bMap.keys(),...sMap.keys()]);
+  return Array.from(allKeys).map(key=>{
+    const b=bMap.get(key), s=sMap.get(key);
+    const meta=s||b;
+    let mean_value,lower_ci,upper_ci,paired_n_runs=0;
+    const pairedRow=(s&&!isNaN(s.paired_mean_delta))?s:(b&&!isNaN(b.paired_mean_delta))?b:null;
+    if (pairedRow){
+      mean_value=pairedRow.paired_mean_delta;
+      lower_ci=isNaN(pairedRow.paired_lower_ci)?NaN:pairedRow.paired_lower_ci;
+      upper_ci=isNaN(pairedRow.paired_upper_ci)?NaN:pairedRow.paired_upper_ci;
+      paired_n_runs=pairedRow.paired_n_runs??0;
+    } else { mean_value=NaN; lower_ci=NaN; upper_ci=NaN; }
+    return {...meta,mean_value,lower_ci,upper_ci,paired_n_runs,scenarioName,
+      base_mean_sample:b?.mean_sample,base_n_runs:b?.n_runs,
+      scen_mean_sample:s?.mean_sample,scen_n_runs:s?.n_runs};
+  });
+}
+
 function DeltaSection({baseData,scenData,colourMap,highlighted,isCategorical,
-    varValues,enabledVarVals,enabledStrats,viewBy,width,legendEntries,stratValues=[],stratLegendEntries=[]}){
+    varValues,enabledVarVals,enabledStrats,viewBy,width,legendEntries,stratValues=[],stratLegendEntries=[],
+    scenarioMap=null,enabledScenarios=null,allScenarioNames=[],onYearClick,selectedYear}){
   const svgRef=useRef();
   const isStratified=viewBy!=="Overall";
-  const filtB=useMemo(()=>baseData.filter(d=>enabledVarVals.has(d.variable_value)&&(isStratified?enabledStrats.has(d.stratifier_value):d.stratifier_value==="Overall")),[baseData,enabledVarVals,enabledStrats,isStratified]);
-  const filtS=useMemo(()=>scenData.filter(d=>enabledVarVals.has(d.variable_value)&&(isStratified?enabledStrats.has(d.stratifier_value):d.stratifier_value==="Overall")),[scenData,enabledVarVals,enabledStrats,isStratified]);
+
+  const filtB=useMemo(()=>baseData.filter(d=>
+    enabledVarVals.has(d.variable_value)&&(isStratified?enabledStrats.has(d.stratifier_value):d.stratifier_value==="Overall")
+  ),[baseData,enabledVarVals,enabledStrats,isStratified]);
+
+  // Combine delta rows from all enabled scenarios into one array, each tagged with scenarioName
   const deltaData=useMemo(()=>{
-    // Union of both sides' keys — a year/combo missing from EITHER side still
-    // needs to exist in the output (with a NaN delta) so the chart's x-axis
-    // knows that year is real; dropping the row entirely (as opposed to
-    // keeping it with mean_value:NaN) would make the year disappear from the
-    // axis rather than just breaking the line at that point — exactly the
-    // "line quietly bridges the gap" bug this is meant to avoid.
-    const bMap=new Map();
-    filtB.forEach(d=>bMap.set(`${d.year}||${d.variable_value}||${d.stratifier_value}`,d));
-    const sMap=new Map();
-    filtS.forEach(d=>sMap.set(`${d.year}||${d.variable_value}||${d.stratifier_value}`,d));
-    const allKeys=new Set([...bMap.keys(),...sMap.keys()]);
-    return Array.from(allKeys).map(key=>{
-      const b=bMap.get(key), s=sMap.get(key);
-      const meta=s||b; // whichever side has the row supplies year/variable_value/stratifier_value/etc.
-      const valid=b&&s&&!isNaN(s.mean_value)&&!isNaN(b.mean_value);
-      return {...meta,
-        mean_value: valid?s.mean_value-b.mean_value:NaN,
-        lower_ci:  valid&&!isNaN(s.lower_ci)&&!isNaN(b.upper_ci)?s.lower_ci-b.upper_ci:NaN,
-        upper_ci:  valid&&!isNaN(s.upper_ci)&&!isNaN(b.lower_ci)?s.upper_ci-b.lower_ci:NaN,
-        base_mean_sample:b?.mean_sample, base_n_runs:b?.n_runs,
-        scen_mean_sample:s?.mean_sample, scen_n_runs:s?.n_runs};
-    });
-  },[filtB,filtS]);
+    const enabledNames=scenarioMap
+      ? allScenarioNames.filter(n=>enabledScenarios?.has(n))
+      : ["scenario"]; // colours use allScenarioNames.indexOf so stable across toggles
+    const allRows=[];
+    for (const name of enabledNames){
+      const rows=scenarioMap?scenarioMap.get(name)??[]:scenData;
+      const filtScen=rows.filter(d=>
+        enabledVarVals.has(d.variable_value)&&(isStratified?enabledStrats.has(d.stratifier_value):d.stratifier_value==="Overall")
+      );
+      const deltaRows=computeDeltaRows(filtB,filtScen,name);
+      for (const r of deltaRows) allRows.push(r);
+    }
+    return allRows;
+  },[filtB,scenData,scenarioMap,enabledScenarios,allScenarioNames,enabledVarVals,enabledStrats,isStratified]);
+
   const hasDelta=deltaData.some(d=>!isNaN(d.mean_value));
   const varLabel=addSpaces(filtB[0]?.variable||"");
+
   return (
     <div>
-      <p style={{margin:"0 0 8px",fontSize:13,color:TEXT_M,fontStyle:"italic"}}>Scenario minus Baseline. Positive = scenario is higher.</p>
+      <div style={{display:"flex",alignItems:"center",gap:6,margin:"0 0 8px",flexWrap:"wrap"}}>
+        <p style={{margin:0,fontSize:13,color:TEXT_M,fontStyle:"italic"}}>
+          Scenario minus Baseline. Positive = scenario is higher. 95% uncertainty intervals use paired run differences (matched by seed).
+        </p>
+        <CiInfoTooltip/>
+      </div>
       {hasDelta?(
         <div style={{display:"flex",flexDirection:"column",gap:4}}>
-          <DeltaChart svgRef={svgRef} deltaData={deltaData} colourMap={colourMap} highlighted={highlighted} isCategorical={isCategorical} varValues={varValues} enabledVarVals={enabledVarVals} stratValues={stratValues} enabledStrats={enabledStrats} viewBy={viewBy} width={width} varLabel={varLabel}/>
+          <DeltaChart svgRef={svgRef} deltaData={deltaData} colourMap={colourMap} highlighted={highlighted} isCategorical={isCategorical} varValues={varValues} enabledVarVals={enabledVarVals} stratValues={stratValues} enabledStrats={enabledStrats} viewBy={viewBy} width={width} varLabel={varLabel} allScenarioNames={allScenarioNames} onYearClick={onYearClick} selectedYear={selectedYear}/>
           <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
-            <DownloadBtn svgRef={svgRef} filename="delta.png" pubProps={{title:`Scenario − Baseline: ${varLabel}`,legendEntries,stratLegendEntries,showBaseline:false,showScenario:false,highlighted,varScope:varLabel,stratScope:viewBy}}/>
-            <button onClick={()=>exportCsv(deltaData,`${slugify(varLabel)}_delta.csv`)}
+            <DownloadBtn svgRef={svgRef} filename="delta.png" pubProps={{title:`Δ Baseline → Scenario: ${varLabel}`,legendEntries,stratLegendEntries,showBaseline:false,showScenario:false,highlighted,varScope:varLabel,stratScope:viewBy}}/>
+            <button onClick={()=>exportCsv(deltaData,`${slugify(varLabel)}_delta.csv`,{isDelta:true,isContinuous:!isCategorical})}
               style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ CSV</button>
           </div>
         </div>
       ):(
-        <p style={{fontSize:13,color:TEXT_S,fontStyle:"italic"}}>No overlapping years between baseline and scenario.</p>
+        <p style={{fontSize:13,color:TEXT_S,fontStyle:"italic"}}>
+          {filtB.length
+            ? "No delta data available — check that Baseline and Scenario have matching years and seeds."
+            : "No baseline data for this variable."}
+        </p>
       )}
     </div>
   );
@@ -1695,20 +2700,94 @@ function DeltaSection({baseData,scenData,colourMap,highlighted,isCategorical,
  * @param {object[]} parsedCache - full dataset (all variables/scenarios), from App.js
  * @param {string} targetVariable - currently-selected variable to visualise
  */
+/**
+ * Baseline toggle + one toggle button per scenario. Baseline is always the
+ * first chip; scenarios follow in the order they appear in allScenarioNames.
+ * Each scenario's button uses the matching SCENARIO_DASHES pattern as a
+ * visual cue so the button matches what's drawn on the chart.
+ */
+function ScenarioToggles({showBaseline,setShowBaseline,allScenarioNames,enabledScenarios,setEnabledScenarios,isCategorical=true}){
+  const togScen=name=>setEnabledScenarios(prev=>{
+    const n=new Set(prev);
+    n.has(name)?n.delete(name):n.add(name);
+    return n;
+  });
+  const btn=(active,label,onClick,dash,colour)=>{
+    // For numeric variables each series has its own colour; for categorical use teal
+    const c=isCategorical?TEAL:colour;
+    return(<button key={label} onClick={onClick} style={{
+      display:"inline-flex",alignItems:"center",gap:6,
+      padding:"7px 13px",borderRadius:18,fontSize:13,fontWeight:active?600:500,cursor:"pointer",
+      border:`1.5px solid ${active?c:"#ddd8ce"}`,
+      background:active?`${c}18`:"transparent",color:active?c:TEXT_S,transition:"all 0.15s",
+    }}>
+      {dash
+        ? <svg width="18" height="9" style={{flexShrink:0}}><line x1="0" y1="4" x2="18" y2="4" stroke={active?c:TEXT_S} strokeWidth="2" strokeDasharray={dash}/></svg>
+        : <svg width="18" height="9" style={{flexShrink:0}}><line x1="0" y1="4" x2="18" y2="4" stroke={active?c:TEXT_S} strokeWidth="2.5"/></svg>}
+      {label}
+    </button>);
+  };
+  return(<div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+    {btn(showBaseline,"Baseline",()=>setShowBaseline(v=>!v),null,NUMERIC_BASE_COLOUR)}
+    {allScenarioNames.map((name,i)=>btn(
+      enabledScenarios.has(name),
+      scenarioLabel(name),
+      ()=>togScen(name),
+      SCENARIO_DASHES[i%SCENARIO_DASHES.length],
+      NUMERIC_SCEN_COLOURS[i%NUMERIC_SCEN_COLOURS.length]
+    ))}
+  </div>);
+}
+
 export default function DashboardSection({parsedCache,targetVariable}){
-  const {baselineData,scenarioData}=useAggregatedData(parsedCache,targetVariable);
+  const {baselineData,scenarioData,scenarioMap}=useAggregatedData(parsedCache,targetVariable);
+  const allScenarioNames=useScenarioNames(parsedCache);
+
+  // Pyramid rows use metric_type="pyramid_bin" (variable="Age",
+  // stratifier="Gender") — filter specifically on that type so regular Age
+  // share rows don't bleed through, and so this works identically from the
+  // pre-aggregated CSV (where pyramid_bin rows are emitted by the R script)
+  // and from a local upload (where parseCore now emits them too).
+  const isPyramidRow = r =>
+    r.metric_type==="pyramid_bin" ||
+    (r.variable==="Age" && r.stratifier==="Gender" && (r.metric_type==="share"||r.metric_type==="mean"));
+  const pyramidBaseData=useMemo(()=>
+    parsedCache.filter(r=>r.scenario==="baseline"&&isPyramidRow(r)),
+  [parsedCache]);
   const [viewBy,        setViewBy]        =useState("Overall");
   const [chartType,     setChartType]     =useState("line");
   const [displayMode,   setDisplayMode]   =useState("panels");
   const [activeTab,     setActiveTab]     =useState("timeseries");
   const [selectedYear,  setSelectedYear]  =useState(null);
+  const [deltaYear,     setDeltaYear]     =useState(null); // year pinned on the delta chart
   const [enabledStrats, setEnabledStrats] =useState(new Set());
   const [enabledVarVals,setEnabledVarVals]=useState(new Set());
   const [highlighted,   setHighlighted]   =useState(new Set());
-  const [dataView,      setDataView]      =useState("both");
+  const [showBaseline,  setShowBaseline]  =useState(true);
+  const [enabledScenarios,setEnabledScenarios]=useState(new Set()); // scenario names currently shown
   const [showCI,        setShowCI]        =useState(true);
 
-  const lineRef=useRef(), barRef=useRef();
+  const pyramidScenData=useMemo(()=>{
+    const firstEnabled=[...enabledScenarios][0]??allScenarioNames[0];
+    if (!firstEnabled) return [];
+    return parsedCache.filter(r=>r.scenario===firstEnabled&&isPyramidRow(r));
+  },[parsedCache,enabledScenarios,allScenarioNames]);
+
+  // scenarioMap filtered to pyramid rows — for multi-scenario pyramid
+  const pyramidScenMap=useMemo(()=>{
+    if (!allScenarioNames.length) return null;
+    const m=new Map();
+    for (const name of allScenarioNames) {
+      const rows=parsedCache.filter(r=>r.scenario===name&&isPyramidRow(r));
+      if (rows.length) m.set(name,rows);
+    }
+    return m.size>0?m:null;
+  },[parsedCache,allScenarioNames]);
+  // Wage distribution chart: toggle between single-year histogram and all-years small multiples
+  const [showWageDist,     setShowWageDist]     =useState(false);
+  const [showAllYearsDist, setShowAllYearsDist] =useState(false);
+
+  const lineRef=useRef(), barRef=useRef(), wageDistRef=useRef(), pyramidRef=useRef(), deltaCsRef=useRef();
   const containerRef=useRef();
   const [width,setWidth]=useState(900);
 
@@ -1735,10 +2814,27 @@ export default function DashboardSection({parsedCache,targetVariable}){
   useEffect(()=>{
     setViewBy("Overall");setChartType("line");setDisplayMode("panels");
     setActiveTab("timeseries");setSelectedYear(null);
-    setEnabledStrats(new Set());setEnabledVarVals(new Set());setHighlighted(new Set());setDataView("both");setShowCI(true);
+    setEnabledStrats(new Set());setEnabledVarVals(new Set());setHighlighted(new Set());setShowCI(true);
+    setShowWageDist(false);setShowAllYearsDist(false);
   },[targetVariable]);
 
-  const combined     =useMemo(()=>[...baselineData,...scenarioData],[baselineData,scenarioData]);
+  // Exclude special metric_type rows (wage_bin, pyramid_bin) from the normal
+  // chart pipeline — they are consumed by their own dedicated chart components
+  // and must not bleed into varValues, isCategorical, yDomain etc.
+  // All scenario rows flattened — used for deriving varValues, isCategorical etc.
+  const allScenarioRows=useMemo(()=>[...scenarioMap.values()].flat(),[scenarioMap]);
+  // For charts that still take a single scenData prop, use the first ENABLED scenario
+  const activeScenarioData=useMemo(()=>{
+    for (const name of allScenarioNames) {
+      if (enabledScenarios.has(name)) return scenarioMap.get(name)??[];
+    }
+    return scenarioData; // fallback to first scenario
+  },[allScenarioNames,enabledScenarios,scenarioMap,scenarioData]);
+  const combined     =useMemo(()=>
+    [...baselineData,...allScenarioRows].filter(d=>
+      d.metric_type!=="wage_bin"&&d.metric_type!=="pyramid_bin"&&d.metric_type!=="income_bin"&&
+      !(d.variable==="Age"&&d.stratifier==="Gender")),
+  [baselineData,allScenarioRows]);
   // Uses the variable's own canonical type (numeric vs. categorical/ordinal)
   // rather than sniffing metric_type off the data rows — a numeric variable
   // with any missing values also carries "Missing" share rows (see
@@ -1752,6 +2848,16 @@ export default function DashboardSection({parsedCache,targetVariable}){
     if (def.type==="categorical"||def.type==="ordinal") return true;
     return combined.some(d=>d.metric_type==="share"&&d.variable_value!=="Missing");
   },[combined,targetVariable]);
+
+  // Special-case flags that unlock extra chart types
+  const isHourlyEarnings  = targetVariable === "Hourly earnings";
+  // "Population Pyramid" is a sentinel variable name — it is listed in
+  // DOMAIN_SECTIONS under Demographics in App.js but is NOT a real aggregated
+  // variable in the dataset.  When selected, DashboardSection renders the
+  // pyramid as a self-contained module instead of the normal chart stack.
+  const isPyramidModule   = targetVariable === "Population Pyramid";
+  // Legacy flag kept for the ⊿ Pyramid tab button on the Age variable itself.
+  const isPyramidVar      = targetVariable === "Age";
   // "Missing" isn't a real value of a numeric variable — it's metadata about
   // how much data is missing at each point — so it's excluded from the
   // plottable value list for numeric variables (categorical variables DO
@@ -1759,7 +2865,11 @@ export default function DashboardSection({parsedCache,targetVariable}){
   // missing-value handling).
   const varValues    =useMemo(()=>{
     const vals=uniqueValues(combined,"variable_value");
-    return orderVariableValues(targetVariable,isCategorical?vals:vals.filter(v=>v!=="Missing"));
+    // Variables where "Missing" is a meaningful real category (not just suppressed data)
+    // and should be kept in varValues and shown on charts.
+    const MISSING_IS_MEANINGFUL = new Set(["Household Type","Number of children"]);
+    const keepMissing = isCategorical && MISSING_IS_MEANINGFUL.has(targetVariable) && vals.includes("Missing");
+    return orderVariableValues(targetVariable, keepMissing ? vals : vals.filter(v=>v!=="Missing"));
   },[combined,targetVariable,isCategorical]);
   // Lookup for numeric variables' missingness, keyed by scenario/year/
   // stratifier-value — used to append "X% missing" to a data point's
@@ -1772,23 +2882,40 @@ export default function DashboardSection({parsedCache,targetVariable}){
     combined.forEach(d=>{ if (d.variable_value==="Missing") m.set(`${d.scenario}|${d.year}|${d.stratifier_value}`,d); });
     return m;
   },[combined,isCategorical]);
-  const stratValues  =useMemo(()=>orderStratifierValues(viewBy,uniqueValues(combined.filter(d=>d.stratifier===viewBy),"stratifier_value")),[combined,viewBy]);
+  const stratValues  =useMemo(()=>orderStratifierValues(viewBy,uniqueValues(combined.filter(d=>d.stratifier===viewBy),"stratifier_value").filter(v=>v!=="Missing")),[combined,viewBy]);
   const colourMap    =useMemo(()=>buildColourMap(targetVariable,varValues),[targetVariable,varValues]);
-  const allYears     =useMemo(()=>[...new Set(combined.map(d=>d.year))].filter(Boolean).sort((a,b)=>a-b),[combined]);
+  const allYears     =useMemo(()=>{
+    const src=isPyramidModule?pyramidBaseData:combined;
+    return [...new Set(src.map(d=>d.year))].filter(Boolean).sort((a,b)=>a-b);
+  },[combined,isPyramidModule,pyramidBaseData]);
   const stratDef     =useMemo(()=>getStratifierDef(viewBy),[viewBy]);
   const isCatStrat   =stratDef?.type==="categorical";
 
   useEffect(()=>setEnabledStrats(new Set(stratValues)),[stratValues]);
   useEffect(()=>setEnabledVarVals(new Set(varValues)),[varValues]);
+  useEffect(()=>setEnabledScenarios(new Set(allScenarioNames)),[allScenarioNames]);
+
+  // scenarioMap filtered to current stratifier — used by LineChart in combined mode
+  // Must be at top level (not inside JSX) to satisfy hooks rules
+  const filteredScenMap=useMemo(()=>{
+    if (!scenarioMap) return null;
+    const strat=viewBy!=="Overall";
+    const m=new Map();
+    for (const [name,rows] of scenarioMap) {
+      m.set(name,rows.filter(d=>strat?d.stratifier===viewBy:d.stratifier==="Overall"));
+    }
+    return m;
+  },[scenarioMap,viewBy]);
   // selectedYear===null => "average" (default). Set by clicking a point; reset by clicking Avg.
 
   const isStratified=viewBy!=="Overall";
   const baseTime=useMemo(()=>baselineData.filter(d=>isStratified?d.stratifier===viewBy:d.stratifier==="Overall"),[baselineData,viewBy,isStratified]);
-  const scenTime=useMemo(()=>scenarioData.filter(d=>isStratified?d.stratifier===viewBy:d.stratifier==="Overall"),[scenarioData,viewBy,isStratified]);
-  const yDomain =useMemo(()=>buildYDomain([...baseTime,...scenTime],isCategorical),[baseTime,scenTime,isCategorical]);
+  const scenTime=useMemo(()=>activeScenarioData.filter(d=>isStratified?d.stratifier===viewBy:d.stratifier==="Overall"),[activeScenarioData,viewBy,isStratified]);
+  // yDomain spans baseline + ALL scenario data so the axis doesn't jump between scenarios
+  const allScenTime=useMemo(()=>allScenarioRows.filter(d=>isStratified?d.stratifier===viewBy:d.stratifier==="Overall"),[allScenarioRows,viewBy,isStratified]);
+  const yDomain =useMemo(()=>buildYDomain([...baseTime,...allScenTime],isCategorical),[baseTime,allScenTime,isCategorical]);
 
-  const showBaseline=dataView==="both"||dataView==="baseline";
-  const showScenario=dataView==="both"||dataView==="scenario";
+  const showScenario=enabledScenarios.size>0;
   const showCrossSection=chartType==="line";
 
   const legendEntries=useMemo(()=>varValues.map(vv=>({label:vv,color:colourMap[vv]||GREY})),[varValues,colourMap]);
@@ -1840,7 +2967,10 @@ export default function DashboardSection({parsedCache,targetVariable}){
   // that actually needed this.
   const combinedBaseTime=useMemo(()=>baseTime.filter(d=>(!isStratified||enabledStrats.has(d.stratifier_value))&&enabledVarVals.has(d.variable_value)),[baseTime,isStratified,enabledStrats,enabledVarVals]);
   const combinedScenTime=useMemo(()=>scenTime.filter(d=>(!isStratified||enabledStrats.has(d.stratifier_value))&&enabledVarVals.has(d.variable_value)),[scenTime,isStratified,enabledStrats,enabledVarVals]);
-  const combinedYDomain =useMemo(()=>buildYDomain([...combinedBaseTime,...combinedScenTime],isCategorical),[combinedBaseTime,combinedScenTime,isCategorical]);
+  // combinedYDomain must span ALL enabled scenarios so values from Scenario 2
+  // are never clipped when Scenario 1 has a narrower range.
+  const combinedAllScenTime=useMemo(()=>allScenTime.filter(d=>(!isStratified||enabledStrats.has(d.stratifier_value))&&enabledVarVals.has(d.variable_value)),[allScenTime,isStratified,enabledStrats,enabledVarVals]);
+  const combinedYDomain =useMemo(()=>buildYDomain([...combinedBaseTime,...combinedAllScenTime],isCategorical),[combinedBaseTime,combinedAllScenTime,isCategorical]);
 
   // Style helpers — a single flat toolbar rather than boxed cards: inline
   // labels next to each control, thin dividers between logical groups,
@@ -1848,7 +2978,7 @@ export default function DashboardSection({parsedCache,targetVariable}){
   const controlLabel={fontSize:12,fontWeight:700,color:TEAL,textTransform:"uppercase",letterSpacing:"0.04em",whiteSpace:"nowrap"};
   const segGroup={display:"flex",gap:2,background:"#eae6de",borderRadius:8,padding:3};
   const togBtn=active=>({padding:"8px 16px",borderRadius:6,fontSize:13.5,fontWeight:600,cursor:"pointer",border:"none",background:active?"#fff":"transparent",color:active?TEAL:TEXT_S,boxShadow:active?"0 1px 2px rgba(0,0,0,0.08)":"none",transition:"all 0.15s"});
-  const dvBtn=dv=>({padding:"8px 16px",borderRadius:6,fontSize:13.5,fontWeight:600,cursor:"pointer",border:"none",background:dataView===dv?"#fff":"transparent",color:dataView===dv?TEAL:TEXT_S,boxShadow:dataView===dv?"0 1px 2px rgba(0,0,0,0.08)":"none",transition:"all 0.15s"});
+  // dvBtn removed — replaced by ScenarioToggles component
 
   const crossTitle=selectedYear===null?"Average across all years":`Year ${selectedYear}`;
 
@@ -1861,7 +2991,7 @@ export default function DashboardSection({parsedCache,targetVariable}){
   // between. A numeric variable has exactly one series ("Mean") unless it's
   // stratified — in which case stratLegendEntries (one per stratum line) is
   // what makes highlighting worthwhile, not legendEntries.
-  const showHighlight   =!(activeTab==="timeseries"&&chartType==="bar")&&(legendEntries.length>1||stratLegendEntries.length>0);
+  const showHighlight   =!isHourlyEarnings&&!(activeTab==="timeseries"&&chartType==="bar")&&(legendEntries.length>1||stratLegendEntries.length>0);
   const hasSidebar       =showFilterVars||showStratFilters||showHighlight;
   // Below this container width, the sidebar can't sit beside the chart
   // without squeezing it unusably narrow — collapse it to a full-width row
@@ -1881,6 +3011,90 @@ export default function DashboardSection({parsedCache,targetVariable}){
   return (
     <div ref={containerRef} style={{width:"100%",maxWidth:"100%",overflowX:"hidden"}}>
 
+      {/* ════════════════════════════════════════════════════════════════════════
+          POPULATION PYRAMID — standalone module, shown instead of the normal
+          chart stack when the user selects "Population Pyramid" from the
+          Demographics sidebar section.  Uses pyramidBaseData / pyramidScenData
+          (always the Age-variable rows from parsedCache) rather than
+          baselineData / scenarioData, which are empty for this sentinel variable.
+      ════════════════════════════════════════════════════════════════════════ */}
+      {isPyramidModule&&(
+        <div>
+          {/* View controls — Baseline toggle + per-scenario toggles */}
+          <div style={{marginBottom:14,display:"flex",flexDirection:"column",gap:10,paddingBottom:10,borderBottom:"1px solid #e2ddd5"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+              <span style={controlLabel}>View</span>
+              <ScenarioToggles showBaseline={showBaseline} setShowBaseline={setShowBaseline}
+                allScenarioNames={allScenarioNames} enabledScenarios={enabledScenarios} setEnabledScenarios={setEnabledScenarios} isCategorical={isCategorical}/>
+            </div>
+          </div>
+
+          {/* Year picker */}
+          <div style={{marginBottom:14,display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+            <span style={{...controlLabel,marginRight:4}}>Year</span>
+            <button
+              onClick={()=>setSelectedYear(null)}
+              style={{padding:"5px 12px",borderRadius:5,fontSize:12,cursor:"pointer",
+                border:selectedYear===null?`1px solid ${TEAL}`:"1px solid #ddd8ce",
+                background:selectedYear===null?`${TEAL}18`:"#eae6de",
+                color:selectedYear===null?TEAL:TEXT_S,fontWeight:selectedYear===null?700:500}}>
+              Avg
+            </button>
+            {allYears.map(yr=>(
+              <button key={yr} onClick={()=>setSelectedYear(yr)}
+                style={{padding:"5px 12px",borderRadius:5,fontSize:12,cursor:"pointer",
+                  border:selectedYear===yr?`1px solid ${TEAL}`:"1px solid #ddd8ce",
+                  background:selectedYear===yr?`${TEAL}18`:"#eae6de",
+                  color:selectedYear===yr?TEAL:TEXT_S,fontWeight:selectedYear===yr?700:500}}>
+                {yr}
+              </button>
+            ))}
+          </div>
+
+          <p style={{margin:"0 0 12px",fontSize:13,color:TEXT_M,fontStyle:"italic"}}>
+            Age structure of the simulated population, split by gender.
+            {selectedYear===null?" Showing average across all years.":" Year "+selectedYear+"."}
+          </p>
+
+          <PopulationPyramid
+            baselineData={pyramidBaseData}
+            scenarioData={pyramidScenData}
+            year={selectedYear}
+            showBaseline={showBaseline}
+            showScenario={showScenario}
+            width={width}
+            svgRef={pyramidRef}
+            scenarioMap={pyramidScenMap} enabledScenarios={enabledScenarios} allScenarioNames={allScenarioNames}
+          />
+          <div style={{display:"flex",gap:4,justifyContent:"flex-end",marginTop:4}}>
+            <DownloadBtn
+              svgRef={pyramidRef}
+              filename={`population_pyramid${selectedYear?`_${selectedYear}`:"_average"}.png`}
+              pubProps={{
+                title:`Population Pyramid — Age Structure by Gender${selectedYear?` (${selectedYear})`:" (Average)"}`,
+                legendEntries:[],stratLegendEntries:[],
+                showBaseline,showScenario,highlighted:new Set(),
+                varScope:"Age",stratScope:"Gender",
+              }}
+            />
+            <button
+              onClick={()=>{
+                const src = [
+                  ...(showBaseline?pyramidBaseData:[]),
+                  ...(showScenario?pyramidScenData:[]),
+                ].filter(d=>selectedYear===null||d.year===selectedYear);
+                exportCsv(src,"population_pyramid"+(selectedYear?`_${selectedYear}`:"_average")+".csv",{isContinuous:false});
+              }}
+              style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>
+              ↓ CSV
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── All normal chart controls + content — hidden when pyramid module is active ── */}
+      {!isPyramidModule&&<>
+
       {/* ── Controls + filters + legend — flat toolbar, no boxes ── */}
       <div style={{marginBottom:14,display:"flex",flexDirection:"column",gap:10,paddingBottom:10,borderBottom:"1px solid #e2ddd5"}}>
 
@@ -1890,7 +3104,7 @@ export default function DashboardSection({parsedCache,targetVariable}){
           <span style={controlLabel}>Stratify by</span>
           <select value={viewBy} onChange={e=>{setViewBy(e.target.value);setHighlighted(new Set());}}
             style={{padding:"8px 12px",borderRadius:7,border:"1px solid #ddd8ce",fontSize:14,color:TEXT_D,background:"#eae6de",height:38,boxSizing:"border-box",cursor:"pointer",fontWeight:500}}>
-            {["Overall","Age","Gender","Disability Status","Region","Ethnicity","Income Quintile"].map(o=><option key={o} value={o}>{o}</option>)}
+            {["Overall","Age","Gender","Disability Status","Region","Ethnicity","Income Quintile","Household Type"].map(o=><option key={o} value={o}>{o}</option>)}
           </select>
         </div>
 
@@ -1900,20 +3114,18 @@ export default function DashboardSection({parsedCache,targetVariable}){
 
           <span style={controlLabel}>Chart type</span>
           <div style={segGroup}>
-            <button style={togBtn(chartType==="line"&&activeTab==="timeseries")} onClick={()=>{setChartType("line");setActiveTab("timeseries");}}>〜 Line</button>
-            {isCategorical&&<button style={togBtn(chartType==="bar"&&activeTab==="timeseries")} onClick={()=>{setChartType("bar");setActiveTab("timeseries");}}>▦ Stacked</button>}
-            <button style={togBtn(activeTab==="delta")} onClick={()=>setActiveTab("delta")}>Δ Baseline → Scenario</button>
+            <button style={togBtn(chartType==="line"&&activeTab==="timeseries"&&!showWageDist)} onClick={()=>{setChartType("line");setActiveTab("timeseries");setShowWageDist(false);}}>〜 Line</button>
+            {isCategorical&&<button style={togBtn(chartType==="bar"&&activeTab==="timeseries"&&!showWageDist)} onClick={()=>{setChartType("bar");setActiveTab("timeseries");setShowWageDist(false);}}>▦ Stacked</button>}
+            {isPyramidVar&&<button style={togBtn(activeTab==="pyramid")} onClick={()=>{setActiveTab("pyramid");setShowWageDist(false);}}>⊿ Pyramid</button>}
+            <button style={togBtn(activeTab==="delta")} onClick={()=>{setActiveTab("delta");setShowWageDist(false);}}>Δ Baseline → Scenario</button>
           </div>
 
           <span style={controlLabel}>View</span>
-          <div style={segGroup}>
-            <button style={dvBtn("both")}     onClick={()=>setDataView("both")}>Both</button>
-            <button style={dvBtn("baseline")} onClick={()=>setDataView("baseline")}>Baseline</button>
-            <button style={dvBtn("scenario")} onClick={()=>setDataView("scenario")}>Scenario</button>
-          </div>
+          <ScenarioToggles showBaseline={showBaseline} setShowBaseline={setShowBaseline}
+            allScenarioNames={allScenarioNames} enabledScenarios={enabledScenarios} setEnabledScenarios={setEnabledScenarios} isCategorical={isCategorical}/>
 
           {/* Layout — only when stratified + line + time series */}
-          {activeTab==="timeseries"&&isStratified&&chartType==="line"&&(
+          {activeTab==="timeseries"&&isStratified&&chartType==="line"&&!showWageDist&&(
             <>
               <span style={controlLabel}>Layout</span>
               <div style={segGroup}>
@@ -1924,14 +3136,45 @@ export default function DashboardSection({parsedCache,targetVariable}){
           )}
 
           {/* CI band toggle — small, only relevant for the full-size line chart (not small-multiple panels) */}
-          {activeTab==="timeseries"&&chartType==="line"&&!(isStratified&&displayMode==="panels")&&(
-            <button onClick={()=>setShowCI(v=>!v)} title="Toggle 95% confidence interval bands"
+          {activeTab==="timeseries"&&chartType==="line"&&!showWageDist&&!(isStratified&&displayMode==="panels")&&(
+            <button onClick={()=>setShowCI(v=>!v)} title="Toggle 95% uncertainty interval bands"
               style={{padding:"7px 12px",borderRadius:6,fontSize:12.5,fontWeight:600,cursor:"pointer",lineHeight:1.6,
                 border:showCI?`1px solid ${TEAL}`:"1px solid #ddd8ce",background:showCI?`${TEAL}18`:"#eae6de",color:showCI?TEAL:TEXT_S}}>
               {showCI?"▮ 95% CI":"▯ 95% CI"}
             </button>
           )}
         </div>
+
+        {/* Row 3 — "View data as" for Hourly Earnings only.
+            Sits below the main toolbar on its own line so it's visually
+            distinct from Chart type and doesn't crowd the row. */}
+        {isHourlyEarnings&&activeTab!=="delta"&&(
+          <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",rowGap:8}}>
+            <span style={controlLabel}>View data as</span>
+            <div style={segGroup}>
+              <button
+                style={togBtn(!showWageDist)}
+                onClick={()=>{setShowWageDist(false);}}>
+                Continuous average
+              </button>
+              <button
+                style={togBtn(showWageDist)}
+                onClick={()=>{setShowWageDist(true);}}>
+                Binned distribution
+              </button>
+            </div>
+            {/* All years / single year sub-toggle — only when distribution is active */}
+            {showWageDist&&(
+              <>
+                <span style={{...controlLabel,color:TEXT_S}}>across</span>
+                <div style={segGroup}>
+                  <button style={togBtn(!showAllYearsDist)} onClick={()=>setShowAllYearsDist(false)}>Selected year</button>
+                  <button style={togBtn(showAllYearsDist)}  onClick={()=>setShowAllYearsDist(true)}>All years</button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ── Sidebar (Filter Variables / Stratifiers / Highlight) + chart content ── */}
@@ -1954,11 +3197,11 @@ export default function DashboardSection({parsedCache,targetVariable}){
                     return (
                       <button key={vv} onClick={()=>onToggleVarVal(vv)} title={addSpaces(stratLabel(vv,targetVariable))} style={{
                         display:"flex",alignItems:"center",gap:7,cursor:"pointer",padding:"7px 12px",borderRadius:18,
-                        width:"auto",maxWidth:180,flexShrink:0,boxSizing:"border-box",
+                        width:"auto",maxWidth:160,boxSizing:"border-box",
                         border:`1.5px solid ${isOn?c:"#ddd8ce"}`,background:isOn?`${c}18`:"transparent",transition:"all 0.15s",
                       }}>
                         <span style={{width:9,height:9,borderRadius:"50%",background:isOn?c:"#c7c1b6",flexShrink:0}}/>
-                        <span style={{fontSize:13,fontWeight:isOn?600:500,color:isOn?TEXT_D:TEXT_S,textAlign:"left",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",minWidth:0}}>{addSpaces(stratLabel(vv,targetVariable))}</span>
+                        <span style={{fontSize:13,fontWeight:isOn?600:500,color:isOn?TEXT_D:TEXT_S,textAlign:"left",whiteSpace:"normal",wordBreak:"break-word",minWidth:0}}>{addSpaces(stratLabel(vv,targetVariable))}</span>
                       </button>
                     );
                   })}
@@ -1982,10 +3225,10 @@ export default function DashboardSection({parsedCache,targetVariable}){
                     return (
                       <button key={sv} onClick={()=>onToggleStrat(sv)} title={addSpaces(stratLabel(sv,viewBy))} style={{
                         display:"flex",alignItems:"center",gap:7,cursor:"pointer",padding:"7px 12px",borderRadius:18,
-                        width:"auto",maxWidth:180,flexShrink:0,boxSizing:"border-box",
+                        width:"auto",maxWidth:160,boxSizing:"border-box",
                         border:`1.5px solid ${isOn?TEAL:"#ddd8ce"}`,background:isOn?`${TEAL}18`:"transparent",transition:"all 0.15s",
                       }}>
-                        <span style={{fontSize:13,fontWeight:isOn?600:500,color:isOn?TEXT_D:TEXT_S,textAlign:"left",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",minWidth:0}}>{addSpaces(stratLabel(sv,viewBy))}</span>
+                        <span style={{fontSize:13,fontWeight:isOn?600:500,color:isOn?TEXT_D:TEXT_S,textAlign:"left",whiteSpace:"normal",wordBreak:"break-word",minWidth:0}}>{addSpaces(stratLabel(sv,viewBy))}</span>
                       </button>
                     );
                   })}
@@ -2021,16 +3264,23 @@ export default function DashboardSection({parsedCache,targetVariable}){
                     </div>
                   </>
                 )}
-                {showBaseline&&showScenario&&(
-                  <div style={{display:"flex",flexDirection:stackSidebar?"row":"column",flexWrap:"wrap",gap:stackSidebar?16:6,marginTop:4,paddingTop:8,borderTop:"1px solid #e2ddd5"}}>
-                    <div style={{display:"flex",alignItems:"center",gap:6}}>
-                      <svg width="20" height="9"><line x1="0" y1="4" x2="20" y2="4" stroke={TEXT_M} strokeWidth="2.5"/></svg>
-                      <span style={{fontSize:12.5,color:TEXT_S,fontWeight:500}}>Baseline</span>
-                    </div>
-                    <div style={{display:"flex",alignItems:"center",gap:6}}>
-                      <svg width="20" height="9"><line x1="0" y1="4" x2="20" y2="4" stroke={TEXT_M} strokeWidth="2.5" strokeDasharray="4,3"/></svg>
-                      <span style={{fontSize:12.5,color:TEXT_S,fontWeight:500}}>Scenario</span>
-                    </div>
+                {(showBaseline||showScenario)&&(
+                  <div style={{display:"flex",flexDirection:"column",gap:6,marginTop:4,paddingTop:8,borderTop:"1px solid #e2ddd5"}}>
+                    {showBaseline&&(
+                      <div style={{display:"flex",alignItems:"center",gap:6}}>
+                        <svg width="20" height="9"><line x1="0" y1="4" x2="20" y2="4" stroke={isCategorical?TEXT_M:NUMERIC_BASE_COLOUR} strokeWidth="2.5"/></svg>
+                        <span style={{fontSize:12.5,color:TEXT_S,fontWeight:500}}>Baseline</span>
+                      </div>
+                    )}
+                    {allScenarioNames.filter(n=>enabledScenarios.has(n)).map((name)=>{const gi=allScenarioNames.indexOf(name);
+                      const lineColour=isCategorical?TEXT_M:NUMERIC_SCEN_COLOURS[gi%NUMERIC_SCEN_COLOURS.length];
+                      return(
+                        <div key={name} style={{display:"flex",alignItems:"center",gap:6}}>
+                          <svg width="20" height="9"><line x1="0" y1="4" x2="20" y2="4" stroke={lineColour} strokeWidth="2.5" strokeDasharray={SCENARIO_DASHES[gi%SCENARIO_DASHES.length]}/></svg>
+                          <span style={{fontSize:12.5,color:TEXT_S,fontWeight:500}}>{scenarioLabel(name)}</span>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -2041,7 +3291,7 @@ export default function DashboardSection({parsedCache,targetVariable}){
         <div style={{flex:1,minWidth:0}}>
 
       {/* ════════ TIME SERIES ════════ */}
-      {activeTab==="timeseries"&&(
+      {activeTab==="timeseries"&&!showWageDist&&(
         !hasBase&&!hasScen
           ?<p style={{fontSize:13,color:TEXT_S,fontStyle:"italic"}}>No data available.</p>
           :<div>
@@ -2072,7 +3322,8 @@ export default function DashboardSection({parsedCache,targetVariable}){
                   showBaseline={showBaseline} showScenario={showScenario}
                   width={isOverall?lineW:chartAreaWidth} onYearClick={onYearClick} selectedYear={selectedYear}
                   isStratified={isStratified} stratValues={stratValues} enabledStrats={enabledStrats} viewBy={viewBy}
-                  showCI={showCI} allYears={allYears} missingLookup={missingLookup} varLabel={varLabel}/>
+                  showCI={showCI} allYears={allYears} missingLookup={missingLookup} varLabel={varLabel}
+                  scenarioMap={filteredScenMap} enabledScenarios={enabledScenarios} allScenarioNames={allScenarioNames}/>
               );
 
               const crossSection=(
@@ -2082,32 +3333,37 @@ export default function DashboardSection({parsedCache,targetVariable}){
                   enabledStrats={enabledStrats} viewBy={viewBy}
                   showBaseline={showBaseline} showScenario={showScenario}
                   width={isOverall?crossW:chartAreaWidth} year={selectedYear} isAverage={selectedYear===null}
-                  pubPropsFactory={pubPropsFactory} targetVariable={targetVariable}/>
+                  pubPropsFactory={pubPropsFactory} targetVariable={targetVariable}
+                  scenarioMap={scenarioMap} enabledScenarios={enabledScenarios} allScenarioNames={allScenarioNames}/>
               );
 
               return (
                 <div>
                   {isPanels
-                    /* Panels — full width; each panel now carries its own
-                       independent cross-section, added inline below its
-                       line chart (see SmallMultiplesPanel) */
-                    ?<SmallMultiplesPanel baseData={baseTime} scenData={scenTime} stratValues={stratValues}
+                    ?<>
+                      <p style={{margin:"0 0 10px",fontSize:12.5,color:TEXT_S,fontStyle:"italic"}}>Click a year on any panel to see a cross-section view for that stratum.</p>
+                      <SmallMultiplesPanel baseData={baseTime} scenData={scenTime} stratValues={stratValues}
                         colourMap={colourMap} highlighted={highlighted} isCategorical={isCategorical}
                         varValues={varValues} enabledVarVals={enabledVarVals} enabledStrats={enabledStrats}
                         showBaseline={showBaseline} showScenario={showScenario} chartType="line" width={chartAreaWidth}
                         pubPropsFactory={pubPropsFactory} targetVariable={targetVariable} viewBy={viewBy}
-                        allBaseData={baseTime} allScenData={scenTime} missingLookup={missingLookup}/>
+                        allBaseData={baseTime} allScenData={scenTime} missingLookup={missingLookup}
+                        scenarioMap={scenarioMap} enabledScenarios={enabledScenarios} allScenarioNames={allScenarioNames}/>
+                    </>
                     /* Overall or combined-stratified */
                     :<div>
                       {isOverall
                         /* Side-by-side: line left (with its own buttons below), cross-section right (with its own buttons) — stacks full-width on narrow screens instead */
                         ?<div style={{display:"flex",gap:20,alignItems:"flex-start",flexWrap:"wrap"}}>
-                          {/* Line chart + its download buttons flush below */}
+                          {/* Line chart + its download buttons flush below.
+                              The invisible spacer matches the cross-section title row height
+                              so both SVGs share the same top edge. */}
                           <div style={{flexShrink:0,display:"flex",flexDirection:"column",gap:4,width:stackOverallLayout?"100%":"auto"}}>
+                            <div style={{marginBottom:6,visibility:"hidden",fontSize:12,fontWeight:700}}>&nbsp;</div>
                             {lineChart}
                             <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
                               <DownloadBtn svgRef={lineRef} filename="time_series.png" pubProps={pubProps(`${varLabel} over time`)}/>
-                              <button onClick={()=>exportCsv([...baselineData,...scenarioData].filter(d=>d.stratifier==="Overall"),`${slugify(varLabel)}_time_series.csv`)}
+                              <button onClick={()=>exportCsv([...baseTime,...scenTime].filter(d=>enabledVarVals.has(d.variable_value)),`${slugify(varLabel)}_time_series.csv`,{isContinuous:!isCategorical})}
                                 style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ CSV</button>
                             </div>
                           </div>
@@ -2128,7 +3384,7 @@ export default function DashboardSection({parsedCache,targetVariable}){
                           {lineChart}
                           <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
                             <DownloadBtn svgRef={lineRef} filename="time_series.png" pubProps={pubProps(`${varLabel} over time by ${viewBy}`)}/>
-                            <button onClick={()=>exportCsv([...baselineData,...scenarioData],`${slugify(varLabel)}_time_series.csv`)}
+                            <button onClick={()=>exportCsv([...baseTime,...scenTime].filter(d=>enabledStrats.has(d.stratifier_value)&&enabledVarVals.has(d.variable_value)),`${slugify(varLabel)}_time_series.csv`,{isContinuous:!isCategorical})}
                               style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ CSV</button>
                           </div>
                           <div style={{marginTop:12}}>
@@ -2154,16 +3410,18 @@ export default function DashboardSection({parsedCache,targetVariable}){
                       varValues={varValues} enabledVarVals={enabledVarVals} enabledStrats={enabledStrats}
                       showBaseline={showBaseline} showScenario={showScenario} chartType="bar" width={chartAreaWidth}
                       pubPropsFactory={pubPropsFactory} targetVariable={targetVariable} viewBy={viewBy}
-                      allBaseData={baseTime} allScenData={scenTime}/>
+                      allBaseData={baseTime} allScenData={scenTime}
+                      scenarioMap={scenarioMap} enabledScenarios={enabledScenarios} allScenarioNames={allScenarioNames}/>
                   :<div style={{display:"flex",flexDirection:"column",gap:4}}>
                     <StackedBarChart svgRef={barRef} baseData={baseTime} scenData={scenTime}
                       colourMap={colourMap} highlighted={highlighted} isCategorical={isCategorical}
                       varValues={varValues} enabledVarVals={enabledVarVals}
                       showBaseline={showBaseline} showScenario={showScenario}
-                      width={chartAreaWidth} patId="ts" allYears={allYears} varLabel={varLabel}/>
+                      width={chartAreaWidth} patId="ts" allYears={allYears} varLabel={varLabel}
+                      scenarioMap={scenarioMap} enabledScenarios={enabledScenarios} allScenarioNames={allScenarioNames}/>
                     <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
                       <DownloadBtn svgRef={barRef} filename="stacked_bar.png" pubProps={pubProps(`${varLabel} by year — stacked`)}/>
-                      <button onClick={()=>exportCsv([...baselineData,...scenarioData].filter(d=>d.stratifier==="Overall"),`${slugify(varLabel)}_stacked.csv`)}
+                      <button onClick={()=>exportCsv([...baseTime,...scenTime].filter(d=>enabledVarVals.has(d.variable_value)),`${slugify(varLabel)}_stacked.csv`,{isContinuous:!isCategorical})}
                         style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ CSV</button>
                     </div>
                   </div>
@@ -2173,16 +3431,207 @@ export default function DashboardSection({parsedCache,targetVariable}){
           </div>
       )}
 
-      {/* ════════ DELTA ════════ */}
+      {/* ════════ DELTA ════════
+          All enabled scenarios vs Baseline on a single chart. */}
       {activeTab==="delta"&&(
-        <DeltaSection baseData={baselineData} scenData={scenarioData}
-          colourMap={colourMap} highlighted={highlighted} isCategorical={isCategorical}
-          varValues={varValues} enabledVarVals={enabledVarVals}
-          enabledStrats={enabledStrats} viewBy={viewBy} width={chartAreaWidth} legendEntries={legendEntries}
-          stratValues={stratValues} stratLegendEntries={stratLegendEntries}/>
+        enabledScenarios.size===0
+          ? <p style={{fontSize:13,color:TEXT_S,fontStyle:"italic"}}>No scenarios enabled — use the View toggles above to enable a scenario.</p>
+          : <div style={{display:"flex",flexDirection:"column",gap:20}}>
+              <DeltaSection baseData={baselineData} scenData={scenarioData}
+                colourMap={colourMap} highlighted={highlighted} isCategorical={isCategorical}
+                varValues={varValues} enabledVarVals={enabledVarVals}
+                enabledStrats={enabledStrats} viewBy={viewBy} width={chartAreaWidth}
+                legendEntries={legendEntries} stratValues={stratValues} stratLegendEntries={stratLegendEntries}
+                scenarioMap={scenarioMap} enabledScenarios={enabledScenarios} allScenarioNames={allScenarioNames}
+                onYearClick={yr=>setDeltaYear(prev=>prev===yr?null:yr)} selectedYear={deltaYear}/>
+              {deltaYear&&(
+                <div>
+                  <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
+                    <span style={{fontSize:13,fontWeight:700,color:TEAL}}>Means — Year {deltaYear}</span>
+                    <button onClick={()=>setDeltaYear(null)}
+                      style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>✕ Clear</button>
+                  </div>
+                  <GroupedBarChart
+                    svgRef={deltaCsRef}
+                    baseData={baseTime.filter(d=>d.year===deltaYear)}
+                    scenData={scenTime.filter(d=>d.year===deltaYear)}
+                    colourMap={colourMap} highlighted={highlighted}
+                    isCategorical={isCategorical} yDomain={combinedYDomain}
+                    varValues={varValues} enabledVarVals={enabledVarVals}
+                    showBaseline={showBaseline} showScenario={showScenario}
+                    width={chartAreaWidth} year={deltaYear} varLabel={varLabel}
+                    isStratified={false}
+                    scenarioMap={scenarioMap} enabledScenarios={enabledScenarios} allScenarioNames={allScenarioNames}/>
+                </div>
+              )}
+            </div>
       )}
+
+      {/* ════════ POPULATION PYRAMID ════════
+          Only rendered when targetVariable==="Age" and the Pyramid tab is active.
+          Uses Gender-stratified Age rows that are already in the aggregated data —
+          no new pipeline work needed. */}
+      {activeTab==="pyramid"&&isPyramidVar&&(
+        <div>
+          <p style={{margin:"0 0 10px",fontSize:13,color:TEXT_M,fontStyle:"italic"}}>
+            Age structure of the population, split by gender.
+            {selectedYear===null
+              ? " Showing average across all years — click a year on the time series to pin one."
+              : ` Year ${selectedYear}.`}
+          </p>
+          <PopulationPyramid
+            baselineData={pyramidBaseData}
+            scenarioData={pyramidScenData}
+            year={selectedYear}
+            showBaseline={showBaseline}
+            showScenario={showScenario}
+            width={chartAreaWidth}
+            svgRef={pyramidRef}
+            scenarioMap={pyramidScenMap} enabledScenarios={enabledScenarios} allScenarioNames={allScenarioNames}
+          />
+          <div style={{display:"flex",gap:4,justifyContent:"flex-end",marginTop:4}}>
+            <DownloadBtn
+              svgRef={pyramidRef}
+              filename={`population_pyramid${selectedYear?`_${selectedYear}`:"_average"}.png`}
+              pubProps={{
+                title:`Population Pyramid — Age Structure by Gender${selectedYear?` (${selectedYear})`:" (Average)"}`,
+                legendEntries:[],stratLegendEntries:[],
+                showBaseline,showScenario,highlighted:new Set(),
+                varScope:"Age",stratScope:"Gender",
+              }}
+            />
+            <button
+              onClick={()=>{
+                const pyrRows=[...(showBaseline?pyramidBaseData:[]),...(showScenario?pyramidScenData:[])]
+                  .filter(d=>selectedYear===null||d.year===selectedYear);
+                exportCsv(pyrRows,"population_pyramid"+(selectedYear?`_${selectedYear}`:"_average")+".csv",{isContinuous:false});
+              }}
+              style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>
+              ↓ CSV
+            </button>
+          </div>
+          {/* Year selector — same year-click mechanic as the line chart; give the
+              user a small row of year buttons to drive the pyramid without needing
+              the line chart to be visible at the same time. */}
+          <div style={{marginTop:10,display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+            <span style={{fontSize:12,fontWeight:700,color:TEXT_S,textTransform:"uppercase",letterSpacing:"0.04em"}}>Year</span>
+            <button
+              onClick={()=>setSelectedYear(null)}
+              style={{padding:"5px 10px",borderRadius:5,fontSize:12,cursor:"pointer",
+                border:selectedYear===null?`1px solid ${TEAL}`:"1px solid #ddd8ce",
+                background:selectedYear===null?`${TEAL}18`:"#eae6de",
+                color:selectedYear===null?TEAL:TEXT_S,fontWeight:selectedYear===null?700:500}}>
+              Avg
+            </button>
+            {allYears.map(yr=>(
+              <button key={yr}
+                onClick={()=>setSelectedYear(yr)}
+                style={{padding:"5px 10px",borderRadius:5,fontSize:12,cursor:"pointer",
+                  border:selectedYear===yr?`1px solid ${TEAL}`:"1px solid #ddd8ce",
+                  background:selectedYear===yr?`${TEAL}18`:"#eae6de",
+                  color:selectedYear===yr?TEAL:TEXT_S,fontWeight:selectedYear===yr?700:500}}>
+                {yr}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ════════ WAGE DISTRIBUTION ════════
+          Replaces the normal time-series/cross-section chart area when
+          "Binned distribution" is selected in the View data as row.
+          The time-series block below is hidden while this is showing. */}
+      {isHourlyEarnings&&showWageDist&&activeTab!=="delta"&&(
+        <div>
+          <p style={{margin:"0 0 10px",fontSize:13,color:TEXT_M,fontStyle:"italic"}}>
+            {showAllYearsDist
+              ? "Weighted share of workers in each hourly-earnings band, all years."
+              : selectedYear
+                ? `Weighted share of workers in each hourly-earnings band, ${selectedYear}.`
+                : "Weighted share of workers in each hourly-earnings band, averaged across all years."}
+          </p>
+          <WageDistributionChart
+            baselineData={baselineData}
+            scenarioData={scenarioData}
+            year={selectedYear}
+            showAllYears={showAllYearsDist}
+            showBaseline={showBaseline}
+            showScenario={showScenario}
+            viewBy={viewBy}
+            enabledStrats={enabledStrats}
+            width={chartAreaWidth}
+            svgRef={wageDistRef}
+            scenarioMap={scenarioMap}
+            enabledScenarios={enabledScenarios}
+            allScenarioNames={allScenarioNames}
+          />
+          {/* Download buttons */}
+          <div style={{display:"flex",gap:4,justifyContent:"flex-end",marginTop:4}}>
+            <DownloadBtn
+              svgRef={wageDistRef}
+              filename={`hourly_earnings_distribution${selectedYear?`_${selectedYear}`:showAllYearsDist?"_all_years":"_average"}.png`}
+              pubProps={{
+                title:`Hourly Earnings — Binned Distribution${selectedYear?` (${selectedYear})`:showAllYearsDist?" (All years)":" (Average)"}`,
+                legendEntries:[],stratLegendEntries:[],
+                showBaseline,showScenario,highlighted:new Set(),
+                varScope:"Hourly earnings",stratScope:viewBy,
+              }}
+            />
+            <button
+              onClick={()=>{
+                // Build exportable rows from the wage_bin rows for the current view
+                const wbRows = [
+                  ...(showBaseline ? baselineData : []),
+                  ...(showScenario ? scenarioData  : []),
+                ].filter(d =>
+                  d.metric_type === "wage_bin" &&
+                  d.variable    === "Hourly earnings" &&
+                  d.variable_value !== "Missing" &&
+                  (viewBy === "Overall"
+                    ? d.stratifier === "Overall"
+                    : d.stratifier === viewBy && enabledStrats.has(d.stratifier_value)) &&
+                  (showAllYearsDist || selectedYear === null || d.year === selectedYear)
+                );
+                exportCsv(wbRows,
+                  `hourly_earnings_distribution${selectedYear?`_${selectedYear}`:showAllYearsDist?"_all_years":"_average"}.csv`,
+                  { isContinuous: false });
+              }}
+              style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>
+              ↓ CSV
+            </button>
+          </div>
+          {/* Year picker — shown only in single-year mode.
+              null = Average (the default), a number = that specific year. */}
+          {!showAllYearsDist&&(
+            <div style={{marginTop:10,display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+              <span style={{fontSize:12,fontWeight:700,color:TEXT_S,textTransform:"uppercase",letterSpacing:"0.04em"}}>Year</span>
+              <button onClick={()=>setSelectedYear(null)}
+                style={{padding:"5px 10px",borderRadius:5,fontSize:12,cursor:"pointer",
+                  border:selectedYear===null?`1px solid ${TEAL}`:"1px solid #ddd8ce",
+                  background:selectedYear===null?`${TEAL}18`:"#eae6de",
+                  color:selectedYear===null?TEAL:TEXT_S,fontWeight:selectedYear===null?700:500}}>
+                Average
+              </button>
+              {allYears.map(yr=>(
+                <button key={yr} onClick={()=>setSelectedYear(yr)}
+                  style={{padding:"5px 10px",borderRadius:5,fontSize:12,cursor:"pointer",
+                    border:selectedYear===yr?`1px solid ${TEAL}`:"1px solid #ddd8ce",
+                    background:selectedYear===yr?`${TEAL}18`:"#eae6de",
+                    color:selectedYear===yr?TEAL:TEXT_S,fontWeight:selectedYear===yr?700:500}}>
+                  {yr}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
         </div>
       </div>
+
+      {/* closes {!isPyramidModule&&<> above */}
+      </>}
+
     </div>
   );
 }
