@@ -128,35 +128,30 @@ function App() {
    */
   const [isLoadingDefault, setIsLoadingDefault] = useState(true);
 
-  const loadDefaultDataset = useCallback(async () => {
+  const loadDefaultDataset = useCallback(() => {
     const url = `${process.env.PUBLIC_URL}/SimPaths_All_Aggregated_Outputs.csv`;
     setDefaultLoadFailed(false);
     setIsLoadingDefault(true);
-    setStatusMessage("Loading default dataset\u2026");
-    try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const text = await res.text();
-      // Yield before parsing so the UI renders the loading state first
-      await new Promise(r => setTimeout(r, 0));
-      const rows = d3.csvParse(text, parseCsvRow);
-      if (!rows.length) throw new Error("File was found but contained no rows — check it's the actual CSV and not an HTML/error page being served at that URL.");
-      setParsedCache(rows);
-      setIsUsingDefault(true);
-      setDefaultLoadFailed(false);
-      setStatusMessage("");
-    } catch(err) {
-      console.warn("Could not load the default dataset.", err);
-      setIsUsingDefault(true);
-      setDefaultLoadFailed(true);
-      setParsedCache([]);
-      setStatusMessage(
-        `Could not load the default dataset from "${url}" (${err.message || "fetch failed"}). ` +
-        `Check that SimPaths_All_Aggregated_Outputs.csv exists at exactly that path in your deployment's public folder — or select a simulation directory below.`
-      );
-    } finally {
-      setIsLoadingDefault(false);
-    }
+    setStatusMessage("Loading default dataset…");
+    d3.csv(url, parseCsvRow)
+      .then(rows => {
+        if (!rows.length) throw new Error("File was found but contained no rows — check it's the actual CSV and not an HTML/error page being served at that URL.");
+        setParsedCache(rows);
+        setIsUsingDefault(true);
+        setDefaultLoadFailed(false);
+        setStatusMessage("");
+      })
+      .catch(err => {
+        console.warn("Could not load the default dataset.", err);
+        setIsUsingDefault(true);
+        setDefaultLoadFailed(true);
+        setParsedCache([]);
+        setStatusMessage(
+          `Could not load the default dataset from "${url}" (${err.message || "fetch failed"}). ` +
+          `Check that SimPaths_All_Aggregated_Outputs.csv exists at exactly that path in your deployment's public folder — or select a simulation directory below.`
+        );
+      })
+      .finally(() => setIsLoadingDefault(false));
   }, []);
 
   // Fetch the bundled default dataset once on mount.
