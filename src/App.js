@@ -394,7 +394,7 @@ function App() {
         <p style={{ margin: "0 0 8px", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600, color: TEAL }}>Learn More</p>
         <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
           <a href="https://simpaths.org/getting-started/data/" target="_blank" rel="noopener noreferrer" style={smallLinkStyle}>About the Dataset</a>
-          <a href={`${process.env.PUBLIC_URL}/Interpreting-results.html`} target="_blank" rel="noopener noreferrer" style={smallLinkStyle}>Interpreting the Results</a>
+          <a href={`${process.env.PUBLIC_URL}/interpreting-results.html`} target="_blank" rel="noopener noreferrer" style={smallLinkStyle}>Interpreting the Results</a>
           <a href={`${process.env.PUBLIC_URL}/citation.html`} target="_blank" rel="noopener noreferrer" style={smallLinkStyle}>How Do I Cite This?</a>
         </div>
       </div>

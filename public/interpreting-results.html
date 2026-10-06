@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Interpreting the Results — SimPaths Policy Impacts Visualiser</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Work+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#f3ede3; --bg-dark:#faf7ef; --bg-panel:#f3ede3;
+    --teal:#14687c; --aqua:#0f93a1; --coral:#ff6e51; --indigo:#5975f8;
+    --text-dark:#1e293b; --text-mid:#475569; --text-soft:#64748b;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text-dark);font-family:'Work Sans',Arial,sans-serif;line-height:1.6;}
+
+  .header{background:var(--coral);padding:16px 48px;display:flex;align-items:center;gap:24px;flex-wrap:wrap;}
+  .logo-box{background:var(--bg-dark);border-radius:10px;padding:6px 12px;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 3px rgba(0,0,0,0.12);flex-shrink:0;}
+  .logo-box img{width:170px;max-width:200px;height:auto;display:block;object-fit:contain;}
+  .header-title{color:var(--bg-dark);margin:0;font-size:clamp(18px,3.6vw,26px);font-weight:600;flex:1;min-width:160px;line-height:1.25;}
+  .back-link{color:#fdfdfd;text-decoration:none;font-size:13px;font-weight:600;background:rgba(255,255,255,0.16);border:1px solid rgba(255,255,255,0.32);border-radius:6px;padding:9px 16px;white-space:nowrap;transition:background 0.15s;}
+  .back-link:hover{background:rgba(255,255,255,0.28);}
+
+  .container{max-width:880px;margin:0 auto;padding:44px 24px 64px;display:flex;flex-direction:column;gap:22px;}
+  .eyebrow{font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--aqua);margin:0 0 8px;}
+  h1{font-size:clamp(26px,4.2vw,36px);font-weight:700;color:var(--teal);margin:0 0 12px;letter-spacing:-0.4px;}
+  .lede{font-size:16px;color:var(--text-mid);line-height:1.7;margin:0 0 6px;max-width:680px;}
+
+  .card{background:var(--bg-dark);border:0.5px solid var(--bg-panel);border-radius:12px;padding:32px 40px;box-shadow:0 2px 8px rgba(0,0,0,0.08);}
+  .card h2{font-size:13px;text-transform:uppercase;letter-spacing:0.05em;font-weight:600;color:var(--teal);margin:0 0 14px;}
+  .card h2.big{font-size:19px;text-transform:none;letter-spacing:-0.2px;color:var(--text-dark);font-weight:700;margin:0 0 12px;}
+  .card p{font-size:15px;color:var(--text-dark);line-height:1.8;margin:0 0 14px;}
+  .card p:last-child{margin-bottom:0;}
+  .card ul,.card ol{margin:0 0 14px;padding-left:22px;color:var(--text-dark);font-size:15px;line-height:1.8;}
+  .card li{margin-bottom:6px;}
+  .card li:last-child{margin-bottom:0;}
+
+  .callout{border-radius:8px;padding:16px 20px;margin:18px 0 4px;border-left:4px solid var(--aqua);background:rgba(15,147,161,0.05);border-top:1px solid rgba(15,147,161,0.14);border-right:1px solid rgba(15,147,161,0.14);border-bottom:1px solid rgba(15,147,161,0.14);}
+  .callout h3{margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:0.05em;font-weight:600;color:var(--teal);}
+  .callout p{margin:0;font-size:14px;color:var(--text-mid);line-height:1.7;}
+  .callout p+p{margin-top:8px;}
+  .callout:last-child{margin-bottom:0;}
+
+  .warn{border-left:4px solid var(--coral);background:#fee8e2;border-top:1px solid #fed7ca;border-right:1px solid #fed7ca;border-bottom:1px solid #fed7ca;}
+  .warn h3{color:#c2410c;}
+  .warn p, .warn li{color:#e34f32;}
+
+  table{width:100%;border-collapse:collapse;margin:14px 0 4px;font-size:13.5px;}
+  th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--bg-panel);vertical-align:top;}
+  th{color:var(--text-soft);font-size:11px;text-transform:uppercase;letter-spacing:0.04em;font-weight:700;}
+  td{color:var(--text-dark);line-height:1.6;}
+  tr:last-child td{border-bottom:none;}
+
+  .keyline{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-soft);margin:2px 0 18px;}
+  .swatch{display:inline-block;width:20px;height:0;border-top:2px solid var(--text-mid);}
+  .swatch.dashed{border-top:2px dashed var(--text-mid);}
+  .pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:var(--teal);background:rgba(20,104,124,0.09);border:1px solid rgba(20,104,124,0.22);border-radius:5px;padding:3px 9px;}
+
+  .dolist{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:10px;}
+  .dolist li{display:flex;gap:10px;font-size:14.5px;color:var(--text-dark);line-height:1.65;}
+  .dolist .mark{flex-shrink:0;font-weight:700;width:20px;}
+  .dolist .do .mark{color:#0bb77d;}
+  .dolist .dont .mark{color:var(--coral);}
+
+  a{color:var(--aqua);}
+  .link-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;}
+  .link-btn{color:var(--aqua);text-decoration:none;font-size:13px;padding:8px 14px;background:rgba(15,147,161,0.06);border-radius:6px;border:1px solid rgba(15,147,161,0.22);font-weight:500;display:inline-flex;align-items:center;gap:6px;}
+  .link-btn:hover{background:rgba(15,147,161,0.13);}
+
+  .footer{background:var(--coral);padding:22px 48px;margin-top:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;}
+  .footer p{color:#fdfdfd;opacity:0.92;font-size:13px;margin:0;}
+  .footer a{color:#fdfdfd;font-weight:600;text-decoration:none;border-bottom:1.5px solid rgba(255,255,255,0.4);padding-bottom:2px;}
+
+  @media (max-width:640px){
+    .header{padding:14px 16px;}
+    .container{padding:30px 16px 48px;}
+    .card{padding:22px 20px;}
+    .footer{padding:18px 20px;flex-direction:column;align-items:flex-start;}
+  }
+</style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="logo-box"><img src="/pmh_logo.png" alt="Logo" onerror="this.parentElement.style.display='none'"></div>
+    <p class="header-title">SimPaths Policy Impacts Visualiser</p>
+    <a class="back-link" href="/">← Back to Visualiser</a>
+  </div>
+
+  <div class="container">
+
+    <div>
+      <p class="eyebrow">Guidance</p>
+      <h1>Interpreting the Results</h1>
+      <p class="lede">A short guide to interpreting our visualisations — what the numbers represent, how to compare Baseline and Scenario, and how uncertainty is shown.</p>
+    </div>
+
+    <div class="card">
+      <h2 class="big">What is microsimulation?</h2>
+      <p>Microsimulation is a modelling approach that simulates individuals (this could be individual people or households) and aggregates their outcomes to project population-level trends. Unlike models that work at the aggregate level from the outset, microsimulation captures the heterogeneity of the population and allows outcomes to be examined for specific subgroups.</p>
+      <p>SimPaths is an open-source, dynamic microsimulation model of the UK population developed by the Centre for Microsimulation and Policy Analysis (CeMPA) at the University of Essex. It builds a synthetic population of individuals and households that mirrors the UK population, then evolves that population forward year by year — ageing, education, employment, income, family formation, and health all update according to rules estimated from real survey data.</p>
+          </div>
+
+    <div class="card">
+      <h2 class="big">Baseline vs. Scenario</h2>
+      <p>The <strong>Baseline</strong> represents projected outcomes under existing policy rules. The <strong>Scenario</strong> represents projected outcomes following a proposed policy change, applied to the same starting population. Comparing the two isolates the effect of that one change, holding everything else constant.</p>
+      <p>The visualiser can show the difference between Baseline and Scenario estimates directly — positive values indicate higher outcomes under the Scenario relative to Baseline, and negative values indicate lower outcomes. This is shown in the <strong>Δ Baseline → Scenario</strong> view, which plots the modelled policy effect centred on zero.</p>
+      <div class="keyline"><span class="swatch"></span> Baseline — solid line / solid fill</div>
+      <div class="keyline" style="margin-top:-14px;"><span class="swatch dashed"></span> Scenario — dotted line / dot pattern fill</div>
+    </div>
+
+    <div class="card">
+      <h2 class="big">What do the results represent?</h2>
+      <p>The visualiser presents model-generated projections of population characteristics — not observed statistics or official forecasts. The results reflect the data and assumptions embedded in SimPaths, and should be interpreted as projections that are conditional on those assumptions.</p>
+      <p>The model captures the mechanisms it was built to represent; it will not capture every real-world driver, and small changes in assumptions can shift results. The visualiser can be tool for comparing the <em>relative</em> effect of a policy change against a like-for-like baseline, rather than as a statement about what will actually happen.</p>
+    </div>
+
+    <div class="card">
+      <h2 class="big">Uncertainty across runs</h2>
+      <p>Individual life events — job loss, partnership, illness — are drawn probabilistically in SimPaths, and the model parameters used to determine these outcomes also vary across runs to reflect uncertainty in their estimation. As a result, repeated runs of the same simulation will not produce identical outcomes.</p>
+      <p>Running the model multiple times allows us to quantify two sources of uncertainty in the simulated results: stochastic variation in individual outcomes, and uncertainty in the estimated model parameters. The visualiser reports the mean estimate across runs together with a <strong>95% confidence interval</strong>, calculated using the variation across runs and the number of runs to compute the standard error of the mean. These intervals capture uncertainty arising from stochastic variation and parameter uncertainty, but not all sources of uncertainty associated with the model.</p>
+      <p>On line charts, the confidence interval is drawn as a soft shaded band sitting behind the trajectory line. Use the <span class="pill">▮ 95% UI</span> toggle above any line chart to show or hide the bands; on bar and cross-section charts, the same interval appears as an error bar, and in every tooltip as a <code>95% UI: [lower, upper]</code> line.</p>
+      <div class="callout">
+        <h3>How to read the confidence interval width</h3>
+        <p>The 95% confidence interval is an interval around the mean across runs rather than a direct measure of spread. Its width depends on both the variation across runs and the number of runs. A wider interval therefore indicates greater uncertainty around the estimated mean. If the Baseline and Scenario confidence intervals overlap substantially, the modelled difference between them at that point is less likely to be meaningful.</p>
+      </div>
+      <div class="callout" style="margin-top:14px;">
+        <h3>Uncertainty intervals on the delta plot</h3>
+        <p>The uncertainty intervals shown on the <strong>Δ Baseline → Scenario</strong> plot are computed differently from those on the individual Baseline and Scenario line charts. Each Baseline run is matched to its corresponding Scenario run using a shared random seed, and the delta is computed as the difference between matched pairs. This paired approach accounts for the stochastic variation that is shared between matched runs, which tends to produce narrower uncertainty intervals on the delta than on the individual lines. The intervals shown on the delta plot are therefore uncertainty intervals around the paired mean difference, and may be meaningfully narrower even when the individual Baseline and Scenario bands are wide.</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="big">When an estimate is suppressed</h2>
+      <p>If the underlying sample size within any contributing run drops below 100 — for example, a small population slice for a narrow age band in a small region — that estimate is too unreliable to show responsibly. Rather than plotting a noisy point, the visualiser suppresses it: on charts you'll see a gap in the line, or a small-multiple panel showing "Sample too small — suppressed" instead of a chart. This is a deliberate choice to avoid implying more precision than the underlying data supports.</p>
+      <p>A suppressed estimate does not mean nothing changed — it means the sample was too small to say reliably.</p>
+    </div>
+
+    <div class="card">
+      <h2 class="big">Reading each chart type</h2>
+      <table>
+        <tr><th>Chart</th><th>What it shows</th><th>How to read it</th></tr>
+        <tr>
+          <td><strong>Line</strong></td>
+          <td>A variable's trajectory over time, optionally split (stratified) by a group like Age or Region</td>
+          <td>Follow Baseline (solid) vs. Scenario (dotted); the shaded band is the 95% confidence interval. Click a point to pin that year in the cross-section panel alongside it.</td>
+        </tr>
+        <tr>
+          <td><strong>Stacked bar</strong></td>
+          <td>The composition of a categorical variable (shares that sum to 100%) in each year</td>
+          <td>Compare the height of each coloured segment between the solid Baseline bar and the patterned Scenario bar for the same year.</td>
+        </tr>
+        <tr>
+          <td><strong>Cross-section</strong></td>
+          <td>Baseline vs. Scenario at a single year — either the year you clicked on the line chart, or averaged across all years</td>
+          <td>Grouped bars, one pair per category or variable value, with error bars showing the 95% confidence interval.</td>
+        </tr>
+        <tr>
+          <td><strong>Δ Baseline → Scenario</strong></td>
+          <td>The modelled policy effect — Scenario minus Baseline — over time, using paired run differences matched by seed</td>
+          <td>The zero line is "no effect." A line consistently above zero means the Scenario projects higher outcomes relative to Baseline; below zero means lower. Click a year to see the cross-section of means at that point. Uncertainty intervals are narrower here than on individual lines because the paired approach removes shared stochastic variation.</td>
+        </tr>
+        <tr>
+          <td><strong>Population pyramid</strong></td>
+          <td>Age and sex distribution of the simulated population</td>
+          <td>Compare bar lengths between Baseline and Scenario for each age-sex group. Solid bars = Baseline; patterned bars = Scenario.</td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2 class="big">Using filters and stratifiers</h2>
+      <p>The dashboard lets you stratify any variable by Age, Gender, Household Type, Disability Status, Region, Ethnicity, or Income Quintile — shown either as small-multiple panels (one chart per stratum) or combined onto a single chart. Use the filter controls to focus on specific subgroups or variable values.</p>
+      <p>In panel view, click any year on a panel to see a cross-section for that stratum. Highlighting a legend entry spotlights that series across all panels simultaneously.</p>
+      <div class="callout">
+        <h3>Check whether effects are broad-based or concentrated</h3>
+        <p>An overall effect that looks small may be driven by a large effect in one subgroup — or vice versa. Stratifying by Age, Region, or Income Quintile is a useful check on whether a finding generalises across the population or is concentrated in a particular group.</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 class="big">Key points to remember</h2>
+      <ul class="dolist">
+        <li class="dont"><span class="mark">✕</span> Don't read the dashboard as a forecast — it presents modelled projections conditional on the data and assumptions in SimPaths, not predictions of what will actually happen.</li>
+        <li class="dont"><span class="mark">✕</span> Don't over-interpret a single year-to-year wiggle in a line as meaningful — check whether it sits comfortably inside the confidence interval band.</li>
+        <li class="dont"><span class="mark">✕</span> Don't treat a suppressed (missing) estimate as "zero" or "no effect" — it means the sample was too small to say, not that nothing changed.</li>
+        <li class="dont"><span class="mark">✕</span> Don't conflate the width of the confidence interval with the size of the effect — a wide interval reflects uncertainty around the mean, not necessarily a large or small policy impact.</li>
+        <li class="do"><span class="mark">✓</span> Do focus on the sign and rough size of the Baseline → Scenario difference, rather than either figure in isolation.</li>
+        <li class="do"><span class="mark">✓</span> Do check the confidence interval before assuming a difference between two groups, or two years, is certain.</li>
+        <li class="do"><span class="mark">✓</span> Do use the <strong>Δ Baseline → Scenario</strong> view for the most direct comparison — its uncertainty intervals account for shared stochastic variation through seed-matched paired differences.</li>
+        <li class="do"><span class="mark">✓</span> Do use the stratifiers (Age, Region, Income Quintile, etc.) to check whether an overall effect is broad-based or concentrated in a particular group.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2 class="big">Where to go for more</h2>
+      <p>For the full underlying model documentation, source code, and methodology, see the links below.</p>
+      <div class="link-row">
+        <a class="link-btn" href="https://simpaths.org/" target="_blank" rel="noopener noreferrer">SimPaths documentation ↗</a>
+        <a class="link-btn" href="https://github.com/rjgreen1029/SimPaths-Policy-Impacts-Visualiser" target="_blank" rel="noopener noreferrer">GitHub repository ↗</a>
+        <a class="link-btn" href="/citation.html">How do I cite this? →</a>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="footer">
+    <p>SimPaths Policy Impacts Visualiser — Policy Modelling for Health, University of Glasgow</p>
+    <a href="mailto:healthmod@glasgow.ac.uk?subject=SimPaths%20Data%20Visualiser">✉️ Send Feedback</a>
+  </div>
+
+</body>
+</html>
