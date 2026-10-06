@@ -193,6 +193,21 @@ export const NUMERIC_VARS = new Set([
 ]);
 
 export const STRATIFIERS = ["Age","Gender","Disability Status","Region","Ethnicity","Income Quintile","Household Type","Number of children"];
+
+// Split a CSV line by delim but stop after maxCols fields — avoids allocating
+// a 200-element array when we only need the first ~50 columns.
+function splitUpTo(line, delim, maxCols) {
+  const cells = [];
+  let start = 0;
+  for (let i = 0; i < line.length && cells.length < maxCols; i++) {
+    if (line[i] === delim) {
+      cells.push(line.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  if (cells.length < maxCols) cells.push(line.slice(start).trim());
+  return cells;
+}
 export const STRAT_ONLY   = new Set(["Age","Gender","Region"]);
 
 export const ALL_DISPLAY_VARS = [
@@ -340,6 +355,7 @@ function parsePersonCsv(text, benefitMap) {
     else if (k === "wgt" || k === "Wgt") { if (iWgt < 0) iWgt = i; }
   }
 
+  const maxWantedPos = wantedPos.length ? Math.max(...wantedPos) : 0;
   const rows = [];
   let pos = firstNL + 1;
   const len = text.length;
@@ -353,9 +369,8 @@ function parsePersonCsv(text, benefitMap) {
     if (eol > pos) {
       const line = text.slice(pos, eol).replace(/\r$/, "");
       if (line.length > 0) {
-        // Split by detected delimiter — handles comma, semicolon, or tab
-        const rawCells = line.split(delim);
-        const cells = rawCells.map(c => c.trim());
+        // Split only up to the highest wanted column — avoids large temp arrays
+        const cells = splitUpTo(line, delim, maxWantedPos + 1);
 
         // Read join keys
         const yr   = iYear >= 0 ? cells[wantedPos[iYear]] : undefined;
@@ -430,7 +445,124 @@ function parsePersonCsv(text, benefitMap) {
   return rows;
 }
 
-// ─── Public entry point ───────────────────────────────────────────────────────
+// ─── Streaming person CSV parser ─────────────────────────────────────────────
+// Reads the person file in 32MB chunks via Blob.slice(), processing each line
+// immediately without ever holding the full CSV string in memory.
+// benefitMap must already be built before calling this.
+export async function parsePersonCsvStream(personFileHandle, benefitMap) {
+  const CHUNK = 32 * 1024 * 1024; // 32MB
+  const decoder = new TextDecoder("utf-8");
+  const rows = [];
+
+  let leftover  = "";   // partial line carried from previous chunk
+  let headers   = null; // set after first line
+  let delim     = ",";
+  let wantedPos = [], wantedKey = [], slotDisplay = [];
+  let iYear = -1, iBu = -1, iWgt = -1, maxPos = 0;
+  const colMapEntries = Object.entries(COLUMN_MAP);
+
+  const file   = await personFileHandle.getFile();
+  let offset   = 0;
+
+  while (offset < file.size) {
+    const slice = file.slice(offset, offset + CHUNK);
+    const buf   = await slice.arrayBuffer();
+    const isLast = offset + CHUNK >= file.size;
+    const chunk  = leftover + decoder.decode(buf, { stream: !isLast });
+    offset += CHUNK;
+
+    // Split into lines, keep last partial line as leftover
+    const nlIdx = chunk.lastIndexOf("\n");
+    const toProcess = nlIdx >= 0 ? chunk.slice(0, nlIdx) : chunk;
+    leftover = nlIdx >= 0 ? chunk.slice(nlIdx + 1) : "";
+
+    const lines = toProcess.split("\n");
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/\r$/, "");
+      if (!line) continue;
+
+      if (!headers) {
+        // First non-empty line is the header
+        let h = line;
+        if (h.charCodeAt(0) === 0xFEFF) h = h.slice(1);
+        const nCommas     = (h.match(/,/g)  || []).length;
+        const nSemicolons = (h.match(/;/g)  || []).length;
+        const nTabs       = (h.match(/\t/g) || []).length;
+        delim   = nTabs > nCommas ? "\t" : nSemicolons > nCommas ? ";" : ",";
+        headers = h.split(delim);
+        const nCols = headers.length;
+        for (let c = 0; c < nCols; c++) {
+          const hh = headers[c].trim();
+          if (PERSON_WANT.has(hh)) { wantedPos.push(c); wantedKey.push(hh); }
+        }
+        const nWanted = wantedPos.length;
+        slotDisplay = new Array(nWanted).fill(null);
+        for (let i = 0; i < nWanted; i++) {
+          const d = COLUMN_MAP[wantedKey[i]];
+          if (d !== undefined) slotDisplay[i] = d;
+        }
+        for (let i = 0; i < nWanted; i++) {
+          const k = wantedKey[i];
+          if (k === "time" || k === "Time" || k === "Year") { if (iYear < 0) iYear = i; }
+          else if (k === "idBu" || k === "idbu" || k === "id_BenefitUnit") { if (iBu < 0) iBu = i; }
+          else if (k === "wgt" || k === "Wgt") { if (iWgt < 0) iWgt = i; }
+        }
+        maxPos = wantedPos.length ? Math.max(...wantedPos) : 0;
+        continue;
+      }
+
+      // Data line — split only up to the highest wanted column index
+      const nWanted = wantedPos.length;
+      const cells = splitUpTo(line, delim, maxPos + 1);
+      const yr   = iYear >= 0 ? cells[wantedPos[iYear]] : undefined;
+      const buId = iBu   >= 0 ? cells[wantedPos[iBu]]   : undefined;
+      const bRow = (yr && buId) ? (benefitMap.get(`${yr}_${buId}`) || null) : null;
+      let wgt = iWgt >= 0 ? +cells[wantedPos[iWgt]] : NaN;
+      if (isNaN(wgt) || wgt <= 0) { wgt = bRow ? +(bRow.wgt || bRow.Wgt || 1) : 1; if (isNaN(wgt)||wgt<=0) wgt=1; }
+      const row = { Year: +yr, wgt };
+      for (let i = 0; i < nWanted; i++) {
+        const disp = slotDisplay[i]; if (disp===null) continue;
+        const rawKey=wantedKey[i], cellVal=cells[wantedPos[i]];
+        let val;
+        if (PERSON_ONLY_KEYS.has(rawKey)||!bRow) { val=cellVal; }
+        else { const bv=bRow[rawKey]; val=(bv!==undefined&&bv!=="")?bv:cellVal; }
+        if (val!==undefined&&val!=="") row[disp]=val;
+      }
+      if (bRow) { for (const [rawKey,disp] of colMapEntries) { if (row[disp]===undefined) { const bv=bRow[rawKey]; if (bv!==undefined&&bv!=="") row[disp]=bv; } } }
+      if (row["Age"]!=null) row["Age"]=binAge(row["Age"]);
+      if (row["Number of children"]!=null) row["Number of children"]=binChildren(row["Number of children"]);
+      if (row["Region"]!=null) row["Region"]=REGION_MAP[String(row["Region"])]??row["Region"];
+      if (row["Disability Status"]!=null) row["Disability Status"]=DISABILITY_MAP[String(row["Disability Status"]).toLowerCase()]??row["Disability Status"];
+      if (row["Financial distress flag"]!=null) row["Financial distress flag"]=FINANCIAL_MAP[String(row["Financial distress flag"]).toLowerCase()]??row["Financial distress flag"];
+      if (row["Need of social care"]!=null) row["Need of social care"]=SOCIAL_CARE_MAP[String(row["Need of social care"]).toLowerCase()]??row["Need of social care"];
+      if (row["Provided social care"]!=null) row["Provided social care"]=PROV_SOCIAL_CARE_MAP[String(row["Provided social care"]).toLowerCase()]??row["Provided social care"];
+      if (row["Universal Credit Benefits Flag"]!=null) row["Universal Credit Benefits Flag"]=UC_BENEFITS_MAP[String(row["Universal Credit Benefits Flag"]).toLowerCase()]??row["Universal Credit Benefits Flag"];
+      if (row["Gender"]!=null) { const g=String(row["Gender"]).toLowerCase(); row["Gender"]=(g==="1"||g==="true"||g==="male")?"Male":"Female"; }
+      if (row["Employment status"]!=null) row["Employment status"]=EMPLOYMENT_MAP[String(row["Employment status"]).toLowerCase().replace(/[\s\-_]/g,"")]??row["Employment status"];
+      if (row["Household Type"]!=null) row["Household Type"]=HOUSEHOLD_MAP[String(row["Household Type"]).toLowerCase().replace(/[\s\-_]/g,"")]??row["Household Type"];
+      rows.push(row);
+    }
+  }
+  return rows;
+}
+
+// ─── Streaming public entry point ────────────────────────────────────────────
+// Uses parsePersonCsvStream to avoid holding the full person CSV in memory.
+// personFileHandle: a FileSystemFileHandle or File with a .getFile()/.slice() API.
+// benefitText: full text of the benefit CSV (much smaller, safe to hold).
+export async function processRunFiles(personFileHandle, benefitText, scenarioName, runId) {
+  if (!benefitText || benefitText.trim().length === 0) {
+    throw new Error(`Benefit CSV for ${scenarioName}/${runId} is empty (0 bytes).`);
+  }
+  const benefitMap = buildBenefitMap(benefitText);
+  const personRows = await parsePersonCsvStream(personFileHandle, benefitMap);
+  if (!personRows.length) {
+    throw new Error(`Person CSV for ${scenarioName}/${runId} produced no rows after parsing.`);
+  }
+  return aggregateSingleRun(personRows, scenarioName, runId);
+}
+
+// ─── Public entry point (text-based, kept for CSV loading path) ──────────────
 export function processRunTexts(personText, benefitText, scenarioName, runId) {
   if (!personText || personText.trim().length === 0) {
     throw new Error(`Person CSV for ${scenarioName}/${runId} is empty (0 bytes). Check the file exists and was written correctly by the simulation.`);
@@ -932,135 +1064,6 @@ export function finaliseAggregation(grouped) {
     }
 
     g.runVals = null; // release memory
-
-    finalRows.push({
-      year: +year, scenario: scenario.toLowerCase(),
-      module: MODULE_MAP[variable] || "Other",
-      variable, variable_value, stratifier, stratifier_value, metric_type,
-      n_runs, total_sample, min_sample, mean_sample,
-      mean_value, sd_value, lower_ci, upper_ci,
-      paired_mean_delta, paired_lower_ci, paired_upper_ci, paired_n_runs,
-    });
-  }
-  return finalRows;
-}
-
-/** Legacy entry point — still works but loads all metrics into memory at once.
- *  Prefer the incremental createGroupedAccumulator/accumulateRunMetrics/finaliseAggregation API. */
-export function performCrossRunAggregation(allRunMetrics) {
-  // ── Pass 1: Welford online mean/variance per group ──────────────────────────
-  // Each group entry stores only scalars — no references back into
-  // allRunMetrics, no per-run value arrays. This means allRunMetrics can be
-  // GC'd as soon as this loop finishes.
-  //
-  // For paired delta we use a second set of Welford accumulators keyed by
-  // nonKey (everything except scenario) so we can compute the mean/variance
-  // of (scenario_value − baseline_value) per matched seed online, without
-  // ever storing all the per-run values simultaneously.
-  //
-  // Approach: first pass builds per-group stats + stores per-run values in a
-  // compact Float64Array per group. Second pass computes paired diffs from
-  // those compact arrays, then immediately discards them.
-
-  // group key = "year|scenario|variable|variable_value|stratifier|stratifier_value|metric_type"
-  const grouped = new Map();
-
-  for (const d of allRunMetrics) {
-    const key = `${d.year}|${d.scenario}|${d.variable}|${d.variable_value}|${d.stratifier}|${d.stratifier_value}|${d.metric_type}`;
-    let g = grouped.get(key);
-    if (!g) {
-      // Store only the scalar metadata needed for the output row — no ref to d
-      g = {
-        year: d.year, scenario: d.scenario, variable: d.variable,
-        variable_value: d.variable_value, stratifier: d.stratifier,
-        stratifier_value: d.stratifier_value, metric_type: d.metric_type,
-        count:0, mean:0, M2:0, totalN:0, minN:Infinity,
-        // Compact seed→value map for paired delta (only 2 numbers per seed)
-        runVals: new Map(), // seed → metric_value
-      };
-      grouped.set(key, g);
-    }
-    // Welford update
-    g.count++;
-    const dv = d.metric_value - g.mean;
-    g.mean += dv / g.count;
-    g.M2   += dv * (d.metric_value - g.mean);
-    g.totalN += d.n;
-    if (d.n < g.minN) g.minN = d.n;
-    if (d.run != null) g.runVals.set(String(d.run), d.metric_value);
-  }
-  // allRunMetrics is no longer referenced after this point — eligible for GC
-
-  // ── Build nonKey lookups for paired delta ────────────────────────────────────
-  // nonKey = "year|variable|variable_value|stratifier|stratifier_value|metric_type"
-  // baseVals: nonKey → Map<seed, value>
-  // scenVals: nonKey → scenarioName → Map<seed, value>
-  const baseVals = new Map();
-  const scenVals = new Map(); // nonKey → Map<scenName, Map<seed, value>>
-
-  for (const [key, g] of grouped) {
-    const p = key.split("|");
-    const scen   = p[1];
-    const nonKey = `${p[0]}|${p[2]}|${p[3]}|${p[4]}|${p[5]}|${p[6]}`;
-    if (scen === "baseline") {
-      baseVals.set(nonKey, g.runVals);
-    } else {
-      let sm = scenVals.get(nonKey);
-      if (!sm) { sm = new Map(); scenVals.set(nonKey, sm); }
-      sm.set(scen, g.runVals);
-    }
-  }
-
-  // ── Pass 2: emit final rows with paired delta ────────────────────────────────
-  const finalRows = [];
-  for (const [key, g] of grouped) {
-    const { year, scenario, variable, variable_value, stratifier,
-            stratifier_value, metric_type, count, mean, M2, totalN, minN, runVals } = g;
-
-    const n_runs       = count;
-    const variance     = n_runs > 1 ? M2 / (n_runs - 1) : 0;
-    const sd_value     = Math.sqrt(variance);
-    const se_value     = n_runs > 0 ? sd_value / Math.sqrt(n_runs) : 0;
-    const total_sample = totalN;
-    const min_sample   = isFinite(minN) ? minN : 0;
-    const mean_sample  = n_runs > 0 ? total_sample / n_runs : 0;
-
-    let mean_value = mean;
-    let lower_ci   = mean_value - 1.96 * se_value;
-    let upper_ci   = mean_value + 1.96 * se_value;
-    if (total_sample < 20) { mean_value = NaN; lower_ci = NaN; upper_ci = NaN; }
-
-    // Paired delta — computed for every non-baseline scenario
-    let paired_mean_delta = NaN, paired_lower_ci = NaN, paired_upper_ci = NaN, paired_n_runs = 0;
-    if (scenario !== "baseline") {
-      const p = key.split("|");
-      const nonKey = `${p[0]}|${p[2]}|${p[3]}|${p[4]}|${p[5]}|${p[6]}`;
-      const bVals  = baseVals.get(nonKey);
-      if (bVals && runVals.size > 0) {
-        // Online Welford for paired differences — no diffs array needed
-        let pCount = 0, pMean = 0, pM2 = 0;
-        for (const [seed, sVal] of runVals) {
-          const bVal = bVals.get(seed);
-          if (bVal == null || isNaN(sVal) || isNaN(bVal)) continue;
-          const diff = sVal - bVal;
-          pCount++;
-          const pd = diff - pMean;
-          pMean += pd / pCount;
-          pM2   += pd * (diff - pMean);
-        }
-        if (pCount > 0) {
-          paired_n_runs = pCount;
-          const pSd = pCount > 1 ? Math.sqrt(pM2 / (pCount - 1)) : 0;
-          const pSe = pSd / Math.sqrt(pCount);
-          paired_mean_delta = pMean;
-          paired_lower_ci   = pMean - 1.96 * pSe;
-          paired_upper_ci   = pMean + 1.96 * pSe;
-        }
-      }
-    }
-
-    // Discard runVals now — no longer needed
-    g.runVals = null;
 
     finalRows.push({
       year: +year, scenario: scenario.toLowerCase(),

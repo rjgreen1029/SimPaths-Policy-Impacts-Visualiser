@@ -172,11 +172,7 @@ function App() {
   }, []);
 
   /**
-   * "Visualise Your Own Data" handler — opens the native folder picker,
-   * hands the selected directory to parseLocalFolder() (see
-   * localFolderParser.js), and swaps parsedCache over to the result on
-   * success. An AbortError (user closed the picker without choosing
-   * anything) is treated as a silent no-op rather than an error.
+   * "Visualise Your Own Data" handler — opens the native folder picker.
    */
   const handleSelectFolder = async () => {
     try {
@@ -193,9 +189,7 @@ function App() {
       console.error(err);
       setIsProcessing(false);
       setStatusMessage(
-        err.name === "AbortError"
-          ? ""
-          : `Aggregation Error: ${err.message || "Check folder tree construction."}`
+        err.name === "AbortError" ? "" : `Aggregation Error: ${err.message || "Check folder tree construction."}`
       );
     }
   };
