@@ -126,34 +126,37 @@ function App() {
    * "" in development and only takes on the homepage's path once actually
    * built via `npm run build`.
    */
-  const loadDefaultDataset = useCallback(() => {
+  const [isLoadingDefault, setIsLoadingDefault] = useState(true);
+
+  const loadDefaultDataset = useCallback(async () => {
     const url = `${process.env.PUBLIC_URL}/SimPaths_All_Aggregated_Outputs.csv`;
     setDefaultLoadFailed(false);
-    setStatusMessage("Fetching default package snapshot matrix...");
-    d3.csv(url, parseCsvRow)
-      .then(rows => {
-        if (!rows.length) {
-          // A 0-row result usually means the URL resolved to something that
-          // isn't the CSV at all (e.g. a host serving its SPA fallback
-          // index.html with a 200 status for any unmatched path) rather
-          // than a genuine network failure, so it needs its own message.
-          throw new Error("File was found but contained no rows — check it's the actual CSV and not an HTML/error page being served at that URL.");
-        }
-        setParsedCache(rows);
-        setIsUsingDefault(true);
-        setDefaultLoadFailed(false);
-        setStatusMessage("");
-      })
-      .catch(err => {
-        console.warn("Could not load the default dataset.", err);
-        setIsUsingDefault(true);
-        setDefaultLoadFailed(true);
-        setParsedCache([]);
-        setStatusMessage(
-          `Could not load the default dataset from "${url}" (${err.message || "fetch failed"}). ` +
-          `Check that SimPaths_All_Aggregated_Outputs.csv exists at exactly that path in your deployment's public folder — or select a simulation directory below.`
-        );
-      });
+    setIsLoadingDefault(true);
+    setStatusMessage("Loading default dataset\u2026");
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      // Yield before parsing so the UI renders the loading state first
+      await new Promise(r => setTimeout(r, 0));
+      const rows = d3.csvParse(text, parseCsvRow);
+      if (!rows.length) throw new Error("File was found but contained no rows — check it's the actual CSV and not an HTML/error page being served at that URL.");
+      setParsedCache(rows);
+      setIsUsingDefault(true);
+      setDefaultLoadFailed(false);
+      setStatusMessage("");
+    } catch(err) {
+      console.warn("Could not load the default dataset.", err);
+      setIsUsingDefault(true);
+      setDefaultLoadFailed(true);
+      setParsedCache([]);
+      setStatusMessage(
+        `Could not load the default dataset from "${url}" (${err.message || "fetch failed"}). ` +
+        `Check that SimPaths_All_Aggregated_Outputs.csv exists at exactly that path in your deployment's public folder — or select a simulation directory below.`
+      );
+    } finally {
+      setIsLoadingDefault(false);
+    }
   }, []);
 
   // Fetch the bundled default dataset once on mount.
@@ -640,7 +643,17 @@ function App() {
               Side-by-side comparative graphics between the <strong>Baseline</strong> and the chosen <strong>Policy Scenario</strong> outputs.
             </p>
             <hr style={{ border: "none", borderTop: `1px solid ${BG_PANEL}`, marginBottom: 20 }} />
-            <DashboardSection parsedCache={parsedCache} targetVariable={activeVariable} bgBase={BG} bgDark={BG_DARK} bgPanel={BG_PANEL} />
+            {isLoadingDefault
+              ? <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:320,gap:20,padding:"40px 20px"}}>
+                  <p style={{margin:0,fontSize:15,color:TEAL,fontWeight:600}}>Loading dataset…</p>
+                  <div style={{width:"min(420px,90%)",background:BG_PANEL,borderRadius:8,overflow:"hidden",height:10}}>
+                    <div style={{height:"100%",background:TEAL,borderRadius:8,animation:"loadbar 1.8s ease-in-out infinite"}}/>
+                  </div>
+                  <p style={{margin:0,fontSize:12.5,color:TEXT_MID}}>Fetching and parsing the pre-aggregated dataset — this may take a few moments.</p>
+                  <style>{`@keyframes loadbar{0%{width:0%;margin-left:0}60%{width:80%;margin-left:0}100%{width:0%;margin-left:100%}}`}</style>
+                </div>
+              : <DashboardSection parsedCache={parsedCache} targetVariable={activeVariable} bgBase={BG} bgDark={BG_DARK} bgPanel={BG_PANEL} />
+            }
           </div>
         </div>
       </div>
