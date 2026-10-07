@@ -26,7 +26,7 @@ const DOMAIN_SECTIONS = {
   "Demographics": [
     "Highest Level of Education", "Ethnicity", "Partnership status",
     "Population Pyramid",
-     "Number of children", "Household Type", // temporarily disabled — still works as a stratifier, just not selectable as the main variable
+      "Household Type" // ,"Number of children"
   ],
   "Activity status": ["Employment status", "Hours worked"],
   "Income": [
@@ -59,7 +59,7 @@ export const VARIABLE_DESCRIPTIONS = {
   "Ethnicity":                            "Self-identified ethnic group classification.",
   "Partnership status":                   "Whether an individual is single or partnered.",
   "Population Pyramid":                   "Age structure of the simulated population, split by gender. Bars show the share of each age band among males (right) and females (left).",
-  "Number of children":                   "Count of dependent children in the household.", // temporarily disabled
+  //"Number of children":                   "Count of dependent children in the household.", // temporarily disabled
    "Household Type":                       "Benefit unit composition (e.g., single adult, couple with/without children).", // temporarily disabled — still works as a stratifier
   "Employment status":                    "Current labour market status (e.g., employed, unemployed, retired, student).",
   "Hours worked":                         "Usual number of paid working hours per week.",

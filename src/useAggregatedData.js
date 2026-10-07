@@ -105,7 +105,7 @@ const INCOME_QUINTILE_ORDER = ["Q1","Q2","Q3","Q4","Q5"];
  */
 export const VARIABLE_DEFS = {
   "highest level of education": { type:"ordinal",     order:["InEducation","Low","Medium","High"] },
-  "number of children":         { type:"ordinal",     order:["None","1 Child","2 Children","3+ Children"] },
+ // "number of children":         { type:"ordinal",     order:["None","1 Child","2 Children","3+ Children"] },
   "income quintile":            { type:"ordinal",     order:INCOME_QUINTILE_ORDER },
   "self-rated health":          { type:"ordinal",     order:["Excellent","VeryGood","Good","Fair","Poor"] },
   "hours worked":                             { type:"numeric" },
@@ -136,7 +136,7 @@ export const VARIABLE_DEFS = {
 export const STRATIFIER_DEFS = {
   "age":                { type:"ordinal",     order:["Under 18","18-24","25-34","35-44","45-54","55-64","65+"] },
   "income quintile":    { type:"ordinal",     order:INCOME_QUINTILE_ORDER },
-  "number of children": { type:"ordinal",     order:["None","1 Child","2 Children","3+ Children"] },
+ // "number of children": { type:"ordinal",     order:["None","1 Child","2 Children","3+ Children"] },
   "household type":     { type:"categorical", order:HOUSEHOLD_TYPE_ORDER },
   "gender":             { type:"categorical", order:["Male","Female"] },
   "household type":     { type:"categorical", order:HOUSEHOLD_TYPE_ORDER },

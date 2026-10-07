@@ -148,7 +148,7 @@ export const HOUSEHOLD_MAP       = {
 export const COLUMN_MAP = {
   "eduHighestC4":"Highest Level of Education","demAge":"Age","demMaleFlag":"Gender",
   "demEthnC6":"Ethnicity","healthDsblLongtermFlag":"Disability Status",
-  "demNChild":"Number of children",
+  //"demNChild":"Number of children",
   "yHhQuintilesMonthC5":"Income Quintile","region":"Region","demPartnerStatus":"Partnership status",
   "labC4":"Employment status","labHrsWorkWeek":"Hours worked",
   "yCapitalPersMonth":"Capital Income",
@@ -169,7 +169,7 @@ export const COLUMN_MAP = {
 
 export const MODULE_MAP = {
   "Highest Level of Education":"Demographics","Age":"Demographics","Gender":"Demographics",
-  "Ethnicity":"Demographics","Partnership status":"Demographics","Number of children":"Demographics",
+  "Ethnicity":"Demographics","Partnership status":"Demographics",
   "Region":"Demographics","Household Type":"Demographics",
   "Employment status":"Activity status","Hours worked":"Activity status",
   "Capital Income":"Income","Equivalised yearly disposable income":"Income",
@@ -182,7 +182,7 @@ export const MODULE_MAP = {
   "Physical Component Summary (PCS)":"Health","Life Satisfaction Score":"Health",
   "Subjective wellbeing (GHQ)":"Health","Need of social care":"Health",
   "Provided social care":"Health",
-};
+};//"Number of children":"Demographics",
 
 export const NUMERIC_VARS = new Set([
   "Capital Income","Equivalised yearly disposable income","Gross personal employment income",
@@ -192,7 +192,7 @@ export const NUMERIC_VARS = new Set([
   "Psychological distress score","Life Satisfaction Score","Subjective wellbeing (GHQ)","Hours worked",
 ]);
 
-export const STRATIFIERS = ["Age","Gender","Disability Status","Region","Ethnicity","Income Quintile","Household Type","Number of children"];
+export const STRATIFIERS = ["Age","Gender","Disability Status","Region","Ethnicity","Income Quintile","Household Type"];//,"Number of children"
 
 // Split a CSV line by delim but stop after maxCols fields — avoids allocating
 // a 200-element array when we only need the first ~50 columns.
