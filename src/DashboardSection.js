@@ -45,7 +45,7 @@ const CHART_H_SM = 230;  // small-multiple panel height
 const MAX_W      = 480;  // wide enough to use most of the container
 const PANEL_MIN_W= 280;
 const M     = { top:24, right:24, bottom:70, left:92 }; // extra bottom for key; left is generous since the y-axis title's own space now grows with the actual tick-label width (see applyYAxis)
-const M_SM  = { top:12, right:10, bottom:46, left:52 };
+const M_SM  = { top:12, right:10, bottom:46, left:72 };
 
 // ─── Colours / fonts ──────────────────────────────────────────────────────────
 const TEAL    = "#14687c";
@@ -726,7 +726,7 @@ function applyYAxis(g,yScale,iW,iH,isCat,small,yLabelText){
   // ticks (which are always within the domain) keeps spacing consistent.
   const [domLo,domHi]=yScale.domain();
   const yTicks=d3.ticks(domLo,domHi,5);
-  const axisG=g.append("g").call(d3.axisLeft(yScale).tickValues(yTicks).tickFormat(v=>isCat?`${(v*100).toFixed(1)}%`:d3.format(",.2f")(v)).tickSize(-iW))
+  const axisG=g.append("g").call(d3.axisLeft(yScale).tickValues(yTicks).tickFormat(v=>isCat?`${(v*100).toFixed(1)}%`:small?d3.format("~s")(v):d3.format(",.2f")(v)).tickSize(-iW))
     .call(ax=>{ax.select(".domain").remove();ax.selectAll("text").style("font-size",small?"9px":FONT_SZ).style("fill",TEXT_M).style("font-family",PUB_FONT);ax.selectAll(".tick line").style("stroke","#f0ece4").style("stroke-dasharray","3,3");});
   if (small) {
     // Panel charts: same label as the combined plot, split across two lines
@@ -734,7 +734,7 @@ function applyYAxis(g,yScale,iW,iH,isCat,small,yLabelText){
     const lbl = yLabelText || yAxisLabel(null, isCat);
     const split = splitAxisLabel(lbl);
     const SMALL_GAP = 10;
-    const txt = g.append("text").attr("transform","rotate(-90)").attr("x",-iH/2).attr("y",-32)
+    const txt = g.append("text").attr("transform","rotate(-90)").attr("x",-iH/2).attr("y",-58)
       .attr("text-anchor","middle").style("font-size","9px").style("fill",TEXT_M).style("font-family",PUB_FONT);
     if (split) {
       txt.append("tspan").attr("x",-iH/2).attr("dy",0).text(split[0]);
@@ -1754,11 +1754,28 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
         <button onClick={handleDownloadAll} style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ PNG ×{visible.length}</button>
         <button onClick={handleDownloadAllCsv} style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ CSV (all)</button>
       </div>
+      {/* Shared y-domain for cross-section bar charts — computed across ALL
+          visible strata and ALL pinned years so panels can be compared directly. */}
+      {(() => {
+        const csFilter=rows=>rows.filter(d=>enabledVarVals.has(d.variable_value));
+        const allCsRows=visible.flatMap(sv=>{
+          const bR=baseData.filter(d=>d.stratifier_value===sv);
+          const sR=scenData.filter(d=>d.stratifier_value===sv);
+          const panelScenMap=scenarioMap?new Map([...scenarioMap].map(([name,rows])=>[name,rows.filter(d=>d.stratifier_value===sv)])):null;
+          const selYear=panelYears[sv]??null;
+          if (!selYear) return [];
+          const csBase=csFilter(bR).filter(d=>d.year===selYear);
+          const csScenMap=panelScenMap?new Map([...panelScenMap].map(([n,r])=>[n,csFilter(r).filter(d=>d.year===selYear)])):null;
+          const csAllScen=csScenMap?[...csScenMap.values()].flat():csFilter(sR).filter(d=>d.year===selYear);
+          return [...csBase,...csAllScen];
+        });
+        const sharedCsYDomain=allCsRows.length>0?buildYDomain(allCsRows,isCategorical):[0,1];
+
+      return (
       <div style={{display:"flex",flexWrap:"wrap",gap:12}}>
         {visible.map(sv=>{
           const bR=baseData.filter(d=>d.stratifier_value===sv);
           const sR=scenData.filter(d=>d.stratifier_value===sv);
-          // Build per-panel scenarioMap slice for this stratum
           const panelScenMap=scenarioMap?new Map([...scenarioMap].map(([name,rows])=>[name,rows.filter(d=>d.stratifier_value===sv)])):null;
           const allSvRows=[bR,...(panelScenMap?[...panelScenMap.values()]:[sR]).map(r=>r)].flat();
           const suppressed=allSvRows.every(d=>isNaN(d.mean_value));
@@ -1766,18 +1783,11 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
           const isLine=chartType==="line";
           const selYear=panelYears[sv]??null;
           const onPanelYearClick=isLine?(yr=>setPanelYears(prev=>({...prev,[sv]:prev[sv]===yr?null:yr}))):undefined;
-          // This panel's own cross-section — ONLY computed/shown once this
-          // specific panel has actually been clicked (selYear!=null); before
-          // that, no cross-section renders for it at all. This is what keeps
-          // it scoped to "only the plot I clicked" — every other panel stays
-          // exactly as it was, and a panel that's never been clicked never
-          // grows a cross-section under it.
           const csFilter=rows=>rows.filter(d=>enabledVarVals.has(d.variable_value));
           const csBase=isLine&&selYear!=null?csFilter(bR).filter(d=>d.year===selYear):[];
           const csScen=isLine&&selYear!=null?csFilter(sR).filter(d=>d.year===selYear):[];
           const csScenMap=isLine&&selYear!=null&&panelScenMap?new Map([...panelScenMap].map(([n,r])=>[n,csFilter(r).filter(d=>d.year===selYear)])):null;
           const csAllScen=csScenMap?[...csScenMap.values()].flat():csScen;
-          const csYDomain=isLine&&selYear!=null?buildYDomain([...csBase,...csAllScen],isCategorical):[0,1];
           return (
             <div key={sv} ref={afterRender} style={{width:panelW,background:BG_CARD,borderRadius:10,padding:"10px 12px",border:"1px solid #f0ece4",position:"relative",flexShrink:0}}>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
@@ -1811,7 +1821,7 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
                     </span>
                   </div>
                   <CrossSectionBarPanel baseData={csBase} scenData={csScen} colourMap={colourMap} highlighted={highlighted}
-                    isCategorical={isCategorical} yDomain={csYDomain} varValues={varValues}
+                    isCategorical={isCategorical} yDomain={sharedCsYDomain} varValues={varValues}
                     enabledVarVals={enabledVarVals} showBaseline={showBaseline} showScenario={showScenario}
                     width={panelW-24} year={selYear} patId={`pcs_${slugify(sv)}`} varLabel={varLabel}
                     scenarioMap={csScenMap} enabledScenarios={enabledScenarios} allScenarioNames={allScenarioNames}/>
@@ -1821,6 +1831,7 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
           );
         })}
       </div>
+      );})()}
     </div>
   );
 }
