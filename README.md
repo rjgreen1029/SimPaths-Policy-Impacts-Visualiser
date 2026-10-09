@@ -149,7 +149,7 @@ See `COLUMN_MAP` in `parseCore.js` for the full list of expected raw column name
 1. **Discovery** — folder tree is scanned for `Baseline`/scenario subfolders and run folders.
 2. **Serial processing** — each run's CSVs are read on the main thread then immediately accumulated. Only one run's text lives in memory at a time.
 3. **Per-run aggregation** (`parseCore.js`) — CSVs are joined, column names mapped, and data reduced into weighted means/shares per year broken down by every stratifier.
-4. **Cross-run aggregation** (`finaliseAggregation`) — computes cross-run mean, SD, and 95% CI. A **paired delta** (Scenario − Baseline matched by seed) is computed for each scenario. Estimates with `min_sample < 20` are suppressed.
+4. **Cross-run aggregation** (`finaliseAggregation`) — computes cross-run mean, SD, and 95% CI. A **paired delta** (Scenario − Baseline matched by seed) is computed for each scenario. Estimates with `total_sample < 20` are suppressed.
 
 ## Dashboard views & controls
 
@@ -207,7 +207,7 @@ Everything runs locally in the browser. Nothing you select via "Visualise Your O
 | Scenario line styles | `SCENARIO_DASHES` in `DashboardSection.js` |
 | Scenario colours (numeric variables) | `NUMERIC_BASE_COLOUR`, `NUMERIC_SCEN_COLOURS` in `DashboardSection.js` |
 | Raw CSV → display-name mapping | `COLUMN_MAP` in `parseCore.js` |
-| Suppression threshold | `min_sample < 20` in `finaliseAggregation()` in `parseCore.js` |
+| Suppression threshold | `total_sample < 20` in `finaliseAggregation()` in `parseCore.js` |
 | Default dataset description in intro card | Edit the Getting Started section in `App.js` |
 
 ## Known limitations
@@ -224,3 +224,64 @@ This tool visualises outputs from the SimPaths microsimulation model. See the in
 ## Feedback
 
 Bug reports, feature requests, and general feedback — use the Feedback button in the app, or email [healthmod@glasgow.ac.uk](mailto:healthmod@glasgow.ac.uk?subject=SimPaths%20Policy%20Impacts%20Visualiser).
+
+
+## Browser parsing and tooltip checks
+
+CSV object conversion uses D3's row parser without dynamic code generation, so
+imports work with a Content Security Policy that excludes `unsafe-eval`. Chart
+tooltip headings and values are inserted as text, preserving line breaks without
+interpreting labels as HTML. These changes do not change scientific calculations
+or suppression rules.
+
+The updated local-folder workflow processes runs serially with the upstream
+streaming parser. It replaces the old worker-pool path; the earlier worker-count
+fix is consequently no longer needed.
+
+```bash
+CI=true npm test -- --watchAll=false --runInBand --transformIgnorePatterns '^$' --runTestsByPath src/csvParse.test.js src/tooltipContent.test.js
+```
+
+The current JavaScript implementation applies the threshold to the pooled sample
+across runs (`total_sample`). Its paired-impact fields are calculated separately
+from the suppressed level estimates. Deployment-specific disclosure controls
+must be reviewed before using either output with restricted provider data.
+
+## Optional connected aggregate source
+
+Standalone use retains the bundled data and local-folder workflows. An embedding
+application may pass an optional `dataSource` prop to `App`:
+
+```jsx
+<App dataSource={{
+  key: "comparison-identifier",
+  label: "Online results",
+  rows: aggregateRows,
+  names: { baseline: "Reference", scenario_1: "Policy A", scenario_2: "Policy B" },
+  message: "",
+  notice: "",
+  showDelta: true,
+  navigation: <a href="/results">Return to results</a>,
+}} />
+```
+
+The host fetches authenticated aggregates and supplies loading/error messages.
+The Visualiser does not fetch online data itself or fall back to bundled data
+when a connected source is empty or invalid. Changing `key` resets chart state;
+omitting `dataSource` restores standalone use.
+
+Rows use the chart-ready fields documented above, with distinct scenario IDs
+for every alternative. Optional `paired_mean_delta`, `paired_lower_ci`,
+`paired_upper_ci` and `paired_n_runs` fields pass through without recalculation.
+JSON null metrics remain unavailable, rather than becoming zero. `names` maps
+stable IDs to display labels, which are rendered as text. Scenario toggles show
+or hide alternatives within the same charts. The host may set `showDelta: false`
+for legacy level-only aggregates.
+
+Only aggregated rows belong in this interface. Authentication, permission
+checks, processing limits, disclosure approval and retention remain the host's
+responsibility; raw person/benefit-unit records must not be supplied here.
+
+```bash
+CI=true npm test -- --watchAll=false --runInBand --transformIgnorePatterns '^$' --runTestsByPath src/aggregateDataSource.test.js src/App.aggregateData.test.js src/App.aggregateCharts.test.js src/App.multiScenario.test.js
+```
