@@ -8,6 +8,7 @@ import App from "./App";
 import {normaliseAggregateRows} from "./aggregateDataSource";
 import {csvParse} from "./csvParse";
 import {formatChartCsv,buildPublicationSvg} from "./DashboardSection";
+import {useAggregatedData} from "./useAggregatedData";
 
 beforeEach(()=>{
   global.ResizeObserver=class {observe(){} disconnect(){}};
@@ -94,4 +95,16 @@ test("publication SVG includes separate named alternatives and allocates space f
   expect(pub.querySelector('img[src="canary"]')).toBeNull();
   expect(pub.querySelectorAll("line[stroke-dasharray]")).toHaveLength(2);
   expect(+pub.getAttribute("height")).toBeGreaterThan(320);
+});
+
+test("display-name capitalisation does not hide the upstream self-rated health rows",async()=>{
+  const values=[{...row("baseline",.6),variable:"Self-Rated Health",variable_value:"Good",metric_type:"share"},
+    {...row("scenario_2",.7),variable:"Self-Rated Health",variable_value:"Good",metric_type:"share"}];
+  function Check(){
+    const {baselineData,scenarioMap}=useAggregatedData(values,"Self-rated health");
+    return <pre data-testid="selected">{JSON.stringify([baselineData,...scenarioMap.values()])}</pre>;
+  }
+  render(<Check/>);
+  await waitFor(()=>expect(screen.getByTestId("selected").textContent).toContain('"scenario_2"'));
+  expect(values[0].variable).toBe("Self-Rated Health");
 });

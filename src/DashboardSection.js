@@ -799,23 +799,25 @@ function applyYAxis(g,yScale,iW,iH,isCat,small,yLabelText){
 
 /** Draws the small "— Baseline / ┄ Scenario" key at the bottom of a line/delta chart's plot area, explaining the solid-vs-dashed visual convention. Tagged "pub-skip" since the PNG export builds its own, more detailed legend instead of duplicating this compact in-chart one. */
 // scenarios = [{name, dash, label, colour?}] for each enabled scenario, or boolean (legacy)
-function drawBSKey(g,iW,iH,showBaseline,scenarios,baseColour=TEXT_M){
+function drawBSKey(g,iW,iH,showBaseline,scenarios,baseColour=TEXT_M,baselineLabel="Baseline"){
   const scenList=Array.isArray(scenarios)?scenarios:(scenarios?[{dash:"6,4",label:"Scenario",colour:TEXT_M}]:[]);
-  if (!showBaseline&&!scenList.length) return;
+  const entries=[...(showBaseline?[{label:baselineLabel,colour:baseColour}]:[]),...scenList];
+  if(!entries.length)return;
   const skip=g.append("g").attr("class","pub-skip");
-  // Fixed at iH+52 for all chart types — keeps legend on the same y-line
-  // regardless of chart height differences between line and bar charts.
-  let kx=4, ky=iH+52;
-  if (showBaseline){
-    skip.append("line").attr("x1",kx).attr("x2",kx+16).attr("y1",ky).attr("y2",ky).attr("stroke",baseColour).attr("stroke-width",2);
-    skip.append("text").attr("x",kx+20).attr("y",ky+4).style("font-size","11px").style("fill",TEXT_M).style("font-family",PUB_FONT).text("Baseline");
-    kx+=80;
-  }
-  scenList.forEach(({dash,label,colour=TEXT_M})=>{
+  let kx=4,ky=iH+52,rowHeight=16;
+  for(const {dash,label,colour=TEXT_M} of entries){
+    const width=Math.min(iW,Math.max(80,label.length*6+28));
+    if(kx>4&&kx+width>iW){kx=4;ky+=rowHeight+6;rowHeight=16;}
+    const lines=wrapText(label,Math.max(40,width-24),6,100);
     skip.append("line").attr("x1",kx).attr("x2",kx+16).attr("y1",ky).attr("y2",ky).attr("stroke",colour).attr("stroke-width",2).attr("stroke-dasharray",dash);
-    skip.append("text").attr("x",kx+20).attr("y",ky+4).style("font-size","11px").style("fill",TEXT_M).style("font-family",PUB_FONT).text(label);
-    kx+=Math.max(80, label.length*7+28);
-  });
+    lines.forEach((line,i)=>skip.append("text").attr("x",kx+20).attr("y",ky+4+i*15).style("font-size","11px").style("fill",TEXT_M).style("font-family",PUB_FONT).text(line));
+    rowHeight=Math.max(rowHeight,lines.length*15);kx+=width;
+  }
+  // Named comparisons can need several legend rows. Keep them inside the SVG.
+  const svg=g.node().ownerSVGElement;
+  const translate=g.attr("transform")?.match(/translate\([^,]+,\s*([\d.]+)/);
+  const top=translate?+translate[1]:M.top;
+  svg.setAttribute("height",String(Math.max(+svg.getAttribute("height"),top+ky+rowHeight+12)));
 }
 
 /* ═════════════════════════════════════════════════════════════════════════════
@@ -1079,7 +1081,7 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
 
     if (!small) drawBSKey(g,iW,iH,showBaseline,
       scenSeriesList.map(({name,dash,label})=>{const gi=allScenarioNames.indexOf(name);return{name,dash,label,colour:isCategorical?TEXT_M:NUMERIC_SCEN_COLOURS[gi%NUMERIC_SCEN_COLOURS.length]};}),
-      isCategorical?TEXT_M:NUMERIC_BASE_COLOUR);
+      isCategorical?TEXT_M:NUMERIC_BASE_COLOUR,scenarioLabel("baseline"));
 
   },[baseData,scenData,colourMap,highlighted,yDomain,W,H,isCategorical,enabledVarVals,small,selectedYear,onYearClick,showBaseline,showScenario,isStratified,stratValues,enabledStrats,varValues,isCatStrat,showCI,varLabel,viewBy,scenarioMap,enabledScenarios,allScenarioNames]);
 
@@ -1207,7 +1209,7 @@ function StackedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
         });
       });
     });
-    if (!small) drawBSKey(g,iW,iH,showBaseline,scenEntries.map(({name,label})=>({name,dash:"none",label})));
+    if (!small) drawBSKey(g,iW,iH,showBaseline,scenEntries.map(({name,label})=>({name,dash:"none",label})),TEXT_M,scenarioLabel("baseline"));
   },[baseData,scenData,colourMap,highlighted,W,H,varValues,enabledVarVals,small,showBaseline,showScenario,patId,varLabel,scenarioMap,enabledScenarios,allScenarioNames]);
   return <svg ref={svgRef} style={{display:"block",overflow:"visible"}}/>;
 }
@@ -1404,7 +1406,7 @@ function GroupedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
           });
         });
       });
-      if (!small) drawBSKey(g,iW,iH,showBaseline,scenEntries.map(({name,label,gi})=>({name,dash:SCENARIO_DASHES[Math.max(gi,0)%SCENARIO_DASHES.length],label})));
+      if (!small) drawBSKey(g,iW,iH,showBaseline,scenEntries.map(({name,label,gi})=>({name,dash:SCENARIO_DASHES[Math.max(gi,0)%SCENARIO_DASHES.length],label})),TEXT_M,scenarioLabel("baseline"));
       return;
     }
 
@@ -1481,7 +1483,7 @@ function GroupedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
           .on("mouseover",e=>showTT(ttContent,e)).on("mousemove",moveTT).on("mouseout",hideTT);
       });
     });
-    if (!small) drawBSKey(g,iW,iH,showBaseline,scenEntries.map(({name,label},i)=>({name,dash:SCENARIO_DASHES[i%SCENARIO_DASHES.length],label})));
+    if (!small) drawBSKey(g,iW,iH,showBaseline,scenEntries.map(({name,label},i)=>({name,dash:SCENARIO_DASHES[i%SCENARIO_DASHES.length],label})),TEXT_M,scenarioLabel("baseline"));
   },[baseData,scenData,colourMap,highlighted,yDomain,W,H,isCategorical,varValues,enabledVarVals,small,year,patId,showBaseline,showScenario,missingBase,missingScen,varLabel,isStratified,stratValues,enabledStrats,viewBy,scenarioMap,enabledScenarios,allScenarioNames,labelFontSz,maxCharsPerLine]);
   return <svg ref={svgRef} style={{display:"block",overflow:"visible"}}/>;
 }
