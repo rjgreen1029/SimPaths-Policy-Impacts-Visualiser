@@ -30,18 +30,15 @@ import { processRunTexts } from "./parseCore.js";
  * per-run aggregation, and posts the combined metrics back once the whole
  * batch is done (or posts an error and aborts if any run fails).
  */
+// Receives pre-read text strings from the main thread (not file handles).
+// File reading happens on the main thread to avoid a Chrome bug where
+// FileSystemFileHandle objects transferred to workers return empty text.
 self.onmessage = async ({ data }) => {
   try {
     const allMetrics = [];
-    for (const { personHandle, benefitHandle, scenarioName, runId } of data.runs) {
-      const [personText, benefitText] = await Promise.all([
-        personHandle.getFile().then(f => f.text()),
-        benefitHandle.getFile().then(f => f.text()),
-      ]);
+    for (const { personText, benefitText, scenarioName, runId } of data.runs) {
       const metrics = processRunTexts(personText, benefitText, scenarioName, runId);
-      allMetrics.push(...metrics);
-      // personText/benefitText fall out of scope here and become eligible for
-      // GC before the next run in this batch is read.
+      for (const m of metrics) allMetrics.push(m);
     }
     self.postMessage({ metrics: allMetrics });
   } catch (err) {
