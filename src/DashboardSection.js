@@ -23,7 +23,7 @@
  * rows for just that variable, and passes those down to whichever chart
  * component is currently relevant.
  */
-import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import React, { createContext, useContext, useState, useRef, useEffect, useMemo, useCallback } from "react";
 import * as d3 from "d3";
 import { setTooltipContent } from "./tooltipContent.js";
 import { useComparisonLabel } from "./aggregateDataSource";
@@ -288,7 +288,7 @@ function wrapText(text,maxWidth,avgCharW,maxLines=3){
  * @param {string} [opts.stratScope] - the active stratifier's display name, used to scope stratLabel() lookups for `stratLegendEntries` (stratifier-value labels)
  * @returns {SVGSVGElement|null} the new standalone SVG, or null if chartSvgEl was falsy
  */
-function buildPublicationSvg(chartSvgEl,{title,legendEntries,stratLegendEntries,showBaseline,showScenario,highlighted,varScope,stratScope}){
+export function buildPublicationSvg(chartSvgEl,{title,legendEntries,stratLegendEntries,showBaseline,showScenario,highlighted,varScope,stratScope,scenarioEntries}){
   if (!chartSvgEl) return null;
   const cW=chartSvgEl.width.baseVal.value||500;
   const cH=chartSvgEl.height.baseVal.value||420;
@@ -319,8 +319,13 @@ function buildPublicationSvg(chartSvgEl,{title,legendEntries,stratLegendEntries,
   const legendCols=Math.max(1,Math.min(4,Math.max(1,allVarEntries.length),Math.floor(tW/130)));
   const legendRows=Math.ceil(allVarEntries.length/legendCols);
   const stratRows=allStratEntries.length>0?Math.ceil(allStratEntries.length/legendCols)+1:0;
-  const bsRows=(showBaseline||showScenario)?1:0;
-  const PAD_B=(legendRows+stratRows+bsRows)*22+32;
+  const seriesEntries=scenarioEntries??[
+    ...(showBaseline?[{label:"Baseline",colour:TEXT_M}]:[]),
+    ...(showScenario?[{label:"Scenario (dashed / hatched)",colour:TEXT_M,dash:"5,3"}]:[]),
+  ];
+  const seriesLines=seriesEntries.map(e=>({...e,lines:wrapText(e.label,tW-60,7,100)}));
+  const seriesHeight=seriesLines.reduce((sum,e)=>sum+Math.max(22,e.lines.length*16+6),0);
+  const PAD_B=(legendRows+stratRows)*22+seriesHeight+50;
 
   const tH=cH+PAD_T+PAD_B;
   const ns="http://www.w3.org/2000/svg";
@@ -385,17 +390,16 @@ function buildPublicationSvg(chartSvgEl,{title,legendEntries,stratLegendEntries,
   }
 
   // Baseline/scenario key
-  if (showBaseline||showScenario){
-    let kx=PAD_S; curY+=4;
-    if (showBaseline){
-      const l=document.createElementNS(ns,"line"); l.setAttribute("x1",String(kx)); l.setAttribute("x2",String(kx+20)); l.setAttribute("y1",String(curY+5)); l.setAttribute("y2",String(curY+5)); l.setAttribute("stroke",TEXT_M); l.setAttribute("stroke-width","2"); svg.appendChild(l);
-      const t=document.createElementNS(ns,"text"); t.setAttribute("x",String(kx+24)); t.setAttribute("y",String(curY+9)); t.setAttribute("font-size","12"); t.setAttribute("fill",TEXT_M); t.setAttribute("font-family",PUB_FONT); t.textContent="Baseline"; svg.appendChild(t); kx+=95;
-    }
-    if (showScenario){
-      const l=document.createElementNS(ns,"line"); l.setAttribute("x1",String(kx)); l.setAttribute("x2",String(kx+20)); l.setAttribute("y1",String(curY+5)); l.setAttribute("y2",String(curY+5)); l.setAttribute("stroke",TEXT_M); l.setAttribute("stroke-width","2"); l.setAttribute("stroke-dasharray","5,3"); svg.appendChild(l);
-      const t=document.createElementNS(ns,"text"); t.setAttribute("x",String(kx+24)); t.setAttribute("y",String(curY+9)); t.setAttribute("font-size","12"); t.setAttribute("fill",TEXT_M); t.setAttribute("font-family",PUB_FONT); t.textContent="Scenario (dashed / hatched)"; svg.appendChild(t);
-    }
-  }
+  curY+=4;
+  seriesLines.forEach(({lines,colour=TEXT_M,dash})=>{
+    const l=document.createElementNS(ns,"line"); l.setAttribute("x1",String(PAD_S)); l.setAttribute("x2",String(PAD_S+20)); l.setAttribute("y1",String(curY+5)); l.setAttribute("y2",String(curY+5)); l.setAttribute("stroke",colour); l.setAttribute("stroke-width","2");
+    if(dash)l.setAttribute("stroke-dasharray",dash);
+    svg.appendChild(l);
+    lines.forEach((line,i)=>{
+      const t=document.createElementNS(ns,"text"); t.setAttribute("x",String(PAD_S+26)); t.setAttribute("y",String(curY+9+i*16)); t.setAttribute("font-size","12"); t.setAttribute("fill",TEXT_M); t.setAttribute("font-family",PUB_FONT); t.textContent=line; svg.appendChild(t);
+    });
+    curY+=Math.max(22,lines.length*16+6);
+  });
   return svg;
 }
 
@@ -459,9 +463,10 @@ function downloadPublicationPng(svgEl,filename,pubProps){
  *     button until some unrelated re-render happened to refresh it.
  */
 function DownloadBtn({svgRef,svgKey,filename,pubProps,small=false}){
+  const publicationProps=usePublicationProps();
   return <button onClick={()=>{
       const svgEl = svgKey!=null ? svgRef?.current?.[svgKey] : svgRef?.current;
-      downloadPublicationPng(svgEl,filename,pubProps||{});
+      downloadPublicationPng(svgEl,filename,publicationProps(pubProps||{}));
     }}
     title="Download publication-ready PNG"
     style={{fontSize:small?10:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:small?"1px 6px":"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ PNG</button>;
@@ -568,21 +573,46 @@ function sortCsvRows(data, isContinuous=false){
  * @param {object[]} data - rows to export
  * @param {string} filename
  * @param {object} [opts]
- * @param {boolean} [opts.isDelta=false] - if true, overwrites every row's `scenario` field with "delta"
+ * @param {boolean} [opts.isDelta=false] - if true, labels the comparison while retaining each alternative's identity
  * @param {boolean} [opts.isContinuous=false] - if true, skips variable_value in the sort order
  */
-function exportCsv(data, filename, {isDelta=false, isContinuous=false}={}){
-  if (!data?.length) return;
-  // Optionally stamp scenario="delta" before sorting
-  const rows = isDelta ? data.map(d=>({...d, scenario:"delta"})) : data;
+export function formatChartCsv(data, {isDelta=false, isContinuous=false,scenarioLabel=name=>name}={}){
+  if (!data?.length) return "";
+  // Preserve each alternative's identity, including rows with unavailable deltas.
+  const rows=data.map(d=>({...d,scenario:isDelta?(d.scenarioName||d.scenario):d.scenario,
+    configuration_name:scenarioLabel(d.scenarioName||d.scenario),
+    ...(isDelta?{comparison:"Scenario minus Baseline"}:{})}));
   const sorted = sortCsvRows(rows, isContinuous);
-  const keys=Object.keys(sorted[0]);
-  const header=keys.map(k=>CSV_HEADER_RENAMES[k]||k);
-  const csvRows=[header.join(","),...sorted.map(d=>keys.map(k=>JSON.stringify(d[k]??"")).join(","))];
-  const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([csvRows.join("\n")],{type:"text/csv"})); a.download=filename; a.click(); URL.revokeObjectURL(a.href);
+  const keys=[...new Set(sorted.flatMap(d=>Object.keys(d)))];
+  const formatted=sorted.map(d=>Object.fromEntries(keys.map(k=>[
+    CSV_HEADER_RENAMES[k]||k, typeof d[k]==="number"&&!Number.isFinite(d[k])?null:d[k],
+  ])));
+  return d3.csvFormat(formatted,keys.map(k=>CSV_HEADER_RENAMES[k]||k));
 }
 
-/** Placeholder shown instead of a chart/panel when its underlying sample is too small to display reliably (see parseCore.js's min_sample<100 suppression rule). */
+const ExportScenariosContext=createContext(null);
+function useExportCsv(selection){
+  const inherited=useContext(ExportScenariosContext);
+  const visible=selection||inherited;
+  const scenarioLabel=useComparisonLabel();
+  return useCallback((data,filename,options={})=>{
+    const rows=visible?data.filter(d=>{
+      const name=d.scenarioName||d.scenario;
+      return name==="baseline"?visible.showBaseline:visible.enabledScenarios.has(name);
+    }):data;
+    const csv=formatChartCsv(rows,{...options,scenarioLabel});
+    if(!csv)return;
+    const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download=filename;a.click();URL.revokeObjectURL(a.href);
+  },[visible,scenarioLabel]);
+}
+function usePublicationProps(){
+  const visible=useContext(ExportScenariosContext);
+  return useCallback(props=>visible?{...props,scenarioEntries:visible.entries.filter(e=>
+    e.name==="baseline"?props.showBaseline!==false:props.showScenario!==false||props.comparison===true
+  )}:props,[visible]);
+}
+
+/** Placeholder for level estimates suppressed by parseCore.js's pooled total_sample<20 rule. */
 function SmallSampleOverlay(){
   return <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(239,236,228,0.85)",borderRadius:8,zIndex:5,padding:16,textAlign:"center"}}>
     <p style={{margin:0,fontSize:12,color:TEXT_M,fontStyle:"italic"}}>Sample too small — suppressed.</p>
@@ -1706,6 +1736,9 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
     isCategorical,varValues,enabledVarVals,enabledStrats,showBaseline,showScenario,
     chartType,width,pubPropsFactory,targetVariable,allBaseData,allScenData,missingLookup,viewBy="",
     scenarioMap=null,enabledScenarios=null,allScenarioNames=[]}){
+  const exportCsv=useExportCsv();
+  const publicationProps=usePublicationProps();
+
   const varLabel=addSpaces(targetVariable||"");
   // Which year is pinned in EACH panel's own line chart, keyed by stratum
   // value — deliberately separate from the page-level `selectedYear` used by
@@ -1742,16 +1775,16 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
     visible.forEach((sv,i)=>{
       setTimeout(()=>{
         const svgEl=panelSvgRefs.current[sv];
-        if (svgEl) downloadPublicationPng(svgEl,`${slug}_${slugify(stratLabel(sv,viewBy))}.png`,pubPropsFactory(sv));
+        if (svgEl) downloadPublicationPng(svgEl,`${slug}_${slugify(stratLabel(sv,viewBy))}.png`,publicationProps(pubPropsFactory(sv)));
       },i*350);
     });
-  },[visible,targetVariable,pubPropsFactory,viewBy]);
+  },[visible,targetVariable,pubPropsFactory,viewBy,publicationProps]);
 
   const handleDownloadAllCsv=useCallback(()=>{
     const slug=slugify(targetVariable||"chart");
-    const allData=[...allBaseData,...allScenData].filter(d=>enabledStrats.has(d.stratifier_value)&&enabledVarVals.has(d.variable_value));
+    const allData=[...allBaseData,...allScenRows].filter(d=>enabledStrats.has(d.stratifier_value)&&enabledVarVals.has(d.variable_value));
     exportCsv(allData,`${slug}_all_panels.csv`,{isContinuous:!isCategorical});
-  },[allBaseData,allScenData,enabledStrats,enabledVarVals,targetVariable]);
+  },[allBaseData,allScenRows,enabledStrats,enabledVarVals,targetVariable,isCategorical,exportCsv]);
 
   return (
     <div>
@@ -1801,7 +1834,7 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
                 {!suppressed&&(
                   <div style={{display:"flex",gap:4}}>
                     <DownloadBtn small svgRef={panelSvgRefs} svgKey={sv} filename={`${slugify(targetVariable||"chart")}_${slugify(stratLabel(sv,viewBy))}.png`} pubProps={pubPropsFactory(sv)}/>
-                    <button onClick={()=>exportCsv([...bR,...sR].filter(d=>enabledVarVals.has(d.variable_value)),`${slugify(targetVariable||"chart")}_${slugify(stratLabel(sv,viewBy))}.csv`,{isContinuous:!isCategorical})}
+                    <button onClick={()=>exportCsv([...bR,...(panelScenMap?[...panelScenMap.values()].flat():sR)].filter(d=>enabledVarVals.has(d.variable_value)),`${slugify(targetVariable||"chart")}_${slugify(stratLabel(sv,viewBy))}.csv`,{isContinuous:!isCategorical})}
                       style={{fontSize:10,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:4,padding:"1px 6px",cursor:"pointer",lineHeight:1.6}}>↓ CSV</button>
                   </div>
                 )}
@@ -1859,6 +1892,8 @@ function CrossSectionPanel({baseData,scenData,colourMap,highlighted,isCategorica
     varValues,enabledVarVals,enabledStrats,viewBy,showBaseline,showScenario,
     width,year,isAverage,pubPropsFactory,targetVariable,
     scenarioMap=null,enabledScenarios=null,allScenarioNames=[]}){
+  const exportCsv=useExportCsv();
+
   const svgRef=useRef();
   const isStratified=viewBy!=="Overall";
   const varLabel=addSpaces(targetVariable||"");
@@ -1952,7 +1987,7 @@ function CrossSectionPanel({baseData,scenData,colourMap,highlighted,isCategorica
           scenarioMap={processedScenMap} enabledScenarios={enabledScenarios} allScenarioNames={allScenarioNames}/>
         <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
           <DownloadBtn svgRef={svgRef} filename={`cross_section_${yrTag}.png`} pubProps={pubPropsFactory(null)}/>
-          <button onClick={()=>exportCsv([...bRows,...sRows],`cross_section_${yrTag}.csv`,{isContinuous:!isCategorical})}
+          <button onClick={()=>exportCsv([...bRows,...allScenRows],`cross_section_${yrTag}.csv`,{isContinuous:!isCategorical})}
             style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer"}}>↓ CSV</button>
         </div>
       </div>
@@ -1971,7 +2006,7 @@ function CrossSectionPanel({baseData,scenData,colourMap,highlighted,isCategorica
         scenarioMap={processedScenMap} enabledScenarios={enabledScenarios} allScenarioNames={allScenarioNames}/>
       <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
         <DownloadBtn svgRef={svgRef} filename={`cross_section_${year||"avg"}.png`} pubProps={pubPropsFactory(null)}/>
-        <button onClick={()=>exportCsv([...bRows,...sRows],`cross_section_${year||"avg"}.csv`,{isContinuous:!isCategorical})}
+        <button onClick={()=>exportCsv([...bRows,...allScenRows],`cross_section_${year||"avg"}.csv`,{isContinuous:!isCategorical})}
           style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer"}}>↓ CSV</button>
       </div>
     </div>
@@ -2630,6 +2665,8 @@ function computeDeltaRows(filtB, filtScen, scenarioName) {
 function DeltaSection({baseData,scenData,colourMap,highlighted,isCategorical,
     varValues,enabledVarVals,enabledStrats,viewBy,width,legendEntries,stratValues=[],stratLegendEntries=[],
     scenarioMap=null,enabledScenarios=null,allScenarioNames=[],onYearClick,selectedYear}){
+  const exportCsv=useExportCsv();
+
   const svgRef=useRef();
   const isStratified=viewBy!=="Overall";
 
@@ -2669,7 +2706,7 @@ function DeltaSection({baseData,scenData,colourMap,highlighted,isCategorical,
         <div style={{display:"flex",flexDirection:"column",gap:4}}>
           <DeltaChart svgRef={svgRef} deltaData={deltaData} colourMap={colourMap} highlighted={highlighted} isCategorical={isCategorical} varValues={varValues} enabledVarVals={enabledVarVals} stratValues={stratValues} enabledStrats={enabledStrats} viewBy={viewBy} width={width} varLabel={varLabel} allScenarioNames={allScenarioNames} onYearClick={onYearClick} selectedYear={selectedYear}/>
           <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
-            <DownloadBtn svgRef={svgRef} filename="delta.png" pubProps={{title:`Δ Baseline → Scenario: ${varLabel}`,legendEntries,stratLegendEntries,showBaseline:false,showScenario:false,highlighted,varScope:varLabel,stratScope:viewBy}}/>
+            <DownloadBtn svgRef={svgRef} filename="delta.png" pubProps={{title:`Δ Baseline → Scenario: ${varLabel}`,legendEntries,stratLegendEntries,showBaseline:false,showScenario:false,comparison:true,highlighted,varScope:varLabel,stratScope:viewBy}}/>
             <button onClick={()=>exportCsv(deltaData,`${slugify(varLabel)}_delta.csv`,{isDelta:true,isContinuous:!isCategorical})}
               style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ CSV</button>
           </div>
@@ -2938,6 +2975,15 @@ export default function DashboardSection({parsedCache,targetVariable,showDelta=t
   const yDomain =useMemo(()=>buildYDomain([...baseTime,...allScenTime],isCategorical),[baseTime,allScenTime,isCategorical]);
 
   const showScenario=enabledScenarios.size>0;
+  const exportSelection=useMemo(()=>({showBaseline,enabledScenarios,entries:[
+    ...(showBaseline?[{name:"baseline",label:scenarioLabel("baseline"),colour:isCategorical?TEXT_M:NUMERIC_BASE_COLOUR}]:[]),
+    ...allScenarioNames.flatMap((name,i)=>enabledScenarios.has(name)?[{
+      name,label:scenarioLabel(name),colour:isCategorical?TEXT_M:NUMERIC_SCEN_COLOURS[i%NUMERIC_SCEN_COLOURS.length],
+      dash:SCENARIO_DASHES[i%SCENARIO_DASHES.length],
+    }]:[]),
+  ]}),[showBaseline,enabledScenarios,allScenarioNames,scenarioLabel,isCategorical]);
+  const exportCsv=useExportCsv(exportSelection);
+
   const showCrossSection=chartType==="line";
 
   const legendEntries=useMemo(()=>varValues.map(vv=>({label:vv,color:colourMap[vv]||GREY})),[varValues,colourMap]);
@@ -3031,6 +3077,7 @@ export default function DashboardSection({parsedCache,targetVariable,showDelta=t
   const chartAreaWidth=hasSidebar&&!stackSidebar?Math.max(240,width-sidebarWidth-20):width;
 
   return (
+    <ExportScenariosContext.Provider value={exportSelection}>
     <div ref={containerRef} style={{width:"100%",maxWidth:"100%",overflowX:"hidden"}}>
 
       {/* ════════════════════════════════════════════════════════════════════════
@@ -3103,7 +3150,7 @@ export default function DashboardSection({parsedCache,targetVariable,showDelta=t
               onClick={()=>{
                 const src = [
                   ...(showBaseline?pyramidBaseData:[]),
-                  ...(showScenario?pyramidScenData:[]),
+                  ...(showScenario?(pyramidScenMap?[...pyramidScenMap.values()].flat():pyramidScenData):[]),
                 ].filter(d=>selectedYear===null||d.year===selectedYear);
                 exportCsv(src,"population_pyramid"+(selectedYear?`_${selectedYear}`:"_average")+".csv",{isContinuous:false});
               }}
@@ -3385,7 +3432,7 @@ export default function DashboardSection({parsedCache,targetVariable,showDelta=t
                             {lineChart}
                             <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
                               <DownloadBtn svgRef={lineRef} filename="time_series.png" pubProps={pubProps(`${varLabel} over time`)}/>
-                              <button onClick={()=>exportCsv([...baseTime,...scenTime].filter(d=>enabledVarVals.has(d.variable_value)),`${slugify(varLabel)}_time_series.csv`,{isContinuous:!isCategorical})}
+                              <button onClick={()=>exportCsv([...baseTime,...allScenTime].filter(d=>enabledVarVals.has(d.variable_value)),`${slugify(varLabel)}_time_series.csv`,{isContinuous:!isCategorical})}
                                 style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ CSV</button>
                             </div>
                           </div>
@@ -3406,7 +3453,7 @@ export default function DashboardSection({parsedCache,targetVariable,showDelta=t
                           {lineChart}
                           <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
                             <DownloadBtn svgRef={lineRef} filename="time_series.png" pubProps={pubProps(`${varLabel} over time by ${viewBy}`)}/>
-                            <button onClick={()=>exportCsv([...baseTime,...scenTime].filter(d=>enabledStrats.has(d.stratifier_value)&&enabledVarVals.has(d.variable_value)),`${slugify(varLabel)}_time_series.csv`,{isContinuous:!isCategorical})}
+                            <button onClick={()=>exportCsv([...baseTime,...allScenTime].filter(d=>enabledStrats.has(d.stratifier_value)&&enabledVarVals.has(d.variable_value)),`${slugify(varLabel)}_time_series.csv`,{isContinuous:!isCategorical})}
                               style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ CSV</button>
                           </div>
                           <div style={{marginTop:12}}>
@@ -3443,7 +3490,7 @@ export default function DashboardSection({parsedCache,targetVariable,showDelta=t
                       scenarioMap={scenarioMap} enabledScenarios={enabledScenarios} allScenarioNames={allScenarioNames}/>
                     <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
                       <DownloadBtn svgRef={barRef} filename="stacked_bar.png" pubProps={pubProps(`${varLabel} by year — stacked`)}/>
-                      <button onClick={()=>exportCsv([...baseTime,...scenTime].filter(d=>enabledVarVals.has(d.variable_value)),`${slugify(varLabel)}_stacked.csv`,{isContinuous:!isCategorical})}
+                      <button onClick={()=>exportCsv([...baseTime,...allScenTime].filter(d=>enabledVarVals.has(d.variable_value)),`${slugify(varLabel)}_stacked.csv`,{isContinuous:!isCategorical})}
                         style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ CSV</button>
                     </div>
                   </div>
@@ -3524,7 +3571,7 @@ export default function DashboardSection({parsedCache,targetVariable,showDelta=t
             />
             <button
               onClick={()=>{
-                const pyrRows=[...(showBaseline?pyramidBaseData:[]),...(showScenario?pyramidScenData:[])]
+                const pyrRows=[...(showBaseline?pyramidBaseData:[]),...(showScenario?(pyramidScenMap?[...pyramidScenMap.values()].flat():pyramidScenData):[])]
                   .filter(d=>selectedYear===null||d.year===selectedYear);
                 exportCsv(pyrRows,"population_pyramid"+(selectedYear?`_${selectedYear}`:"_average")+".csv",{isContinuous:false});
               }}
@@ -3604,7 +3651,7 @@ export default function DashboardSection({parsedCache,targetVariable,showDelta=t
                 // Build exportable rows from the wage_bin rows for the current view
                 const wbRows = [
                   ...(showBaseline ? baselineData : []),
-                  ...(showScenario ? scenarioData  : []),
+                  ...(showScenario ? allScenarioRows : []),
                 ].filter(d =>
                   d.metric_type === "wage_bin" &&
                   d.variable    === "Hourly earnings" &&
@@ -3655,5 +3702,6 @@ export default function DashboardSection({parsedCache,targetVariable,showDelta=t
       </>}
 
     </div>
+    </ExportScenariosContext.Provider>
   );
 }

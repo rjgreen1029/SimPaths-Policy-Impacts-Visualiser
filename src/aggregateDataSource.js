@@ -44,7 +44,7 @@ export function normaliseAggregateRows(rows) {
       result[field] = row[field];
     }
     if (!result.scenario || /[\u0000-\u001f]/.test(result.scenario) ||
-        !['mean', 'share', 'wage_bin', 'income_bin'].includes(result.metric_type)) {
+        !['mean', 'share', 'wage_bin', 'income_bin', 'pyramid_bin'].includes(result.metric_type)) {
       throw new TypeError("Expected Baseline/Scenario aggregate metrics.");
     }
     for (const field of NUMBER_FIELDS) {
