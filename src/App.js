@@ -33,8 +33,8 @@ const DOMAIN_SECTIONS = {
   "Income": [
     "Income Quintile", "Universal Credit Benefits Flag", "Financial distress flag",
     "Equivalised yearly disposable income", "Hourly earnings",  "Personal private pension income",
-     "Gross personal employment income", 
-    "Capital Income", 
+     "Gross personal employment income",
+    "Capital Income",
     "Amount of benefits received per month"
   ],
   "Health": [
@@ -69,7 +69,7 @@ export const VARIABLE_DESCRIPTIONS = {
   "Financial distress flag":              "Indicator of reported difficulty in meeting basic financial commitments.",
   "Equivalised yearly disposable income": "Annual income after taxes and transfers, in GBP (£).",
   "Gross personal employment income":     "Earnings from employment before tax and deductions.",
-  "Personal private pension income" :     "Gross personal private pension income", 
+  "Personal private pension income" :     "Gross personal private pension income",
   "Hourly earnings": "Potential hourly earnings",// temporarily disabled
    "Capital Income":                       "Income from assets such as savings, investments, or property.", // temporarily disabled
   "Amount of benefits received per month":"Monthly monetary value of welfare benefits received, in GBP (£).",
@@ -262,7 +262,7 @@ function App() {
 
   return (
     <div style={{ fontFamily: "Work Sans, sans-serif", minHeight: "100vh", background: BG, color: TEXT_DARK, display: "flex", flexDirection: "column", gap: 30 }}>
-      
+
      {/* Header + Title Banner */}
 <div
   style={{
@@ -363,7 +363,7 @@ function App() {
 
       {/* Main Content Container */}
       <div style={{ padding: isMobile ? "10px 16px" : "10px 48px", display: "flex", flexDirection: "column", gap: isMobile ? 20 : 30 }}>
-        
+
        {/* Intro Card */}
 <div style={{ background: BG_DARK, border: `0.5px solid ${BG_PANEL}`, borderRadius: "12px", padding: isMobile ? "22px 20px" : "32px 40px", boxShadow: "0 2px 8px rgba(0,0,0,0.08)" }}>
 
@@ -376,17 +376,17 @@ function App() {
         Explore how different policies could shape outcomes across the UK.
       </p>
       <p style={{ margin: "0 0 10px", fontSize: "clamp(14px, 2vw, 16px)", color: TEXT_DARK, lineHeight: 1.6 }}>
-        Visualise the projected impact of a policy scenario on a simulated UK population, broken down by variable, year, and population subgroup. 
+        Visualise the projected impact of a policy scenario on a simulated UK population, broken down by variable, year, and population subgroup.
               </p>
       <p style={{ margin: "0 0 14px", lineHeight: 1.8, color: TEXT_DARK, fontSize: "clamp(14px, 2vw, 16px)" }}>
         This tool visualises outputs from <a href="https://simpaths.org/" target="_blank" rel="noopener noreferrer" style={{ color: AQUA, textDecoration: "none", borderBottom: `2px solid ${AQUA}`, paddingBottom: "2px", transition: "opacity 0.2s" }}>SimPaths</a>, an open-source, dynamic microsimulation model developed by the Centre for Microsimulation and Policy Analysis (<a href="https://www.microsimulation.ac.uk/" target="_blank" rel="noopener noreferrer" style={{ color: AQUA, textDecoration: "none", borderBottom: `2px solid ${AQUA}`, paddingBottom: "2px", transition: "opacity 0.2s" }}>CeMPA</a>) at the University of Essex. The Policy Impacts Visualiser was built by researchers at the University of Glasgow as part of the <a href="https://www.phiuk.org/policy-modelling-for-health" target="_blank" rel="noopener noreferrer" style={{ color: AQUA, textDecoration: "none", borderBottom: `2px solid ${AQUA}`, paddingBottom: "2px", transition: "opacity 0.2s" }}>Policy Modelling for Health</a> research group.
       </p>
       <p style={{ margin: 0, lineHeight: 1.8, color: TEXT_DARK, fontSize: "clamp(14px, 2vw, 16px)" }}>
-      SimPaths simulates the life-course trajectories of a population — how demographics, employment, income, wealth, health, and other variables change over time — and how those trajectories may change under a simulated a policy scenario (e.g., an increase in the minimum wage). 
-      This visualiser lets you explore those simulated outcomes interactively: pick a variable, stratify it by age, gender, region and more, and compare Baseline data against Scenario data over time, at a single point in time, or as the difference between the two. 
-      For example, if you had simulated an increase in minimum wage, you could ask: did an increase in the minimum wage lead to higher self-rated health among working-age adults by 2050, and are the effects different across UK regions? 
+      SimPaths simulates the life-course trajectories of a population — how demographics, employment, income, wealth, health, and other variables change over time — and how those trajectories may change under a simulated a policy scenario (e.g., an increase in the minimum wage).
+      This visualiser lets you explore those simulated outcomes interactively: pick a variable, stratify it by age, gender, region and more, and compare Baseline data against Scenario data over time, at a single point in time, or as the difference between the two.
+      For example, if you had simulated an increase in minimum wage, you could ask: did an increase in the minimum wage lead to higher self-rated health among working-age adults by 2050, and are the effects different across UK regions?
       To explore this, select Self-rated health as the variable, stratify the results by age and region, filtering for the working age population, and compare the Baseline and Scenario over time.
-      
+
       </p>
     </div>
 
@@ -441,10 +441,10 @@ function App() {
 
         {/* Workspace Operations */}
         <div style={{ display: "flex", gap: 30, alignItems: "flex-start", flexWrap: windowWidth < 1200 ? "wrap" : "nowrap" }}>
-          
+
           {/* Left Sidebar */}
           <div style={{ width: "300px", flexShrink: 0, display: "flex", flexDirection: "column", gap: 20, minWidth: windowWidth < 1200 ? "100%" : "300px" }}>
-            
+
             {/* Connect Data Card */}
             <div style={{ background: BG_DARK, border: `1px solid ${BG_PANEL}`, padding: 20, borderRadius: 12, boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
                             <div style={{ background: CORAL, borderRadius: 8, padding: "10px 14px", marginBottom: 12 }}>
@@ -515,11 +515,11 @@ function App() {
               <p style={{ margin: "0 0 16px", fontSize: 11, color: TEAL, lineHeight: 1.5, fontStyle: "italic" }}>
                 Nothing you select is uploaded or stored anywhere — all aggregation happens locally, in your browser.
               </p>
-              
+
               <button onClick={handleSelectFolder} disabled={isProcessing} style={{margin: "0 0 10px", width: "100%", padding: "10px", borderRadius: 6, border: `1px solid ${AQUA}`, background: AQUA, color: BG_DARK, fontWeight: 600, fontSize: 16, textAlign: "center", cursor: "pointer" }}>
                 {isProcessing ? "Aggregating data..." : "Visualise Your Own Data"}
               </button>
-            
+
               {statusMessage && <p style={{ fontSize: 11, color: "#c2410c", margin: "8px 0 0", fontStyle: "italic", lineHeight: 1.4 }}>{statusMessage}</p>}
               <div style={{
                 fontSize: 12,
@@ -631,9 +631,9 @@ function App() {
       {" "}for further information.
     </>
   )}
-  
 
-  
+
+
               </p>
             )}
             <p style={{ margin: "0 0 20px", fontSize: "clamp(12px, 1.5vw, 13px)", color: "#64748b" }}>
