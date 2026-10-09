@@ -117,7 +117,7 @@ Parsed by `parseCsvRow()` in `useAggregatedData.js`. Expected columns:
 | `lower_ci` / `upper_ci` | 95% CI bounds |
 | `paired_mean_delta`, `paired_lower_ci`, `paired_upper_ci`, `paired_n_runs` | Paired delta stats (scenario rows only) |
 
-The recommended R aggregation script (`SimPathsAggFaster_v10.Rmd`) produces this format directly and discovers all non-Baseline subfolders automatically.
+The recommended R aggregation script (`SimPathsAggFaster_v11.Rmd`) produces this format directly and discovers all non-Baseline subfolders automatically.
 
 ### 2. Bring your own simulation output
 
@@ -149,7 +149,7 @@ See `COLUMN_MAP` in `parseCore.js` for the full list of expected raw column name
 1. **Discovery** — folder tree is scanned for `Baseline`/scenario subfolders and run folders.
 2. **Serial processing** — each run's CSVs are read on the main thread then immediately accumulated. Only one run's text lives in memory at a time.
 3. **Per-run aggregation** (`parseCore.js`) — CSVs are joined, column names mapped, and data reduced into weighted means/shares per year broken down by every stratifier.
-4. **Cross-run aggregation** (`finaliseAggregation`) — computes cross-run mean, SD, and 95% CI. A **paired delta** (Scenario − Baseline matched by seed) is computed for each scenario. Estimates with `min_sample < 100` are suppressed.
+4. **Cross-run aggregation** (`finaliseAggregation`) — computes cross-run mean, SD, and 95% CI. A **paired delta** (Scenario − Baseline matched by seed) is computed for each scenario. Estimates with `total_sample < 20` are suppressed.
 
 ## Dashboard views & controls
 
@@ -207,7 +207,7 @@ Everything runs locally in the browser. Nothing you select via "Visualise Your O
 | Scenario line styles | `SCENARIO_DASHES` in `DashboardSection.js` |
 | Scenario colours (numeric variables) | `NUMERIC_BASE_COLOUR`, `NUMERIC_SCEN_COLOURS` in `DashboardSection.js` |
 | Raw CSV → display-name mapping | `COLUMN_MAP` in `parseCore.js` |
-| Suppression threshold | `min_sample < 100` in `finaliseAggregation()` in `parseCore.js` |
+| Suppression threshold | `total_sample < 20` in `finaliseAggregation()` in `parseCore.js` |
 | Default dataset description in intro card | Edit the Getting Started section in `App.js` |
 
 ## Known limitations
@@ -242,191 +242,46 @@ fix is consequently no longer needed.
 CI=true npm test -- --watchAll=false --runInBand --transformIgnorePatterns '^$' --runTestsByPath src/csvParse.test.js src/tooltipContent.test.js
 ```
 
+The current JavaScript implementation applies the threshold to the pooled sample
+across runs (`total_sample`). Its paired-impact fields are calculated separately
+from the suppressed level estimates. Deployment-specific disclosure controls
+must be reviewed before using either output with restricted provider data.
 
-## Data inputs
+## Optional connected aggregate source
 
-The standalone dashboard offers the default dataset and local-folder workflows. An embedding application can provide a third source through the optional interface described below.
-
-### 1. Default pre-aggregated dataset
-
-On load, the app fetches the preaggregated data and parses each row with `parseCsvRow()` in `useAggregatedData.js`. Expected columns (case-insensitive alternates are supported for several — see the parser):
-
-| Column | Meaning |
-|---|---|
-| `Year` | Simulation year |
-| `scenario` | `baseline` or `scenario` |
-| `module` | Domain grouping (Demographics / Activity status / Income / Health) |
-| `variable` | Variable name, matching the dashboard's variable list |
-| `variable_value` | Category label (or "Mean" for numeric variables) |
-| `stratifier` | Stratifier name, or `Overall` |
-| `stratifier_value` | Stratum label, or `Overall` |
-| `metric_type` | `mean` (numeric variables) or `share` (categorical variables) |
-| `n_runs` | Number of model runs the estimate is averaged across |
-| `total_sample`, `min_sample`, `mean_sample` | Sample-size diagnostics used for suppression |
-| `mean_value`, `sd_value` | Cross-run mean and standard deviation |
-| `ci_lower` / `lower_ci`, `ci_upper` / `upper_ci` | 95% confidence interval bounds |
-
-
-### 2. Bring your own simulation output
-
-Clicking "Visualise Locally Saved Data" opens a native folder picker. The selected parent folder must be laid out as:
-
-```
-YourSimulationOutput/
-├── Baseline/
-│   ├── run_1/
-│   │   └── csv/               
-│   │       ├── ..._person_....csv
-│   │       └── ..._benefit_....csv
-│   ├── run_2/
-│   │   └── ...
-│   └── ...
-└── Scenario/
-    ├── run_1/
-    │   └── ...
-    └── ...
-```
-
-Rules the folder scanner (`localFolderParser.js`) applies:
-
-- Top level must contain a `Baseline` and/or `Scenario` subfolder (matched case-insensitively).
-- Each run is a subfolder of `Baseline`/`Scenario` — any number of runs is supported, and results are averaged across them.
-- Within each run, CSV files are looked for either directly in the run folder or inside a `csv` subfolder.
-- The person file is the `.csv` file whose name contains "person"; the benefit file is the one whose name contains "benefit" (case-insensitive). Both are required for a run to be included.
-
-Expected raw columns (person and/or benefit CSV — see `COLUMN_MAP` in `parseCore.js` for the full, authoritative list):
-
-| Raw column | Dashboard variable |
-|---|---|
-| `eduHighestC4` | Highest Level of Education |
-| `demAge` | Age (used for the Age stratifier) |
-| `demMaleFlag` | Gender |
-| `demEthnC6` | Ethnicity |
-| `healthDsblLongtermFlag` | Disability Status |
-| `dhhtp_c4` | Household Type |
-| `yHhQuintilesMonthC5` | Income Quintile |
-| `i_demRgn` | Region |
-| `demPartnerStatus` | Partnership status |
-| `demNChild` | Number of children |
-| `labC4` | Employment status |
-| `labHrsWorkWeek` | Hours worked |
-| `yCapitalPersMonth` | Capital Income |
-| `yDispEquivYear` | Equivalised yearly disposable income |
-| `yEmpPersGrossMonth` | Gross personal employment income |
-| `yPensYear` | Gross private pension income |
-| `yBenAmountMonth` | Amount of benefits received per month |
-| `yBenNonUCReceivedFlag` / `yBenUCReceivedFlag` | Benefits Received (derived) |
-| `yFinDstrssFlag` | Financial distress flag |
-| `healthPsyDstrss0to12` | Psychological distress score |
-| `healthMentalMcs` | Mental Component Summary (MCS) |
-| `healthPhysicalPcs` | Physical Component Summary (PCS) |
-| `healthSelfRated` | Self-Rated Health |
-| `demLifeSatScore0to10` | Life Satisfaction Score |
-| `healthWbScore0to36` | Subjective wellbeing (GHQ) |
-| `careNeedFlag` | Need of social care |
-| `careProvidedFlag` / `careProvidedFlag.y` | Provided social care |
-
-Plus join/weighting keys: `time`/`Time`/`Year`, `id_BenefitUnit`/`idbu`/`idBu`, and an optional `wgt`/`Wgt` weight column (defaults to 1.0 per row if absent or invalid).
-
-### 3. Connect pre-aggregated results
-
-An embedding application can render `<App dataSource={...} />` with the same
-aggregate row shape used by the existing charts. This is an optional presentation
-interface: it does not add API URLs, authentication, server-side aggregation or
-new statistical calculations to the Visualiser. Rendering `<App />` continues
-to load the bundled dataset and offer the local-folder viewer.
-
-For example, a host that has already loaded authorised aggregate rows can use:
+Standalone use retains the bundled data and local-folder workflows. An embedding
+application may pass an optional `dataSource` prop to `App`:
 
 ```jsx
-import App from "./App";
-
-function ResultsView({ rows, comparison, message, onReload }) {
-  return <App dataSource={{
-    key: comparison.id,
-    rows,
-    label: "Online results",
-    names: {
-      baseline: comparison.baselineName,
-      scenario: comparison.scenarioName,
-    },
-    description: "These simulation results were aggregated by the hosting service.",
-    message,
-    controls: <button onClick={onReload}>Reload results</button>,
-    navigation: <a href="/">Return to SimPaths Online</a>,
-  }} />;
-}
+<App dataSource={{
+  key: "comparison-identifier",
+  label: "Online results",
+  rows: aggregateRows,
+  names: { baseline: "Reference", scenario_1: "Policy A", scenario_2: "Policy B" },
+  status: "",
+  notice: "",
+  showDelta: true,
+  navigation: <a href="/results">Return to results</a>,
+}} />
 ```
 
-| Field | Purpose |
-|---|---|
-| `rows` | Array of chart-ready aggregate rows; use `[]` while loading or unavailable. Omitted rows also mean an empty connected source. |
-| `key` | Optional string comparison identity. Change it when selecting a different comparison to reset chart filters and selections. |
-| `label` | Optional plain-text source label, such as `Online results`. Defaults to `Connected results`. |
-| `names.baseline`, `names.scenario` | Optional configuration names, shown alongside their roles in Connect Data and the comparison description. Without names, the labels remain `Baseline` and `Scenario`. |
-| `description`, `message`, `notice` | Optional plain-text source explanation, loading/error status and comparison notice. |
-| `controls` | Optional React content for host-owned source selection or retry controls, rendered in Connect Data. |
-| `navigation` | Optional React content rendered in the header, such as a link back to the hosting application. |
-| `showDelta` | Set to `false` to hide the difference view while retaining the level charts. Defaults to `true`, preserving the standalone behaviour. This is a presentation option, not an access-control mechanism. |
+The host fetches authenticated aggregates and supplies loading/error messages.
+The Visualiser does not fetch online data itself or fall back to bundled data
+when a connected source is empty or invalid. Changing `key` resets chart state;
+omitting `dataSource` restores standalone use.
 
-The host owns loading and source switching. It can offer locally saved data by
-calling the existing `parseLocalFolder()` and supplying its aggregate result to
-the same prop. `controls` and `navigation` are trusted application components,
-not HTML or React objects received from an API. Source labels, configuration names
-and status messages are rendered as text. Configuration names never replace the `baseline`/`scenario` identifiers
-used by filtering and calculations.
+Rows use the chart-ready fields documented above, with distinct scenario IDs
+for every alternative. Optional `paired_mean_delta`, `paired_lower_ci`,
+`paired_upper_ci` and `paired_n_runs` fields pass through without recalculation.
+JSON null metrics remain unavailable, rather than becoming zero. `names` maps
+stable IDs to display labels, which are rendered as text. Scenario toggles show
+or hide alternatives within the same charts. The host may set `showDelta: false`
+for legacy level-only aggregates.
 
-Treat row arrays as immutable: supply a new array when results change. Row
-normalisation is memoised by that array. Changing `key` also resets chart state.
-The interface does not alter the upstream seed-paired difference calculations; a host can
-hide that view until its results support the required comparison method.
-
-**Keep the `dataSource` object present while loading or when access is lost.**
-Supply `rows: []` and an appropriate `message`; the Visualiser then removes its
-charts and shows the connected-source status. It does not fetch bundled data,
-open a folder picker or make a network request on behalf of a connected source.
-Only omitting the prop (or explicitly setting it to `null`/`undefined`) returns
-to the standalone default/local workflow. Late responses from a previous
-standalone load cannot replace connected results.
-
-Rows use the normalised shape returned by `performCrossRunAggregation()`, not
-the alternate CSV header names accepted by `parseCsvRow()`:
-
-- Numeric `year` and text `scenario`, `module`, `variable`, `variable_value`,
-  `stratifier`, `stratifier_value`, `metric_type`.
-- `scenario` is `baseline` or `scenario`; `metric_type` is `mean` or `share`.
-- Numeric `n_runs`, `total_sample`, `min_sample`, `mean_sample`, `mean_value`,
-  `sd_value`, `lower_ci`, `upper_ci`. Missing numeric metrics or JSON `null`
-  become `NaN`, preserving unavailable/suppressed estimates rather than
-  converting them to zero. Native `NaN` is also accepted; infinity and numeric
-  strings are rejected.
-- Other row fields are rejected to catch accidental use of a different data
-  format. Rows are copied without mutating their source or recalculating values.
-
-**Browser validation is not a privacy boundary.** The hosting service must
-authenticate the user, check ownership and permissions, apply its approved
-aggregation/disclosure rules, and send only permitted aggregate data. It must
-never send restricted raw records, identifiers, file paths or diagnostic logs
-to this interface. Rejecting a row after it reached the browser cannot undo
-that disclosure. This PR supplies a reusable Visualiser interface; the
-authenticated results API and VM integration remain in the hosting repositories.
-
-#### Checking the connected-source interface
+Only aggregated rows belong in this interface. Authentication, permission
+checks, processing limits, disclosure approval and retention remain the host's
+responsibility; raw person/benefit-unit records must not be supplied here.
 
 ```bash
-npm ci --legacy-peer-deps
-CI=true npm test -- --watchAll=false --runInBand --transformIgnorePatterns '^$' \
-  --runTestsByPath src/aggregateDataSource.test.js src/App.aggregateData.test.js src/App.aggregateCharts.test.js
+CI=true npm test -- --watchAll=false --runInBand --transformIgnorePatterns '^$' --runTestsByPath src/aggregateDataSource.test.js src/App.aggregateData.test.js src/App.aggregateCharts.test.js src/App.multiScenario.test.js
 ```
-
-These tests use fictional data and the real D3 charts. They cover chart-data
-handoff, configuration names, unavailable and
-suppressed values, source switching, late responses, absence of automatic
-connected-source requests, and preservation of the default/local workflows.
-
-
-
-Connected sources can supply several distinct scenario identities. The `names`
-object maps those identities to configuration names; labels remain plain text.
-Rows may also include the upstream paired-impact fields and wage/income-bin
-metrics. The interface preserves these values without recomputing them.
