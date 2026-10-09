@@ -3,6 +3,21 @@
  * This validates presentation data; access control and disclosure checks belong
  * to the service supplying it, before anything is sent to the browser.
  */
+import { createContext, useContext, useCallback } from "react";
+import { scenarioLabel } from "./useAggregatedData";
+
+export const ComparisonNamesContext = createContext({});
+
+/** Labels are scoped to one Visualiser instance, never global mutable state. */
+export function useComparisonLabel() {
+  const names = useContext(ComparisonNamesContext);
+  return useCallback(role => {
+    const label = role === "baseline" ? "Baseline" : scenarioLabel(role);
+    const name = sourceText(names?.[role]);
+    return name ? `${label} — ${name}` : label;
+  }, [names]);
+}
+
 const TEXT_FIELDS = [
   "scenario", "module", "variable", "variable_value", "stratifier",
   "stratifier_value", "metric_type",
@@ -10,6 +25,7 @@ const TEXT_FIELDS = [
 const NUMBER_FIELDS = [
   "n_runs", "total_sample", "min_sample", "mean_sample", "mean_value",
   "sd_value", "lower_ci", "upper_ci",
+  "paired_mean_delta", "paired_lower_ci", "paired_upper_ci", "paired_n_runs",
 ];
 const FIELDS = new Set(["year", ...TEXT_FIELDS, ...NUMBER_FIELDS]);
 
@@ -27,11 +43,12 @@ export function normaliseAggregateRows(rows) {
       if (typeof row[field] !== "string") throw new TypeError("Expected aggregate row labels.");
       result[field] = row[field];
     }
-    if (!['baseline', 'scenario'].includes(result.scenario) ||
-        !['mean', 'share'].includes(result.metric_type)) {
+    if (!result.scenario || /[\u0000-\u001f]/.test(result.scenario) ||
+        !['mean', 'share', 'wage_bin', 'income_bin'].includes(result.metric_type)) {
       throw new TypeError("Expected Baseline/Scenario aggregate metrics.");
     }
     for (const field of NUMBER_FIELDS) {
+      if (field.startsWith("paired_") && !Object.prototype.hasOwnProperty.call(row, field)) continue;
       const value = row[field];
       // JSON cannot represent NaN. Null/missing metrics retain the existing
       // chart convention for unavailable or suppressed values, rather than 0.
@@ -50,7 +67,7 @@ export function sourceText(value, fallback = "") {
 }
 
 export function comparisonLabel(role, names) {
-  const label = role === "baseline" ? "Baseline" : "Scenario";
+  const label = role === "baseline" ? "Baseline" : scenarioLabel(role);
   const name = sourceText(names?.[role]);
   return name ? `${label} — ${name}` : label;
 }

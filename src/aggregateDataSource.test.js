@@ -49,7 +49,7 @@ test.each([null, {}, "csv,text", [null], [row({ person_id: 123 })], [row({ input
 test.each([
   { year: "2020" }, { year: NaN }, { year: Infinity },
   { mean_value: "40" }, { lower_ci: Infinity }, { n_runs: true },
-  { scenario: "a configuration name" }, { metric_type: "person" },
+  { scenario: "invalid\nscenario" }, { metric_type: "person" },
   { variable: { name: "Health" } },
 ])("rejects unsupported row types or roles: %p", changes => {
   expect(() => normaliseAggregateRows([row(changes)])).toThrow(TypeError);

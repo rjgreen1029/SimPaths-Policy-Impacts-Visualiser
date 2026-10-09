@@ -22,7 +22,7 @@
  *      produces for user-uploaded data, so the rest of the app is agnostic
  *      to which source the data came from.
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 
 // ─── Label maps ───────────────────────────────────────────────────────────────
 /**
@@ -44,6 +44,10 @@ export const STRATIFIER_VALUE_LABELS = {
     "CoupleNoChildren": "Couple, no children",
     "SingleChildren":   "Single with children",
     "SingleNoChildren": "Single, no children",
+    "couplechildren":   "Couple with children",
+    "couplenochildren": "Couple, no children",
+    "singlechildren":   "Single with children",
+    "singlenochildren": "Single, no children",
   },
   "region": {
     "1":"North East","2":"North West","4":"Yorkshire and the Humber",
@@ -82,7 +86,7 @@ const GENERIC_VALUE_LABELS = { "FALSE": "No", "TRUE": "Yes" };
    1. VARIABLE / STRATIFIER DEFINITIONS
    ═══════════════════════════════════════════════════════════════════════════ */
 
-const HOUSEHOLD_TYPE_ORDER  = ["CoupleChildren","CoupleNoChildren","SingleChildren","SingleNoChildren"];
+const HOUSEHOLD_TYPE_ORDER  = ["Couple with children","Couple, no children","Single with children","Single, no children","Missing"];
 const ETHNICITY_ORDER       = ["White","Asian","Black","Mixed","Other","Missing"];
 const INCOME_QUINTILE_ORDER = ["Q1","Q2","Q3","Q4","Q5"];
 
@@ -101,22 +105,25 @@ const INCOME_QUINTILE_ORDER = ["Q1","Q2","Q3","Q4","Q5"];
  */
 export const VARIABLE_DEFS = {
   "highest level of education": { type:"ordinal",     order:["InEducation","Low","Medium","High"] },
-  //"number of children":         { type:"ordinal",     order:["None","1 Child","2 Children","3+ Children"] },
+ // "number of children":         { type:"ordinal",     order:["None","1 Child","2 Children","3+ Children"] },
   "income quintile":            { type:"ordinal",     order:INCOME_QUINTILE_ORDER },
   "self-rated health":          { type:"ordinal",     order:["Excellent","VeryGood","Good","Fair","Poor"] },
   "hours worked":                             { type:"numeric" },
-  "equivalised yearly disposable income":     { type:"numeric" },
-  // "gross personal employment income":         { type:"numeric" },
-  // "capital income":                           { type:"numeric" }, // temporarily disabled
-  "amount of benefits received per month":    { type:"numeric" },
+  "equivalised yearly disposable income":     { type:"numeric", incomeBinLabels:["£0–5k","£5–10k","£10–15k","£15–20k","£20–25k","£25–30k","£30–40k","£40–50k","£50k+"] },
+  "gross personal employment income":         { type:"numeric", incomeBinLabels:["£0–500","£500–1k","£1–1.5k","£1.5–2k","£2–2.5k","£2.5–3k","£3–4k","£4–5k","£5k+"] },
+  "capital income":                           { type:"numeric", incomeBinLabels:["£0–100","£100–500","£500–1k","£1–2k","£2k+"] },
+  "personal private pension income":          { type:"numeric", incomeBinLabels:["£0–500","£500–1k","£1–2k","£2–5k","£5k+"] },
+  "gross private pension income":             { type:"numeric", incomeBinLabels:["£0–1k","£1–2k","£2–5k","£5–10k","£10–20k","£20k+"] },
+  "hourly earnings":                          { type:"numeric" },
+  "amount of benefits received per month":    { type:"numeric", incomeBinLabels:["£0–100","£100–200","£200–300","£300–400","£400–500","£500–750","£750–1k","£1k+"] },
   "psychological distress score":             { type:"numeric" },
   "mental component summary (mcs)":           { type:"numeric" },
   "physical component summary (pcs)":         { type:"numeric" },
   "life satisfaction score":                  { type:"numeric" },
   "subjective wellbeing (ghq)":               { type:"numeric" },
   "ethnicity":           { type:"categorical", order:ETHNICITY_ORDER },
- // "household type":      { type:"categorical", order:HOUSEHOLD_TYPE_ORDER },
-  "employment status":   { type:"categorical", order:["Employed or self employed","Not employed","Retired","Student"] },
+  "household type":      { type:"categorical", order:HOUSEHOLD_TYPE_ORDER },
+  "employment status":   { type:"categorical", order:["Student","Employed or self employed","Not employed","Retired"] },
   "partnership status":  { type:"categorical", order:["Single","Partnered"] },
   "universal credit benefits flag":   { type:"categorical", order:["Benefits received","No benefits received"] },
   "financial distress flag":  { type:"categorical", order:["Financially distressed","Not financially distressed"] },
@@ -125,14 +132,16 @@ export const VARIABLE_DEFS = {
   "disability status":        { type:"categorical", order:["Has disability","No disability"] },
 };
 
-/** Same shape as VARIABLE_DEFS, but for the 7 "Stratify by" options rather than main-outcome variables. */
+/** Same shape as VARIABLE_DEFS, but for the stratifier options. */
 export const STRATIFIER_DEFS = {
-  "age":             { type:"ordinal",     order:["Under 18","18-24","25-34","35-44","45-54","55-64","65+"] },
-  "income quintile": { type:"ordinal",     order:INCOME_QUINTILE_ORDER },
-  "gender":          { type:"categorical", order:["Male","Female"] },
-  //"household type":  { type:"categorical", order:HOUSEHOLD_TYPE_ORDER },
-  "disability status":{ type:"categorical",order:["Has disability","No disability"] },
-  "ethnicity":       { type:"categorical", order:ETHNICITY_ORDER },
+  "age":                { type:"ordinal",     order:["Under 18","18-24","25-34","35-44","45-54","55-64","65+"] },
+  "income quintile":    { type:"ordinal",     order:INCOME_QUINTILE_ORDER },
+ // "number of children": { type:"ordinal",     order:["None","1 Child","2 Children","3+ Children"] },
+  "household type":     { type:"categorical", order:HOUSEHOLD_TYPE_ORDER },
+  "gender":             { type:"categorical", order:["Male","Female"] },
+  "household type":     { type:"categorical", order:HOUSEHOLD_TYPE_ORDER },
+  "disability status":  { type:"categorical", order:["Has disability","No disability"] },
+  "ethnicity":          { type:"categorical", order:ETHNICITY_ORDER },
   "region": { type:"categorical", order:[
     "South West","South East","London","East of England","East Midlands",
     "West Midlands","Yorkshire and the Humber","North West","North East",
@@ -191,56 +200,125 @@ export function orderStratifierValues(stratifier, values) {
 // (brightened slightly vs. the original palette — same hues/order, more pop)
 /** 10-colour categorical palette. Sliced in this fixed order everywhere a categorical variable needs colours, so e.g. Household Type and Employment Status (which share the same slicing logic) stay visually consistent with each other. */
 const BRAND_QUAL = [
-  "#ff867d", // coral-red
+  "#ff5d51", // coral-red
   "#0ca1c4", // teal
   "#778ffb", // indigo
   "#22a87b", // green
   "#fee77e", // yellow-gold
-  "#9b11b5", // purple
+  "#621670", // purple
   "#ff8c7d", // salmon
   "#14414e", // near-black
   "#77e4fb", // sky-blue
-  "#e35047", // dark-red
+  "#cc2d22", // dark-red
 ];
 
 // ── Sequential ramps (all start dark enough to see on white) ─────────────────
 const SEQ_TEAL   = ["#8ecfda","#2ebfd8","#0ca1c4","#08829c","#074553"];
-const SEQ_ORANGE = ["#ffc37d","#ffae7d","#ff9a7d","#ff867d","#e35047"];
+const SEQ_ORANGE = ["#ffc37d","#ffae7d","#ff9a7d","#ff5d51","#cc2d22"];
 const SEQ_GREEN  = ["#8eeecb","#2ff2b1","#0bd993","#06a472","#076e4d"];
-const SEQ_RED    = ["#ff887d","#ff867d","#f6736a","#e35047","#be1b1b"];
+const SEQ_RED    = ["#ffb0ab","#ff5d51","#f6736a","#cc2d22","#be1b1b"];
 
-// ── Diverging: red (poor/low) → neutral → teal (excellent/high) ──────────────
-// 5-stop (Q1–Q5 or Poor–Excellent), centred on mid-grey
-// Diverging red → yellow → teal — evenly spaced 5 stops
-// Q1=dark-red, Q2=coral, Q3=yellow (neutral), Q4=teal, Q5=dark-teal
-/** Income Quintile's colour ramp: Q1 (lowest) = red, Q5 (highest) = teal. Deliberately darkened/more-saturated vs. a naive brightened palette — the lighter stops (Q2/Q3) were previously too low-contrast against the cream page background. */
-const DIV_RED_TEAL = ["#d82413","#ed540c","#d8a90e","#1b9bb1","#055e71"];
+// Number of children — None=grey, then bright blues matching dashboard teal/aqua palette
+const SEQ_CHILDREN = ["#b0aaa4","#4ab8cc","#0f93a1","#055e71"];
+//                    None       1 Child   2 Children  3+
 
-// ── Education: indigo ramp, starting visibly dark ─────────────────────────────
-// Low=mid-indigo, Medium=strong indigo, High=dark indigo  (InEducation stays grey)
-const INDIGO_EDU = ["#bac3ee","#4767f5","#0c2dc0"]; // 3 stops: Low / Medium / High — spread further apart in lightness+saturation so Low/Medium are easy to tell apart
+// ── Diverging teal → orange: colourblind-safe, no red/green ──────────────────
+// Used for income quintiles (5 stops) and deciles (10 stops).
+// Poles are dashboard teal (#055e71) and coral-orange (#e8956e),
+// meeting at a light warm-neutral midpoint. Safe under deuteranopia/protanopia
+// since the discrimination is teal vs orange (blue vs yellow channel), not
+// green vs red.
+const DECILE_RAMP = [
+  "#055e71", // 1  — dark teal
+  "#0ca1c4", // 2
+  "#4ab8cc", // 3
+  "#8dcfda", // 4
+  "#c8ddd8", // 5  — light neutral mid
+  "#e8c9a0", // 6
+  "#e8b07a", // 7
+  "#e8956e", // 8
+  "#c4633a", // 9
+  "#9e3a1c", // 10 — dark orange-brown
+];
+const DIV_RED_TEAL = ["#8dcfda","#4ab8cc","#0ca1c4","#08829c","#055e71"];
 
-// ── Health: Poor→Excellent maps red→teal (diverging) ─────────────────────────
-// Order in VARIABLE_DEFS is Excellent,VeryGood,Good,Fair,Poor so reverse for colour
-// Health: Excellent=dark teal → Good=yellow → Poor=dark red
-// VeryGood sits between Excellent and Good → warm green bridge
-/** Defined but currently unused directly for Self-Rated Health — see VARIABLE_PALETTE_REF below, which reuses the (reversed) Income Quintile ramp for that variable instead. Kept here in case that choice is reverted. */
-const HEALTH_DIV = ["#08829c","#0fe899","#fee77e","#ff867d","#e35047"];
-//  Excellent      VeryGood      Good       Fair      Poor
+// ── Education: indigo ramp ────────────────────────────────────────────────────
+const INDIGO_EDU = ["#bac3ee","#4767f5","#0c2dc0"];
+
+// ── Health: desaturated — tinted rather than traffic-light ───────────────────
+// Health: teal (excellent) → orange (poor), colourblind-safe.
+// No green/red so safe under deuteranopia/protanopia.
+const HEALTH_DIV = ["#055e71","#0ca1c4","#7ab8b0","#ffb0ab","#ff5d51"];
+//                  Excellent  VeryGood   Good      Fair     Poor
+
+// ── Employment/Activity status — explicit per-value colours ──────────────────
+// Employed=green, Not employed=red, Retired=purple, Student=indigo (edu blue)
+const EMPLOYMENT_COLOURS = {
+  // Display labels (from pre-agg CSV)
+  "employed or self employed":  "#22a87b",
+  "employed or self-employed":  "#22a87b",
+  "self employed":              "#22a87b",
+  "self-employed":              "#22a87b",
+  "employed":                   "#22a87b",
+  "not employed":               "#ff5d51",
+  "not-employed":               "#ff5d51",
+  "unemployed":                 "#ff5d51",
+  "student":                    "#4767f5",
+  "in education":               "#4767f5",
+  "retired":                    "#621670",
+  // Raw SimPaths Java enum values (from local upload before recode)
+  "employedorselfemployed":     "#22a87b",
+  "selfemployed":               "#22a87b",
+  "notemployed":                "#ff5d51",
+  "unemployedbenefits":         "#ff5d51",
+  "student_enum":               "#4767f5",
+  // Numeric codes (1-4) in case raw integers pass through
+  "1":                          "#22a87b",
+  "2":                          "#ff5d51",
+  "3":                          "#621670",
+  "4":                          "#4767f5",
+};
+
+// ── Ethnicity — explicit per-value colours ────────────────────────────────────
+// White/Asian/Black/Mixed keep their natural BRAND_QUAL positions;
+// Other → purple; Missing → grey
+const ETHNICITY_COLOURS = {
+  "white":   "#0ca1c4",  // teal   (BRAND_QUAL[1])
+  "asian":   "#778ffb",  // indigo (BRAND_QUAL[2])
+  "black":   "#22a87b",  // green  (BRAND_QUAL[3])
+  "mixed":   "#14687c",  // teal-green
+  "other":   "#621670",  // purple
+  "missing": "#b0aaa4",  // grey
+};
+
+// ── Household type — purple × coral-red bivariate (Option 1) ─────────────────
+// Couple axis = purple (#621670), Single axis = coral-red (#ff5d51)
+// Children shifts toward the saturated/dark end of each axis.
+const HOUSEHOLD_COLOURS = {
+  "couple with children": "#621670",  // full purple
+  "couple, no children":  "#c99dd1",  // light purple
+  "couple no children":   "#c99dd1",  // alternate label
+  "single with children": "#cc2d22",  // dark coral-red
+  "single, no children":  "#ffb0ab",  // light coral
+  "single no children":   "#ffb0ab",  // alternate label
+  "missing":              "#8a8480",  // grey for null/unclassified
+  "null":                 "#8a8480",
+};
 
 const RAMPS = { teal:SEQ_TEAL, orange:SEQ_ORANGE, green:SEQ_GREEN, red:SEQ_RED, blues:SEQ_TEAL,
-  health:HEALTH_DIV, purple:["#db99e3","#c94bd9","#bd0cc8","#9b07a6","#9b11b5"] };
+  health:HEALTH_DIV, purple:["#d4a8de","#b362c4","#8e2098","#6e1580","#621670"],
+  children:SEQ_CHILDREN };
 
-/** Per-variable overrides for buildColourMap() — anything not listed here falls back to the generic type-based default (SEQ_TEAL for ordinal, BRAND_QUAL for categorical, solid teal for numeric). */
+/** Per-variable overrides for buildColourMap() */
 const VARIABLE_PALETTE_REF = {
-  "income quintile":   DIV_RED_TEAL,  // Q1(low)=red … Q5(high)=teal
-  "self-rated health": [...DIV_RED_TEAL].reverse(),    // Excellent=teal … Poor=red
-  "number of children":SEQ_GREEN,
-  // household type & employment status → categorical (BRAND_QUAL), handled below
+  "income quintile":    DIV_RED_TEAL,
+  "income decile":      DECILE_RAMP,
+  "self-rated health":  HEALTH_DIV,
+  "number of children": SEQ_CHILDREN,
 };
 
 // Binary variables — distinctive coral/teal pair, both clearly visible on white
-const BINARY_PAIR = ["#ff867d","#0ca1c4"];
+const BINARY_PAIR = ["#ff5d51","#0ca1c4"];
 // Warm mid-grey for "In Education" (not cold, not too light)
 const EDU_GREY = "#8a8078";
 
@@ -295,27 +373,14 @@ export function buildColourMap(targetVariable, variableValues) {
   const varKey = normKey(targetVariable);
   const map = {};
 
-  // ── Numeric variables FIRST — always solid teal, no other path can intercept ──
-  // Check both spelled and misspelled variants since parseCore uses correct spelling
-  const isNumeric = def.type === "numeric"
-    || varKey.includes("income") && !varKey.includes("quintile")
-    || varKey.includes("hours")
-    || varKey.includes("benefits received per month") // both spellings
-    || varKey.includes("benefits recieved per month")
-    || varKey.includes("score")
-    || varKey.includes("summary")
-    || varKey.includes("distress")
-    || varKey.includes("wellbeing")
-    || varKey.includes("satisfaction")
-    || varKey.includes("pension");
-  // Re-derive def using both spellings
+  // ── Numeric variables FIRST ───────────────────────────────────────────────
   const defCheck = getVariableDef(targetVariable) || getVariableDef(targetVariable.replace("received","recieved"));
   if (defCheck.type === "numeric") {
     ordered.forEach(v => { map[v] = "#0ca1c4"; });
     return map;
   }
 
-  // ── Education: InEducation=warm grey, Low/Medium/High=indigo ramp ──────────
+  // ── Education: InEducation=warm grey, Low/Medium/High=indigo ramp ─────────
   if (varKey === "highest level of education") {
     const ranked = ["low","medium","high"];
     const rankedVals = ordered.filter(v => ranked.includes(normKey(v)));
@@ -328,28 +393,55 @@ export function buildColourMap(targetVariable, variableValues) {
     return map;
   }
 
-  // ── Binary (exactly 2 values): coral + teal, always visible on white ───────
+  // ── Ethnicity: explicit per-value map; Missing=grey, Other=purple ─────────
+  if (varKey === "ethnicity") {
+    ordered.forEach(v => {
+      map[v] = ETHNICITY_COLOURS[normKey(v)] ?? QUAL[0];
+    });
+    return map;
+  }
+
+  // ── Employment / Activity status: explicit per-value map ──────────────────
+  if (varKey === "employment status") {
+    ordered.forEach(v => {
+      map[v] = EMPLOYMENT_COLOURS[normKey(v)] ?? QUAL[0];
+    });
+    return map;
+  }
+
+  // ── Household type: Stevens green-blue bivariate palette ─────────────────
+  if (varKey === "household type") {
+    ordered.forEach(v => {
+      map[v] = HOUSEHOLD_COLOURS[normKey(v)] ?? QUAL[0];
+    });
+    return map;
+  }
+
+  // ── Number of children: None=grey, 1/2/3+ = bright blues matching dashboard aqua/teal ─
+  if (varKey === "number of children") {
+    const childRamp = ["#4ab8cc","#0f93a1","#055e71"]; // bright→dark for 1, 2, 3+
+    const nonNone = ordered.filter(v => normKey(v) !== "none");
+    const palette = resolvePalette(childRamp, nonNone.length);
+    ordered.forEach(v => {
+      map[v] = normKey(v) === "none" ? "#b0aaa4" : palette[nonNone.indexOf(v)];
+    });
+    return map;
+  }
+
+  // ── Binary (exactly 2 values) ─────────────────────────────────────────────
   if (ordered.length === 2) {
     ordered.forEach((v,i) => { map[v] = BINARY_PAIR[i]; });
     return map;
   }
 
-  // ── Household type & employment status → categorical, same colour order as ethnicity ──
-  // Slice first N directly from BRAND_QUAL so colours match what ethnicity uses
-  if (varKey === "household type" || varKey === "employment status") {
-    ordered.forEach((v,i) => { map[v] = BRAND_QUAL[i % BRAND_QUAL.length]; });
-    return map;
-  }
-
-  // ── Specific palette references ────────────────────────────────────────────
+  // ── Specific palette references (number of children, self-rated health, income quintile) ──
   const ref = VARIABLE_PALETTE_REF[varKey]
-    || (def.type === "ordinal"    ? SEQ_TEAL
+    || (def.type === "ordinal"     ? SEQ_TEAL
       : def.type === "categorical" ? QUAL
-      : def.type === "numeric"    ? "#0ca1c4"
+      : def.type === "numeric"     ? "#0ca1c4"
       : QUAL);
 
   if (typeof ref === "string") { ordered.forEach(v => { map[v] = ref; }); return map; }
-  // For pure categorical, slice directly from QUAL so index 0=coral, 1=teal etc. (no spreading)
   if (def.type === "categorical") {
     ordered.forEach((v,i) => { map[v] = BRAND_QUAL[i % BRAND_QUAL.length]; });
     return map;
@@ -360,7 +452,7 @@ export function buildColourMap(targetVariable, variableValues) {
 }
 
 /** Muted grey used for any series that's present on a chart but not currently highlighted (see the "allLit"/highlighted logic in DashboardSection.js). Deliberately NOT brightened along with the rest of the palette — it needs to stay visually receded relative to whatever IS highlighted. */
-export const GREY = "#b0aaa4";
+export const GREY = "#8a8480";
 
 /* ═══════════════════════════════════════════════════════════════════════════
    3. DATA HOOK
@@ -374,15 +466,64 @@ export const GREY = "#b0aaa4";
  * @param {string} targetVariable - the variable currently selected in the sidebar
  * @returns {{baselineData: object[], scenarioData: object[]}}
  */
+/**
+ * Returns baseline rows and a Map of scenarioName → rows for all non-baseline
+ * scenarios present in parsedCache for the given variable.
+ *
+ * Scenario names are the raw lowercase values from the `scenario` column,
+ * e.g. "scenario", "scenario_2", or whatever the R script / folder name
+ * produced. The Map preserves insertion order so charts render scenarios
+ * consistently.
+ */
 export function useAggregatedData(parsedCache, targetVariable) {
   const [baselineData, setBaselineData] = useState([]);
-  const [scenarioData, setScenarioData] = useState([]);
+  const [scenarioMap,  setScenarioMap]  = useState(new Map()); // scenarioName → rows[]
   useEffect(() => {
-    if (!parsedCache || !parsedCache.length) { setBaselineData([]); setScenarioData([]); return; }
-    setBaselineData(parsedCache.filter(r => r.scenario==="baseline" && r.variable===targetVariable));
-    setScenarioData(parsedCache.filter(r => r.scenario==="scenario" && r.variable===targetVariable));
+    if (!parsedCache || !parsedCache.length) {
+      setBaselineData([]); setScenarioMap(new Map()); return;
+    }
+    const varRows = parsedCache.filter(r => r.variable === targetVariable);
+    setBaselineData(varRows.filter(r => r.scenario === "baseline"));
+    // Collect all non-baseline scenario names in order of first appearance
+    const names = [];
+    const seen  = new Set();
+    for (const r of varRows) {
+      if (r.scenario !== "baseline" && !seen.has(r.scenario)) {
+        names.push(r.scenario); seen.add(r.scenario);
+      }
+    }
+    const map = new Map();
+    for (const name of names) map.set(name, varRows.filter(r => r.scenario === name));
+    setScenarioMap(map);
   }, [parsedCache, targetVariable]);
-  return { baselineData, scenarioData };
+  // Convenience: first scenario's rows as "scenarioData" for backwards compat
+  // with any code that still reads it directly.
+  const scenarioData = useMemo(() => [...scenarioMap.values()][0] ?? [], [scenarioMap]);
+  return { baselineData, scenarioData, scenarioMap };
+}
+
+/** Returns the sorted list of unique non-baseline scenario names across the whole parsedCache. */
+export function useScenarioNames(parsedCache) {
+  return useMemo(() => {
+    if (!parsedCache?.length) return [];
+    const names = [], seen = new Set();
+    for (const r of parsedCache) {
+      if (r.scenario !== "baseline" && !seen.has(r.scenario)) {
+        names.push(r.scenario); seen.add(r.scenario);
+      }
+    }
+    return names;
+  }, [parsedCache]);
+}
+
+/** Human-readable label for a scenario name from the data (e.g. "scenario" → "Scenario", "scenario_education" → "Scenario: Education") */
+export function scenarioLabel(name) {
+  if (!name) return "";
+  if (name === "scenario") return "Scenario";
+  return name
+    .replace(/^scenario[_-]?/i, "Scenario: ")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, c => c.toUpperCase());
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -453,6 +594,24 @@ export function averageAcrossYears(rows) {
 export function parseCsvRow(d) {
   let variable=d.variable||d.Variable;
   let variable_value=d.variable_value||d.Variable_Value||d.variable_values||d.value;
+
+  // Rename null/NA/empty variable_value to "Missing"
+  if (!variable_value||variable_value==="null"||variable_value==="NA"||variable_value==="NaN") {
+    variable_value="Missing";
+  }
+
+  // Recode Household Type numeric codes / raw labels to canonical display names
+  if (variable==="Household Type"||variable==="household type") {
+    const HH_RECODE={
+      "1":"Couple with children","2":"Couple, no children",
+      "3":"Single with children","4":"Single, no children",
+      "couplechildren":"Couple with children","couplenochildren":"Couple, no children",
+      "singlechildren":"Single with children","singlenochildren":"Single, no children",
+    };
+    // Strip spaces, commas, hyphens, underscores for fuzzy match
+    const key=(variable_value||"").toLowerCase().replace(/[\s\-_,]/g,"");
+    variable_value=HH_RECODE[key]||variable_value;
+  }
   // The bundled default CSV (SimPaths_All_Aggregated_Outputs.csv) predates
   // this variable being renamed from "UC Benefits Flag" to "Universal
   // Credit Benefits Flag" everywhere else in the app (App.js, parseCore.js,
@@ -501,10 +660,14 @@ export function parseCsvRow(d) {
     total_sample:     +(d.total_sample   ?? d["Total Sample: Across Runs"])   || 0,
     min_sample:       +(d.min_sample     ?? d["Minimum Sample: Across Runs"]) || 0,
     mean_sample:      +(d.mean_sample    ?? d["Average Sample: Across Runs"]) || 0,
-    mean_value:       parseMaybeNaN(d.mean_value),
-    sd_value:         parseMaybeNaN(d.sd_value),
-    lower_ci:         parseCI(d.ci_lower ?? d.lower_ci),
-    upper_ci:         parseCI(d.ci_upper ?? d.upper_ci),
+    mean_value:         parseMaybeNaN(d.mean_value),
+    sd_value:           parseMaybeNaN(d.sd_value),
+    lower_ci:           parseCI(d.ci_lower ?? d.lower_ci),
+    upper_ci:           parseCI(d.ci_upper ?? d.upper_ci),
+    paired_mean_delta:  parseMaybeNaN(d.paired_mean_delta),
+    paired_lower_ci:    parseCI(d.paired_lower_ci ?? d.paired_ci_lower),
+    paired_upper_ci:    parseCI(d.paired_upper_ci ?? d.paired_ci_upper),
+    paired_n_runs:      +(d.paired_n_runs ?? 0) || 0,
   };
 }
 /** Parses a numeric field that may legitimately be missing/suppressed (empty string, "NaN", "NA") — returns NaN rather than 0 for those, so suppressed estimates aren't mistaken for a real zero value downstream. */

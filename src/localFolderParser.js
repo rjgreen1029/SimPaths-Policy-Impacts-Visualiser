@@ -2,224 +2,126 @@
  * localFolderParser.js — Entry point for "Visualise Your Own Data": turns a
  * user-selected directory (via the File System Access API) into the same
  * aggregated row shape the dashboard normally gets from the default CSV.
- *
- * Pipeline: discoverBranches → collect run folders → locateRunFiles (cheap,
- * directory-listing only) → dispatchToWorkers (expensive — reads + parses +
- * aggregates every run) → performCrossRunAggregation (combines all runs into
- * final rows with cross-run means/SDs/95% CIs).
- *
- * Directory scanning + file-handle discovery stays on the main thread (cheap:
- * no file content is read here). Actual CSV reading + parsing + aggregating is
- * dispatched to a worker pool so multiple runs are read and processed in
- * parallel across CPU cores, and each worker only ever holds one run's file
- * text in memory at a time — never the whole dataset at once. Falls back to
- * main-thread, one-run-at-a-time processing if Workers aren't supported
- * (e.g. file:// without COOP headers).
  */
 
-import { performCrossRunAggregation, processRunTexts } from "./parseCore.js";
+import { createGroupedAccumulator, accumulateRunMetrics, finaliseAggregation, processRunFiles } from "./parseCore.js";
 
-const WORKER_COUNT = Math.min(navigator.hardwareConcurrency || 4, 8);
-// How many runs to batch per worker message (tune if runs are very small/large)
-const BATCH_SIZE = 2;
-
-// ─── Main entry point ─────────────────────────────────────────────────────────
-/**
- * Parses a user-selected simulation output folder into aggregated dashboard
- * rows (same shape as the default pre-aggregated CSV).
- *
- * Expects `directoryHandle` to contain "Baseline" and/or "Scenario"
- * subfolders (case-insensitive), each containing one subfolder per model
- * run. See parseCore.js's COLUMN_MAP for the expected raw column names.
- *
- * @param {FileSystemDirectoryHandle} directoryHandle - the folder the user picked
- * @param {(msg: string) => void} onProgress - called with human-readable progress updates
- * @returns {Promise<object[]>} final aggregated rows, ready for the dashboard
- * @throws if no Baseline/Scenario folders, no runs, no valid person+benefit
- *         CSV pairs, or no usable data rows are found at any stage
- */
 export async function parseLocalFolder(directoryHandle, onProgress) {
-  // 1. Discover branches (baseline / scenario)
+  // 1. Discover branches (baseline / scenario subfolders)
   const branches = [];
+  let hasBaseline = false;
   for await (const entry of directoryHandle.values()) {
-    if (entry.kind==="directory") {
-      const n = entry.name.toLowerCase();
-      if (n==="baseline"||n==="scenario") branches.push({ scenarioName:n, handle:entry });
+    if (entry.kind !== "directory") continue;
+    const n = entry.name.toLowerCase();
+    if (n === "baseline") {
+      hasBaseline = true;
+      branches.push({ scenarioName: "baseline", handle: entry });
+    } else {
+      const scenName = n.replace(/\s+/g, "_");
+      branches.push({ scenarioName: scenName, handle: entry });
     }
   }
-  if (!branches.length) throw new Error("Could not find 'Baseline' or 'Scenario' subfolders.");
+  if (!hasBaseline) throw new Error("Could not find a 'Baseline' subfolder. The root folder must contain a folder named exactly 'Baseline'.");
+  if (branches.length < 2) throw new Error("Could not find any scenario subfolder alongside 'Baseline'. Add at least one other subfolder.");
 
-  // 2. Collect all run descriptors
+
+  // 2. Collect run descriptors
+  const SEED_RE = /_(\d{3,})_/;
   const runJobs = [];
-  let runIdCounter = 0;
+  const skippedNames = [];
   for (const { scenarioName, handle } of branches) {
     for await (const runEntry of handle.values()) {
-      if (runEntry.kind==="directory") {
-        runJobs.push({ scenarioName, runEntry, runId:++runIdCounter });
-      }
+      if (runEntry.kind !== "directory") continue;
+      const m = SEED_RE.exec(runEntry.name);
+      const runId = m ? m[1] : runEntry.name;
+      runJobs.push({ scenarioName, runEntry, runId });
     }
+  }
+  if (skippedNames.length) {
+    onProgress(`Warning: ${skippedNames.length} folder(s) skipped: ${skippedNames.slice(0,3).join(", ")}`);
   }
   if (!runJobs.length) throw new Error("No run subdirectories found inside Baseline/Scenario.");
 
+  // Validate seed overlap
+  const seedsByScenario = {};
+  for (const { scenarioName, runId } of runJobs) {
+    if (!seedsByScenario[scenarioName]) seedsByScenario[scenarioName] = new Set();
+    seedsByScenario[scenarioName].add(runId);
+  }
+  const baseSeeds = seedsByScenario["baseline"] ?? new Set();
+  for (const sName of Object.keys(seedsByScenario).filter(s => s !== "baseline")) {
+    const overlap = [...baseSeeds].filter(s => seedsByScenario[sName].has(s));
+    if (!overlap.length) onProgress(`Warning: no matching seeds between baseline and ${sName}.`);
+    else if (overlap.length < baseSeeds.size) {
+      onProgress(`Warning: only ${overlap.length} of ${baseSeeds.size} baseline seeds matched in ${sName}.`);
+    }
+  }
+
   const total = runJobs.length;
   let done = 0;
-  onProgress(`Found ${total} run(s). Locating files…`);
+  onProgress(`Found ${total} run(s). Reading and aggregating…`);
 
-  // 3. Locate each run's CSV file handles on the main thread. This is a
-  //    directory-listing pass only — no file content is read here — so it
-  //    stays cheap and fast no matter how large the CSVs themselves are.
-  const runHandles = [];
+  // 3+4. Read and process each run serially — one run in memory at a time
+  const grouped = createGroupedAccumulator();
+  let processed = 0;
+  const warnings = [];
+
   for (const job of runJobs) {
-    const handles = await locateRunFiles(job);
-    if (handles) runHandles.push({ ...job, ...handles });
+    try {
+      const { personEntry, benefitText } = await locateRunFiles(job);
+      const metrics = await processRunFiles(personEntry, benefitText, job.scenarioName, job.runId);
+      accumulateRunMetrics(grouped, metrics);
+      processed++;
+    } catch (e) {
+      warnings.push(`${job.scenarioName}/${job.runId}: ${e.message}`);
+    }
     done++;
-    if (done % 10 === 0 || done===total) onProgress(`Locating files… ${done}/${total}`);
+    if (done % 2 === 0 || done === total) onProgress(`Aggregating… ${done}/${total} runs`);
   }
 
-  if (!runHandles.length) throw new Error("No person+benefit CSV pairs found in any run folder.");
+  if (warnings.length) {
+    onProgress(`Warning: ${warnings.length} run(s) failed — ${warnings[0]}${warnings.length > 1 ? ` (+${warnings.length - 1} more)` : ""}`);
+  }
+  if (!processed) {
+    throw new Error(`No runs were successfully processed (${total} attempted).\nErrors: ${warnings.slice(0,3).join(" | ")}`);
+  }
 
-  // 4. Dispatch to worker pool (or fall back to main thread). File contents
-  //    are only read inside dispatchToWorkers/mainThreadFallback, one run (or
-  //    one small batch) at a time — never all runs simultaneously.
-  onProgress("Aggregating data across runs…");
-  const allMetrics = await dispatchToWorkers(runHandles, onProgress, total);
-
-  if (!allMetrics.length) throw new Error("No usable data rows after aggregation.");
+  if (!grouped.size) throw new Error("No usable data rows after aggregation.");
   onProgress("Computing confidence intervals…");
-  return performCrossRunAggregation(allMetrics);
+  return finaliseAggregation(grouped);
 }
 
-// ─── File discovery (main thread, no file reads) ──────────────────────────────
-/**
- * Finds the person + benefit CSV file handles for a single run, without
- * reading any file content. Looks inside a "csv" subfolder if present,
- * otherwise directly inside the run folder. Matching is by substring
- * ("person" / "benefit" in the filename, case-insensitive) rather than an
- * exact name, so this tolerates whatever naming convention the simulation
- * output actually used.
- *
- * @returns {Promise<{personHandle, benefitHandle}|null>} null if either file is missing
- */
 async function locateRunFiles({ runEntry }) {
+  // Fully exhaust the iterator — no break — to avoid Chrome handle corruption
   let targetDir = runEntry;
   for await (const sub of runEntry.values()) {
-    if (sub.kind==="directory" && sub.name.toLowerCase()==="csv") { targetDir=sub; break; }
-  }
-  let personHandle=null, benefitHandle=null;
-  for await (const fileEntry of targetDir.values()) {
-    if (fileEntry.kind!=="file" || !fileEntry.name.toLowerCase().endsWith(".csv")) continue;
-    const n = fileEntry.name.toLowerCase();
-    if (n.includes("person"))       personHandle  = fileEntry;
-    else if (n.includes("benefit")) benefitHandle = fileEntry;
-  }
-  if (!personHandle||!benefitHandle) return null;
-  return { personHandle, benefitHandle };
-}
-
-// ─── Worker pool dispatch ─────────────────────────────────────────────────────
-// FileSystemFileHandle is structured-clone-serializable, so posting handles to
-// workers is a cheap reference copy — not a copy of the file's contents. Each
-// worker reads, parses, and discards one run's text at a time (see
-// parseWorker.js), so peak memory stays bounded by roughly WORKER_COUNT runs'
-// worth of CSV text, rather than ALL runs' worth as before.
-/**
- * Splits runHandles into batches of BATCH_SIZE, spins up a pool of up to
- * WORKER_COUNT Web Workers, and keeps every worker continuously fed with the
- * next unclaimed batch until all batches are processed (a simple work-stealing
- * pool, not a fixed 1:1 batch-to-worker assignment). Falls back to
- * mainThreadFallback() if Worker construction itself fails (e.g. some
- * file://-without-COOP-headers setups).
- *
- * @param {object[]} runHandles - output of locateRunFiles(), one entry per run
- * @param {(msg: string) => void} onProgress
- * @param {number} total - total run count, for progress messages
- * @returns {Promise<object[]>} combined per-run metrics from every worker
- */
-async function dispatchToWorkers(runHandles, onProgress, total) {
-  let useWorkers = true;
-  try {
-    const testWorker = new Worker(new URL("./parseWorker.js", import.meta.url), { type:"module" });
-    testWorker.terminate();
-  } catch {
-    useWorkers = false;
-  }
-
-  if (!useWorkers) {
-    return mainThreadFallback(runHandles, onProgress, total);
-  }
-
-  // Split into batches
-  const batches = [];
-  for (let i=0; i<runHandles.length; i+=BATCH_SIZE) {
-    batches.push(runHandles.slice(i, i+BATCH_SIZE).map(r => ({
-      personHandle:  r.personHandle,
-      benefitHandle: r.benefitHandle,
-      scenarioName:  r.scenarioName,
-      runId:         r.runId,
-    })));
-  }
-
-  const allMetrics = [];
-  let runsProcessed = 0;
-
-  // Pool: keep WORKER_COUNT workers busy
-  const pool = Array.from({ length: Math.min(WORKER_COUNT, batches.length) }, () =>
-    new Worker(new URL("./parseWorker.js", import.meta.url), { type:"module" })
-  );
-
-  await new Promise((resolve, reject) => {
-    let batchIndex = 0;
-    let active = 0;
-
-    function assignNext(worker) {
-      if (batchIndex >= batches.length) {
-        active--;
-        if (active===0) resolve();
-        return;
-      }
-      const batch = batches[batchIndex++];
-      active++;
-      worker.onmessage = ({ data }) => {
-        if (data.error) { reject(new Error(data.error)); return; }
-        allMetrics.push(...data.metrics);
-        runsProcessed = Math.min(runsProcessed + batch.length, total);
-        onProgress(`Aggregating… ${runsProcessed}/${total} runs`);
-        assignNext(worker);
-      };
-      worker.onerror = (e) => reject(new Error(e.message || "A worker failed while processing a run."));
-      worker.postMessage({ runs: batch });
+    if (sub.kind === "directory" && sub.name.toLowerCase() === "csv") {
+      targetDir = sub;
     }
-
-    pool.forEach(w => assignNext(w));
-  });
-
-  pool.forEach(w => w.terminate());
-  return allMetrics;
-}
-
-// ─── Main-thread fallback ──────────────────────────────────────────────────────
-// Reads and processes one run at a time, so only a single run's CSV text is
-// ever resident in memory even though there's no worker pool to spread the
-// work across.
-/**
- * Serial, single-threaded equivalent of dispatchToWorkers() — used when Web
- * Workers aren't available. Same output shape, just slower and without
- * parallelism, since it processes one run at a time on the main thread.
- *
- * @returns {Promise<object[]>} combined per-run metrics
- */
-async function mainThreadFallback(runHandles, onProgress, total) {
-  const allMetrics = [];
-  let i = 0;
-  for (const r of runHandles) {
-    const [personText, benefitText] = await Promise.all([
-      r.personHandle.getFile().then(f => f.text()),
-      r.benefitHandle.getFile().then(f => f.text()),
-    ]);
-    const metrics = processRunTexts(personText, benefitText, r.scenarioName, r.runId);
-    allMetrics.push(...metrics);
-    i++;
-    if (i % 3===0 || i===total) onProgress(`Aggregating… ${i}/${total} runs`);
   }
-  return allMetrics;
+
+  // Fully exhaust target directory iterator before touching any handle
+  const allEntries = [];
+  for await (const entry of targetDir.values()) {
+    allEntries.push(entry);
+  }
+
+  const csvEntries   = allEntries.filter(e => e.kind === "file" && e.name.toLowerCase().endsWith(".csv"));
+  const personEntry  = csvEntries.find(e => e.name.toLowerCase().includes("person"));
+  const benefitEntry = csvEntries.find(e => e.name.toLowerCase().includes("benefit"));
+
+  if (!personEntry || !benefitEntry) {
+    throw new Error(
+      `Could not find person+benefit CSV pair in ${runEntry.name}. ` +
+      `CSV files found: ${csvEntries.map(e => e.name).join(", ") || "(none)"}`
+    );
+  }
+
+  // Read sequentially using arrayBuffer+TextDecoder — avoids Chrome .text() bug
+  // Benefit CSV is small — read as text. Person CSV is huge — pass the handle
+  // to parsePersonCsvStream in parseCore.js which reads it in 32MB chunks.
+  const benefitFile = await benefitEntry.getFile();
+  const benefitText = await benefitFile.text();
+
+  return { personEntry, benefitText };
 }

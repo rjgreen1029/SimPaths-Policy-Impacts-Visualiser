@@ -4,6 +4,9 @@ import { comparisonLabel, sourceText } from "./aggregateDataSource";
 export default function AggregateDataPanel({ source, error, rowCount }) {
   const label = sourceText(source?.label, "Connected results");
   const message = sourceText(source?.message);
+  const scenarios = [...new Set((Array.isArray(source?.rows) ? source.rows : []).map(row => row?.scenario)
+    .filter(role => typeof role === "string" && role !== "baseline"))];
+  if (!scenarios.length) scenarios.push("scenario");
   return (
     <div>
       <p style={{ margin: "0 0 12px", fontSize: 12, lineHeight: 1.5 }}>
@@ -18,7 +21,7 @@ export default function AggregateDataPanel({ source, error, rowCount }) {
       <section aria-label="Displayed data source" style={{ fontSize: 12, lineHeight: 1.5 }}>
         <strong>Data source: {label}</strong>
         <p>{comparisonLabel("baseline", source?.names)}</p>
-        <p>{comparisonLabel("scenario", source?.names)}</p>
+        {scenarios.map(role => <p key={role}>{comparisonLabel(role, source?.names)}</p>)}
       </section>
     </div>
   );

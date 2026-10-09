@@ -78,7 +78,7 @@ test("a new comparison identity resets real chart filters while preserving canon
   const rows = fictionalRows();
   const { container, rerender } = render(<App dataSource={source(rows)} />);
   await waitFor(() => expect(linePaths(container)).toHaveLength(4));
-  fireEvent.click(screen.getByRole("button", { name: "Scenario", exact: true }));
+  fireEvent.click(screen.getByRole("button", { name: "Scenario — Low Savings", exact: true }));
   await waitFor(() => expect(linePaths(container)).toHaveLength(2));
   rerender(<App dataSource={source(rows.map(row => ({ ...row, year: row.year + 2 })), "fictional-2")} />);
   await waitFor(() => expect(linePaths(container)).toHaveLength(4));
@@ -88,7 +88,7 @@ test("a new comparison identity resets real chart filters while preserving canon
 test("JSON-null estimates are not plotted as zero-valued observations", async () => {
   const rows = fictionalRows().map(row => ({ ...row, mean_value: null, lower_ci: null, upper_ci: null }));
   const { container } = render(<App dataSource={source(rows)} />);
-  expect(await screen.findByRole("button", { name: "Scenario", exact: true })).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: "Scenario — Low Savings", exact: true })).toBeInTheDocument();
   expect(linePaths(container)).toHaveLength(0);
   expect(rows[0].mean_value).toBeNull();
 });
@@ -97,9 +97,9 @@ test("the host can remove an active difference view and return to the unchanged 
   const rows = fictionalRows();
   const { container, rerender } = render(<App dataSource={source(rows)} />);
   fireEvent.click(screen.getByRole("button", { name: "Δ Baseline → Scenario" }));
-  expect(screen.getByText("Scenario minus Baseline. Positive = scenario is higher.")).toBeInTheDocument();
+  expect(screen.getByText(/Scenario minus Baseline\. Positive = scenario is higher\./)).toBeInTheDocument();
   rerender(<App dataSource={{ ...source(rows), showDelta: false }} />);
   expect(screen.queryByRole("button", { name: "Δ Baseline → Scenario" })).not.toBeInTheDocument();
-  expect(screen.queryByText("Scenario minus Baseline. Positive = scenario is higher.")).not.toBeInTheDocument();
+  expect(screen.queryByText(/Scenario minus Baseline\. Positive = scenario is higher\./)).not.toBeInTheDocument();
   await waitFor(() => expect(linePaths(container)).toHaveLength(4));
 });
