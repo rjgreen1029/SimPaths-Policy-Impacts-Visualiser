@@ -258,7 +258,7 @@ application may pass an optional `dataSource` prop to `App`:
   label: "Online results",
   rows: aggregateRows,
   names: { baseline: "Reference", scenario_1: "Policy A", scenario_2: "Policy B" },
-  status: "",
+  message: "",
   notice: "",
   showDelta: true,
   navigation: <a href="/results">Return to results</a>,
