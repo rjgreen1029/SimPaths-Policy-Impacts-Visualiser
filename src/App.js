@@ -700,7 +700,7 @@ function App({ dataSource } = {}) {
                   <p style={{margin:0,fontSize:12.5,color:TEXT_MID}}>Fetching and parsing the pre-aggregated dataset — this may take a few moments.</p>
                   <style>{`@keyframes loadbar{0%{width:0%;margin-left:0}60%{width:80%;margin-left:0}100%{width:0%;margin-left:100%}}`}</style>
                 </div>
-              : (!hasDataSource || displayedRows.length > 0) && <DashboardSection key={hasDataSource ? `connected:${sourceText(dataSource.key, "default")}` : "standalone"} showDelta={!hasDataSource || dataSource.showDelta !== false} parsedCache={displayedRows} targetVariable={activeVariable} bgBase={BG} bgDark={BG_DARK} bgPanel={BG_PANEL} />
+              : (!hasDataSource || displayedRows.length > 0 || (dataSource.viewSource && !connectedData.error)) && <DashboardSection key={hasDataSource ? `connected:${sourceText(dataSource.key, "default")}` : "standalone"} showDelta={!hasDataSource || dataSource.showDelta !== false} viewSource={dataSource?.viewSource} parsedCache={displayedRows} targetVariable={activeVariable} bgBase={BG} bgDark={BG_DARK} bgPanel={BG_PANEL} />
             }
           </div>
         </div>

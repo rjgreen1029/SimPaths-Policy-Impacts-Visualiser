@@ -27,6 +27,7 @@ import React, { createContext, useContext, useState, useRef, useEffect, useMemo,
 import * as d3 from "d3";
 import { setTooltipContent } from "./tooltipContent.js";
 import { useComparisonLabel } from "./aggregateDataSource";
+import { useAggregateView } from "./useAggregateView";
 import {
   useAggregatedData, useScenarioNames,
   uniqueValues, stratLabel, averageAcrossYears,
@@ -2798,10 +2799,10 @@ function ScenarioToggles({showBaseline,setShowBaseline,allScenarioNames,enabledS
   </div>);
 }
 
-export default function DashboardSection({parsedCache,targetVariable,showDelta=true}){
+export default function DashboardSection({parsedCache:fullRows,targetVariable,showDelta=true,viewSource}){
   const scenarioLabel=useComparisonLabel();
-  const {baselineData,scenarioData,scenarioMap}=useAggregatedData(parsedCache,targetVariable);
-  const allScenarioNames=useScenarioNames(parsedCache);
+  const localScenarioNames=useScenarioNames(fullRows);
+  const allScenarioNames=viewSource?.scenarioNames||localScenarioNames;
 
   // Pyramid rows use metric_type="pyramid_bin" (variable="Age",
   // stratifier="Gender") — filter specifically on that type so regular Age
@@ -2811,9 +2812,6 @@ export default function DashboardSection({parsedCache,targetVariable,showDelta=t
   const isPyramidRow = r =>
     r.metric_type==="pyramid_bin" ||
     (r.variable==="Age" && r.stratifier==="Gender" && (r.metric_type==="share"||r.metric_type==="mean"));
-  const pyramidBaseData=useMemo(()=>
-    parsedCache.filter(r=>r.scenario==="baseline"&&isPyramidRow(r)),
-  [parsedCache]);
   const [viewBy,        setViewBy]        =useState("Overall");
   const [chartType,     setChartType]     =useState("line");
   const [displayMode,   setDisplayMode]   =useState("panels");
@@ -2825,8 +2823,25 @@ export default function DashboardSection({parsedCache,targetVariable,showDelta=t
   const [enabledVarVals,setEnabledVarVals]=useState(new Set());
   const [highlighted,   setHighlighted]   =useState(new Set());
   const [showBaseline,  setShowBaseline]  =useState(true);
-  const [enabledScenarios,setEnabledScenarios]=useState(new Set()); // scenario names currently shown
+  const [enabledScenarios,setEnabledScenarios]=useState(()=>new Set(allScenarioNames)); // scenario names currently shown
   const [showCI,        setShowCI]        =useState(true);
+
+  // Only connected hosts opt in. Rows already contain the maintained
+  // calculations; selecting a section does not aggregate or recompute them.
+  const [showWageDist,     setShowWageDist]     =useState(false);
+  const [showAllYearsDist, setShowAllYearsDist] =useState(false);
+  const pyramidView=targetVariable==="Population Pyramid"||(targetVariable==="Age"&&activeTab==="pyramid");
+  const view=useAggregateView(viewSource,{
+    variable:pyramidView?"Age":targetVariable,
+    stratifier:pyramidView?"Gender":viewBy,
+    kind:pyramidView?"pyramid_bin":showWageDist&&activeTab!=="delta"?"wage_bin":"levels",
+    scenarios:allScenarioNames.filter(name=>enabledScenarios.has(name)),
+  },fullRows);
+  const parsedCache=view.rows;
+  const {baselineData,scenarioData,scenarioMap}=useAggregatedData(parsedCache,targetVariable);
+  const pyramidBaseData=useMemo(()=>
+    parsedCache.filter(r=>r.scenario==="baseline"&&isPyramidRow(r)),
+  [parsedCache]);
 
   const pyramidScenData=useMemo(()=>{
     const firstEnabled=[...enabledScenarios][0]??allScenarioNames[0];
@@ -2845,8 +2860,6 @@ export default function DashboardSection({parsedCache,targetVariable,showDelta=t
     return m.size>0?m:null;
   },[parsedCache,allScenarioNames]);
   // Wage distribution chart: toggle between single-year histogram and all-years small multiples
-  const [showWageDist,     setShowWageDist]     =useState(false);
-  const [showAllYearsDist, setShowAllYearsDist] =useState(false);
 
   const lineRef=useRef(), barRef=useRef(), wageDistRef=useRef(), pyramidRef=useRef(), deltaCsRef=useRef();
   const containerRef=useRef();
@@ -2943,17 +2956,31 @@ export default function DashboardSection({parsedCache,targetVariable,showDelta=t
     combined.forEach(d=>{ if (d.variable_value==="Missing") m.set(`${d.scenario}|${d.year}|${d.stratifier_value}`,d); });
     return m;
   },[combined,isCategorical]);
-  const stratValues  =useMemo(()=>orderStratifierValues(viewBy,uniqueValues(combined.filter(d=>d.stratifier===viewBy),"stratifier_value").filter(v=>v!=="Missing")),[combined,viewBy]);
+  const strataSource=showWageDist?parsedCache:combined;
+  const stratValuesKey=JSON.stringify(orderStratifierValues(viewBy,uniqueValues(strataSource.filter(d=>d.stratifier===viewBy),"stratifier_value").filter(v=>v!=="Missing")));
+  const stratValues=useMemo(()=>JSON.parse(stratValuesKey),[stratValuesKey]);
   const colourMap    =useMemo(()=>buildColourMap(targetVariable,varValues),[targetVariable,varValues]);
   const allYears     =useMemo(()=>{
+    if(viewSource){
+      return viewSource.variables.find(v=>v.name===(isPyramidModule?"Age":targetVariable))?.years||[];
+    }
     const src=isPyramidModule?pyramidBaseData:combined;
     return [...new Set(src.map(d=>d.year))].filter(Boolean).sort((a,b)=>a-b);
-  },[combined,isPyramidModule,pyramidBaseData]);
+  },[combined,isPyramidModule,pyramidBaseData,viewSource,targetVariable]);
   const stratDef     =useMemo(()=>getStratifierDef(viewBy),[viewBy]);
   const isCatStrat   =stratDef?.type==="categorical";
 
-  useEffect(()=>setEnabledStrats(new Set(stratValues)),[stratValues]);
-  useEffect(()=>setEnabledVarVals(new Set(varValues)),[varValues]);
+  const lastStrata=useRef("");
+  useEffect(()=>{
+    const scope=JSON.stringify([targetVariable,viewBy,stratValues]);
+    if(!view.loading&&!view.error&&lastStrata.current!==scope){lastStrata.current=scope;setEnabledStrats(new Set(stratValues));}
+  },[stratValues,targetVariable,viewBy,view.loading,view.error]);
+  const varValuesKey=JSON.stringify(varValues);
+  const lastValues=useRef("");
+  useEffect(()=>{
+    const scope=targetVariable+":"+varValuesKey;
+    if(!view.loading&&!view.error&&lastValues.current!==scope){lastValues.current=scope;setEnabledVarVals(new Set(JSON.parse(varValuesKey)));}
+  },[varValuesKey,targetVariable,view.loading,view.error]);
   useEffect(()=>setEnabledScenarios(new Set(allScenarioNames)),[allScenarioNames]);
 
   // scenarioMap filtered to current stratifier — used by LineChart in combined mode
@@ -3081,6 +3108,8 @@ export default function DashboardSection({parsedCache,targetVariable,showDelta=t
   return (
     <ExportScenariosContext.Provider value={exportSelection}>
     <div ref={containerRef} style={{width:"100%",maxWidth:"100%",overflowX:"hidden"}}>
+      {view.loading&&<p role="status">Loading chart data…</p>}
+      {view.error&&<p role="alert">{view.error} <button onClick={view.retry}>Retry chart</button></p>}
 
       {/* ════════════════════════════════════════════════════════════════════════
           POPULATION PYRAMID — standalone module, shown instead of the normal
@@ -3127,7 +3156,7 @@ export default function DashboardSection({parsedCache,targetVariable,showDelta=t
             {selectedYear===null?" Showing average across all years.":" Year "+selectedYear+"."}
           </p>
 
-          <PopulationPyramid
+          {!view.loading&&!view.error&&<><PopulationPyramid
             baselineData={pyramidBaseData}
             scenarioData={pyramidScenData}
             year={selectedYear}
@@ -3160,6 +3189,7 @@ export default function DashboardSection({parsedCache,targetVariable,showDelta=t
               ↓ CSV
             </button>
           </div>
+          </>}
         </div>
       )}
 
@@ -3362,7 +3392,7 @@ export default function DashboardSection({parsedCache,targetVariable,showDelta=t
         <div style={{flex:1,minWidth:0}}>
 
       {/* ════════ TIME SERIES ════════ */}
-      {activeTab==="timeseries"&&!showWageDist&&(
+      {!view.loading&&!view.error&&activeTab==="timeseries"&&!showWageDist&&(
         !hasBase&&!hasScen
           ?<p style={{fontSize:13,color:TEXT_S,fontStyle:"italic"}}>No data available.</p>
           :<div>
@@ -3504,7 +3534,7 @@ export default function DashboardSection({parsedCache,targetVariable,showDelta=t
 
       {/* ════════ DELTA ════════
           All enabled scenarios vs Baseline on a single chart. */}
-      {showDelta&&activeTab==="delta"&&(
+      {!view.loading&&!view.error&&showDelta&&activeTab==="delta"&&(
         enabledScenarios.size===0
           ? <p style={{fontSize:13,color:TEXT_S,fontStyle:"italic"}}>No scenarios enabled — use the View toggles above to enable a scenario.</p>
           : <div style={{display:"flex",flexDirection:"column",gap:20}}>
@@ -3542,7 +3572,7 @@ export default function DashboardSection({parsedCache,targetVariable,showDelta=t
           Only rendered when targetVariable==="Age" and the Pyramid tab is active.
           Uses Gender-stratified Age rows that are already in the aggregated data —
           no new pipeline work needed. */}
-      {activeTab==="pyramid"&&isPyramidVar&&(
+      {!view.loading&&!view.error&&activeTab==="pyramid"&&isPyramidVar&&(
         <div>
           <p style={{margin:"0 0 10px",fontSize:13,color:TEXT_M,fontStyle:"italic"}}>
             Age structure of the population, split by gender.
@@ -3612,7 +3642,7 @@ export default function DashboardSection({parsedCache,targetVariable,showDelta=t
           Replaces the normal time-series/cross-section chart area when
           "Binned distribution" is selected in the View data as row.
           The time-series block below is hidden while this is showing. */}
-      {isHourlyEarnings&&showWageDist&&activeTab!=="delta"&&(
+      {!view.loading&&!view.error&&isHourlyEarnings&&showWageDist&&activeTab!=="delta"&&(
         <div>
           <p style={{margin:"0 0 10px",fontSize:13,color:TEXT_M,fontStyle:"italic"}}>
             {showAllYearsDist

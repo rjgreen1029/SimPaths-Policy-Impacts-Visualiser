@@ -282,6 +282,46 @@ Only aggregated rows belong in this interface. Authentication, permission
 checks, processing limits, disclosure approval and retention remain the host's
 responsibility; raw person/benefit-unit records must not be supplied here.
 
+### Optional selected-chart loading
+
+Large online comparisons can supply `viewSource` instead of a full `rows` array:
+
+```jsx
+<App dataSource={{
+  key: "comparison-identifier",
+  names: { baseline: "Reference", scenario_1: "Policy A", scenario_2: "Policy B" },
+  viewSource: {
+    scenarioNames: ["scenario_1", "scenario_2"],
+    variables: [{ name: "Mental Component Summary (MCS)", years: [2019, 2020] }],
+    load: async ({ variable, stratifier, kind, scenarios }, signal) => {
+      // Host-provided function: return validated, already calculated rows
+      // for this view, including baseline rows for paired comparisons.
+      return await loadApprovedRows({ variable, stratifier, kind, scenarios }, signal);
+    },
+  },
+}} />
+```
+
+Keep `viewSource`, its metadata arrays and configuration IDs stable for the
+comparison's lifetime. `kind` is `levels` for means/shares, `wage_bin` for wage
+histograms, or `pyramid_bin` for the Age/Gender pyramid. `scenarios` contains the
+enabled alternative IDs; preserve those IDs in returned rows. The host retains
+baseline rows even when its display toggle is off. Years come from metadata,
+so selecting a year does not require other variables or breakdowns.
+
+Only the selected view is normalised and passed to the existing charts. Obsolete
+requests are cancelled and late replies discarded. Loading or failed requests
+hide stale charts and exports; an explicit retry uses the same selection.
+There is no two-alternative limit; twelve alternatives are covered by chart
+tests. The host must bound response sizes, rows and any cache, recheck permissions
+even when reusing cached rows, and provide a controlled error for oversized views.
+The SimPaths Online adapter uses 8 MiB/20,000-row view limits and a private,
+instance-scoped memory cache; those hosting choices are not calculation rules.
+
+This interface does not aggregate raw files or change suppression, paired impacts,
+confidence intervals or exports. Standalone and locally saved data retain their
+existing loaders. Supplying `rows` still supports the original connected interface.
+
 ```bash
-CI=true npm test -- --watchAll=false --runInBand --transformIgnorePatterns '^$' --runTestsByPath src/aggregateDataSource.test.js src/App.aggregateData.test.js src/App.aggregateCharts.test.js src/App.multiScenario.test.js
+CI=true npm test -- --watchAll=false --runInBand --transformIgnorePatterns '^$' --runTestsByPath src/aggregateDataSource.test.js src/App.aggregateData.test.js src/App.aggregateCharts.test.js src/App.multiScenario.test.js src/useAggregateView.test.js
 ```
