@@ -482,7 +482,7 @@ export function useAggregatedData(parsedCache, targetVariable) {
     if (!parsedCache || !parsedCache.length) {
       setBaselineData([]); setScenarioMap(new Map()); return;
     }
-    const varRows = parsedCache.filter(r => r.variable === targetVariable);
+    const varRows = parsedCache.filter(r => normKey(r.variable) === normKey(targetVariable));
     setBaselineData(varRows.filter(r => r.scenario === "baseline"));
     // Collect all non-baseline scenario names in order of first appearance
     const names = [];

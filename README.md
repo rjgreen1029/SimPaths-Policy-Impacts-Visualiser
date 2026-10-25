@@ -149,7 +149,7 @@ See `COLUMN_MAP` in `parseCore.js` for the full list of expected raw column name
 1. **Discovery** — folder tree is scanned for `Baseline`/scenario subfolders and run folders.
 2. **Serial processing** — each run's CSVs are read on the main thread then immediately accumulated. Only one run's text lives in memory at a time.
 3. **Per-run aggregation** (`parseCore.js`) — CSVs are joined, column names mapped, and data reduced into weighted means/shares per year broken down by every stratifier.
-4. **Cross-run aggregation** (`finaliseAggregation`) — computes cross-run mean, SD, and 95% CI. A **paired delta** (Scenario − Baseline matched by seed) is computed for each scenario. Estimates with `min_sample < 20` are suppressed.
+4. **Cross-run aggregation** (`finaliseAggregation`) — computes cross-run mean, SD, and 95% CI. A **paired delta** (Scenario − Baseline matched by seed) is computed for each scenario. Estimates with `total_sample < 20` are suppressed.
 
 ## Dashboard views & controls
 
@@ -186,6 +186,14 @@ All colours are defined in `useAggregatedData.js` (`buildColourMap()`).
 - **Categorical variables** — 10-colour, colourblind-friendly qualitative palette (`BRAND_QUAL`).
 - **Muted grey** (`GREY`) for dimmed/unhighlighted series.
 
+## Folder-layout help
+
+The **Getting Started** panel includes **View folder structure** immediately after
+the Baseline/Scenario layout explanation. Hover, focus or tap it to see the
+example. Escape, moving the pointer away or selecting another control closes it.
+The help stays below its link and within the viewport on narrow screens.
+Cancelling the local folder picker leaves the displayed data and controls intact.
+
 ## Browser support
 
 - Default dataset works in any modern browser.
@@ -207,7 +215,7 @@ Everything runs locally in the browser. Nothing you select via "Visualise Your O
 | Scenario line styles | `SCENARIO_DASHES` in `DashboardSection.js` |
 | Scenario colours (numeric variables) | `NUMERIC_BASE_COLOUR`, `NUMERIC_SCEN_COLOURS` in `DashboardSection.js` |
 | Raw CSV → display-name mapping | `COLUMN_MAP` in `parseCore.js` |
-| Suppression threshold | `min_sample < 20` in `finaliseAggregation()` in `parseCore.js` |
+| Suppression threshold | `total_sample < 20` in `finaliseAggregation()` in `parseCore.js` |
 | Default dataset description in intro card | Edit the Getting Started section in `App.js` |
 
 ## Known limitations
@@ -224,3 +232,123 @@ This tool visualises outputs from the SimPaths microsimulation model. See the in
 ## Feedback
 
 Bug reports, feature requests, and general feedback — use the Feedback button in the app, or email [healthmod@glasgow.ac.uk](mailto:healthmod@glasgow.ac.uk?subject=SimPaths%20Policy%20Impacts%20Visualiser).
+
+
+## Browser parsing and tooltip checks
+
+CSV object conversion uses D3's row parser without dynamic code generation, so
+imports work with a Content Security Policy that excludes `unsafe-eval`. Chart
+tooltip headings and values are inserted as text, preserving line breaks without
+interpreting labels as HTML. These changes do not change scientific calculations
+or suppression rules.
+
+The updated local-folder workflow processes runs serially with the upstream
+streaming parser. It replaces the old worker-pool path; the earlier worker-count
+fix is consequently no longer needed.
+
+```bash
+CI=true npm test -- --watchAll=false --runInBand --transformIgnorePatterns '^$' --runTestsByPath src/csvParse.test.js src/tooltipContent.test.js
+```
+
+The current JavaScript implementation applies the threshold to the pooled sample
+across runs (`total_sample`). Its paired-impact fields are calculated separately
+from the suppressed level estimates. Deployment-specific disclosure controls
+must be reviewed before using either output with restricted provider data.
+
+## Optional connected aggregate source
+
+Standalone use retains the bundled data and local-folder workflows. An embedding
+application may pass an optional `dataSource` prop to `App`:
+
+```jsx
+<App dataSource={{
+  key: "comparison-identifier",
+  label: "Online results",
+  rows: aggregateRows,
+  names: { baseline: "Reference", scenario_1: "Policy A", scenario_2: "Policy B" },
+  message: "",
+  notice: "",
+  showDelta: true,
+  navigation: <a href="/results">Return to results</a>,
+}} />
+```
+
+The host fetches authenticated aggregates and supplies loading/error messages.
+The Visualiser does not fetch online data itself or fall back to bundled data
+when a connected source is empty or invalid. Changing `key` resets chart state;
+omitting `dataSource` restores standalone use.
+
+Rows use the chart-ready fields documented above, with distinct scenario IDs
+for every alternative. Optional `paired_mean_delta`, `paired_lower_ci`,
+`paired_upper_ci` and `paired_n_runs` fields pass through without recalculation.
+JSON null metrics remain unavailable, rather than becoming zero. `names` maps
+stable IDs to display labels, which are rendered as text. Scenario toggles show
+or hide alternatives within the same charts. The host may set `showDelta: false`
+for legacy level-only aggregates.
+
+When the host updates an existing source, the current scenario choices are kept.
+New scenarios appear as unselected controls, while removed scenarios leave the
+selection. Opening a different source key starts with all its scenarios selected.
+The connected-source summary is highlighted in the Connect Data panel, and the
+Getting Started guidance distinguishes host-supplied results from browser-only
+local processing. Folder-layout help is shared by standalone and connected use.
+
+Only aggregated rows belong in this interface. Authentication, permission
+checks, processing limits, disclosure approval and retention remain the host's
+responsibility; raw person/benefit-unit records must not be supplied here.
+
+### Optional selected-chart loading
+
+Large online comparisons can supply `viewSource` instead of a full `rows` array:
+
+```jsx
+<App dataSource={{
+  key: "comparison-identifier",
+  names: { baseline: "Reference", scenario_1: "Policy A", scenario_2: "Policy B" },
+  viewSource: {
+    scenarioNames: ["scenario_1", "scenario_2"],
+    variables: [{ name: "Mental Component Summary (MCS)", years: [2019, 2020] }],
+    load: async ({ variable, stratifier, kind, scenarios }, signal) => {
+      // Host-provided function: return validated, already calculated rows
+      // for this view, including baseline rows for paired comparisons.
+      return await loadApprovedRows({ variable, stratifier, kind, scenarios }, signal);
+    },
+    // Optional, best-effort hints; omitting these keeps ordinary click-to-load.
+    hint: ({ variable }) => hintApprovedView(variable),
+    cancelHint: () => cancelHintedView(),
+  },
+}} />
+```
+
+Keep `viewSource`, its metadata arrays and configuration IDs stable for the
+comparison's lifetime. `kind` is `levels` for means/shares, `wage_bin` for wage
+histograms, or `pyramid_bin` for the Age/Gender pyramid. `scenarios` contains the
+enabled alternative IDs; preserve those IDs in returned rows. The host retains
+baseline rows even when its display toggle is off. Years come from metadata,
+so selecting a year does not require other variables or breakdowns.
+
+Only the selected view is normalised and passed to the existing charts. Obsolete
+requests are cancelled and late replies discarded. Loading or failed requests
+hide stale charts and exports; an explicit retry uses the same selection.
+There is no two-alternative limit; twelve alternatives are covered by chart
+tests. The host must bound response sizes, rows and any cache, recheck permissions
+even when reusing cached rows, and provide a controlled error for oversized views.
+Optional `hint({ variable })` and `cancelHint()` callbacks let the host prepare a
+likely next view when a variable receives pointer or keyboard focus. Hints do
+not select a variable or display their results. Leaving the control cancels the
+hint; callback failures do not prevent ordinary chart selection. The host must
+bound and cancel background work, prioritise selected views and honour the same
+permissions as foreground reads.
+
+The SimPaths Online adapter uses 8 MiB/20,000-row view limits, bounded memory and
+session-partitioned browser storage, and delayed, bounded hints. Stored rows are
+reused only after a fresh access check. These hosting choices are not calculation
+rules, and this repository's standalone/local-file loaders do not enable them.
+
+This interface does not aggregate raw files or change suppression, paired impacts,
+confidence intervals or exports. Standalone and locally saved data retain their
+existing loaders. Supplying `rows` still supports the original connected interface.
+
+```bash
+CI=true npm test -- --watchAll=false --runInBand --transformIgnorePatterns '^$' --runTestsByPath src/aggregateDataSource.test.js src/App.aggregateData.test.js src/App.aggregateCharts.test.js src/App.multiScenario.test.js src/useAggregateView.test.js
+```

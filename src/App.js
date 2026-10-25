@@ -15,11 +15,15 @@
  * in DashboardSection.js and useAggregatedData.js respectively. App.js's
  * job is page chrome + data sourcing, not visualisation.
  */
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import * as d3 from "d3";
+import { csvParse } from "./csvParse.js";
 import DashboardSection from "./DashboardSection";
 import { parseCsvRow } from "./useAggregatedData";
 import { parseLocalFolder } from "./localFolderParser";
+import FolderStructureHelp from "./FolderStructureHelp";
+import AggregateDataPanel from "./AggregateDataPanel";
+import { normaliseAggregateRows, comparisonLabel, sourceText, ComparisonNamesContext } from "./aggregateDataSource";
 
 /** Which variables appear under each of the four topic-chip domains in the intro card, and their display order within that domain. */
 const DOMAIN_SECTIONS = {
@@ -32,8 +36,8 @@ const DOMAIN_SECTIONS = {
   "Income": [
     "Income Quintile", "Universal Credit Benefits Flag", "Financial distress flag",
     "Equivalised yearly disposable income", "Hourly earnings",  "Personal private pension income",
-     "Gross personal employment income", 
-    "Capital Income", 
+     "Gross personal employment income",
+    "Capital Income",
     "Amount of benefits received per month"
   ],
   "Health": [
@@ -68,7 +72,7 @@ export const VARIABLE_DESCRIPTIONS = {
   "Financial distress flag":              "Indicator of reported difficulty in meeting basic financial commitments.",
   "Equivalised yearly disposable income": "Annual income after taxes and transfers, in GBP (£).",
   "Gross personal employment income":     "Earnings from employment before tax and deductions.",
-  "Personal private pension income" :     "Gross personal private pension income", 
+  "Personal private pension income" :     "Gross personal private pension income",
   "Hourly earnings": "Potential hourly earnings",// temporarily disabled
    "Capital Income":                       "Income from assets such as savings, investments, or property.", // temporarily disabled
   "Amount of benefits received per month":"Monthly monetary value of welfare benefits received, in GBP (£).",
@@ -90,13 +94,38 @@ export const VARIABLE_DESCRIPTIONS = {
  * or the full page: header banner → intro card → sidebar + DashboardSection
  * → closing banner.
  */
-function App() {
+function App({ dataSource } = {}) {
   const [activeVariable, setActiveVariable]   = useState("Highest Level of Education");
   const [parsedCache,    setParsedCache]       = useState([]);       // full dataset — default CSV or user upload, normalised to one row shape
   const [isUsingDefault, setIsUsingDefault]   = useState(true);      // true = showing bundled default data, false = user-uploaded folder
   const [defaultLoadFailed, setDefaultLoadFailed] = useState(false); // true = the default CSV fetch/parse failed — distinct from isUsingDefault, which alone can't tell success from failure
   const [statusMessage,  setStatusMessage]    = useState("");        // loading/error text shown near the Connect Data panel
   const [isProcessing,   setIsProcessing]     = useState(false);     // true while a local folder is being read/aggregated
+  // A supplied source is controlled by its host, even while empty/loading.
+  // It never falls back to default CSVs or performs an API request itself.
+  const hasDataSource = dataSource != null;
+  const sourceIsObject = typeof dataSource === "object" && !Array.isArray(dataSource);
+  const suppliedRows = dataSource?.rows;
+  // Optional intent hints are best-effort; they never change the active chart.
+  function hintVariable(variable) {
+    try { dataSource?.viewSource?.hint?.({variable}); } catch {}
+  }
+  function cancelHint() {
+    try { dataSource?.viewSource?.cancelHint?.(); } catch {}
+  }
+  const connectedData = useMemo(() => {
+    if (!hasDataSource) return { rows: [], error: "" };
+    try {
+      if (!sourceIsObject) throw new TypeError("Expected a data source object.");
+      return { rows: normaliseAggregateRows(suppliedRows === undefined ? [] : suppliedRows), error: "" };
+    } catch {
+      return { rows: [], error: "Connected aggregate data could not be displayed. Ask the data source to supply chart-ready aggregate rows." };
+    }
+  }, [hasDataSource, sourceIsObject, suppliedRows]);
+  const displayedRows = hasDataSource ? connectedData.rows : parsedCache;
+  const sourceRef = useRef(dataSource);
+  useEffect(() => { sourceRef.current = dataSource; }, [dataSource]);
+  const requestGeneration = useRef(0);
   const [openDomains, setOpenDomains] = useState({ "Demographics": true }); // which sidebar domain accordions are expanded
   const [windowWidth, setWindowWidth] = useState(typeof window !== "undefined" ? window.innerWidth : 1024);
   // Only truly unusable widths (older feature-phone-class viewports) get the
@@ -129,12 +158,18 @@ function App() {
   const [isLoadingDefault, setIsLoadingDefault] = useState(true);
 
   const loadDefaultDataset = useCallback(() => {
+    if (sourceRef.current != null) return;
+    const generation = ++requestGeneration.current;
+    setIsProcessing(false);
+    setParsedCache([]);
     const url = `${process.env.PUBLIC_URL}/SimPaths_All_Aggregated_Outputs.csv`;
     setDefaultLoadFailed(false);
     setIsLoadingDefault(true);
     setStatusMessage("Loading default dataset…");
-    d3.csv(url, parseCsvRow)
+    d3.text(url)
+      .then(text => csvParse(text, parseCsvRow))
       .then(rows => {
+        if (generation !== requestGeneration.current || sourceRef.current != null) return;
         if (!rows.length) throw new Error("File was found but contained no rows — check it's the actual CSV and not an HTML/error page being served at that URL.");
         setParsedCache(rows);
         setIsUsingDefault(true);
@@ -142,6 +177,7 @@ function App() {
         setStatusMessage("");
       })
       .catch(err => {
+        if (generation !== requestGeneration.current || sourceRef.current != null) return;
         console.warn("Could not load the default dataset.", err);
         setIsUsingDefault(true);
         setDefaultLoadFailed(true);
@@ -151,13 +187,18 @@ function App() {
           `Check that SimPaths_All_Aggregated_Outputs.csv exists at exactly that path in your deployment's public folder — or select a simulation directory below.`
         );
       })
-      .finally(() => setIsLoadingDefault(false));
+      .finally(() => {
+        if (generation === requestGeneration.current && sourceRef.current == null) setIsLoadingDefault(false);
+      });
   }, []);
 
-  // Fetch the bundled default dataset once on mount.
+  // Connected sources never request the bundled dataset. Fence stale loads.
   useEffect(() => {
-    loadDefaultDataset();
-  }, [loadDefaultDataset]);
+    const requests = requestGeneration;
+    requests.current++;
+    if (!hasDataSource) loadDefaultDataset();
+    return () => { requests.current++; };
+  }, [hasDataSource, loadDefaultDataset]);
 
   // Tracks window width for the mobile/tablet responsive breakpoints above.
   useEffect(() => {
@@ -170,24 +211,33 @@ function App() {
   }, []);
 
   /**
-   * "Visualise Your Own Data" handler — opens the native folder picker.
+   * "Visualise Locally Saved Data" handler — opens the native folder picker.
    */
   const handleSelectFolder = async () => {
+    let generation = requestGeneration.current;
     try {
       const directoryHandle = await window.showDirectoryPicker();
+      if (generation !== requestGeneration.current || sourceRef.current != null) return;
+      generation = ++requestGeneration.current;
       setIsProcessing(true);
       setStatusMessage("Reading local folder hierarchy...");
-      const freshlyAggregated = await parseLocalFolder(directoryHandle, msg => setStatusMessage(msg));
+      const freshlyAggregated = await parseLocalFolder(directoryHandle, msg => {
+        if (generation === requestGeneration.current && sourceRef.current == null) setStatusMessage(msg);
+      });
+      if (generation !== requestGeneration.current || sourceRef.current != null) return;
       setParsedCache(freshlyAggregated);
       setIsUsingDefault(false);
       setDefaultLoadFailed(false);
       setIsProcessing(false);
       setStatusMessage("");
     } catch (err) {
+      if (generation !== requestGeneration.current || sourceRef.current != null) return;
       console.error(err);
       setIsProcessing(false);
       setStatusMessage(
-        err.name === "AbortError" ? "" : `Aggregation Error: ${err.message || "Check folder tree construction."}`
+        err.name === "AbortError"
+          ? ""
+          : `Aggregation Error: ${err.message || "Check folder tree construction."}`
       );
     }
   };
@@ -224,7 +274,6 @@ function App() {
   const linkBtnStyle = { color: AQUA, textDecoration: "none", fontSize: "14px", padding: "10px 14px", background: `${AQUA}10`, borderRadius: "6px", border: `1px solid ${AQUA}30`, transition: "all 0.2s", display: "inline-flex", alignItems: "center", fontWeight: 500 };
   // Compact pill variant used inline next to the "Explore changes across..." text
   const smallLinkStyle = { color: AQUA, textDecoration: "none", fontSize: "12px", padding: "5px 10px", background: `${AQUA}10`, borderRadius: "6px", border: `1px solid ${AQUA}30`, transition: "all 0.2s", display: "inline-flex", alignItems: "center", fontWeight: 500, whiteSpace: "nowrap" };
-  const [showFolderStructure, setShowFolderStructure] = useState(false);
   if (windowWidth < MIN_WIDTH) {
     return (
       <div style={{
@@ -259,8 +308,9 @@ function App() {
   }
 
   return (
+    <ComparisonNamesContext.Provider value={hasDataSource ? dataSource.names || {} : {}}>
     <div style={{ fontFamily: "Work Sans, sans-serif", minHeight: "100vh", background: BG, color: TEXT_DARK, display: "flex", flexDirection: "column", gap: 30 }}>
-      
+
      {/* Header + Title Banner */}
 <div
   style={{
@@ -284,6 +334,7 @@ function App() {
   >
     SimPaths Policy Impacts Visualiser
   </p>
+  {hasDataSource && dataSource.navigation}
 
       {/* Logos + SimPaths branding */}
       <div
@@ -361,7 +412,7 @@ function App() {
 
       {/* Main Content Container */}
       <div style={{ padding: isMobile ? "10px 16px" : "10px 48px", display: "flex", flexDirection: "column", gap: isMobile ? 20 : 30 }}>
-        
+
        {/* Intro Card */}
 <div style={{ background: BG_DARK, border: `0.5px solid ${BG_PANEL}`, borderRadius: "12px", padding: isMobile ? "22px 20px" : "32px 40px", boxShadow: "0 2px 8px rgba(0,0,0,0.08)" }}>
 
@@ -374,17 +425,17 @@ function App() {
         Explore how different policies could shape outcomes across the UK.
       </p>
       <p style={{ margin: "0 0 10px", fontSize: "clamp(14px, 2vw, 16px)", color: TEXT_DARK, lineHeight: 1.6 }}>
-        Visualise the projected impact of a policy scenario on a simulated UK population, broken down by variable, year, and population subgroup. 
+        Visualise the projected impact of a policy scenario on a simulated UK population, broken down by variable, year, and population subgroup.
               </p>
       <p style={{ margin: "0 0 14px", lineHeight: 1.8, color: TEXT_DARK, fontSize: "clamp(14px, 2vw, 16px)" }}>
         This tool visualises outputs from <a href="https://simpaths.org/" target="_blank" rel="noopener noreferrer" style={{ color: AQUA, textDecoration: "none", borderBottom: `2px solid ${AQUA}`, paddingBottom: "2px", transition: "opacity 0.2s" }}>SimPaths</a>, an open-source, dynamic microsimulation model developed by the Centre for Microsimulation and Policy Analysis (<a href="https://www.microsimulation.ac.uk/" target="_blank" rel="noopener noreferrer" style={{ color: AQUA, textDecoration: "none", borderBottom: `2px solid ${AQUA}`, paddingBottom: "2px", transition: "opacity 0.2s" }}>CeMPA</a>) at the University of Essex. The Policy Impacts Visualiser was built by researchers at the University of Glasgow as part of the <a href="https://www.phiuk.org/policy-modelling-for-health" target="_blank" rel="noopener noreferrer" style={{ color: AQUA, textDecoration: "none", borderBottom: `2px solid ${AQUA}`, paddingBottom: "2px", transition: "opacity 0.2s" }}>Policy Modelling for Health</a> research group.
       </p>
       <p style={{ margin: 0, lineHeight: 1.8, color: TEXT_DARK, fontSize: "clamp(14px, 2vw, 16px)" }}>
-      SimPaths simulates the life-course trajectories of a population — how demographics, employment, income, wealth, health, and other variables change over time — and how those trajectories may change under a simulated a policy scenario (e.g., an increase in the minimum wage). 
-      This visualiser lets you explore those simulated outcomes interactively: pick a variable, stratify it by age, gender, region and more, and compare Baseline data against Scenario data over time, at a single point in time, or as the difference between the two. 
-      For example, if you had simulated an increase in minimum wage, you could ask: did an increase in the minimum wage lead to higher self-rated health among working-age adults by 2050, and are the effects different across UK regions? 
+      SimPaths simulates the life-course trajectories of a population — how demographics, employment, income, wealth, health, and other variables change over time — and how those trajectories may change under a simulated a policy scenario (e.g., an increase in the minimum wage).
+      This visualiser lets you explore those simulated outcomes interactively: pick a variable, stratify it by age, gender, region and more, and compare Baseline data against Scenario data over time, at a single point in time, or as the difference between the two.
+      For example, if you had simulated an increase in minimum wage, you could ask: did an increase in the minimum wage lead to higher self-rated health among working-age adults by 2050, and are the effects different across UK regions?
       To explore this, select Self-rated health as the variable, stratify the results by age and region, filtering for the working age population, and compare the Baseline and Scenario over time.
-      
+
       </p>
     </div>
 
@@ -414,13 +465,17 @@ function App() {
   <div style={{ background: `${AQUA}08`, border: `1px solid ${AQUA}20`, borderRadius: "8px", padding: isMobile ? "16px" : "18px", marginBottom: "18px", borderLeft: `4px solid ${AQUA}` }}>
     <h4 style={{ margin: "0 0 10px", fontSize: "13px", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600, color: TEAL }}>Getting Started</h4>
     <p style={{ margin: "0 0 10px", lineHeight: 1.6, color: TEXT_MID, fontSize: "13.5px" }}>
+      {hasDataSource ? sourceText(dataSource.description, "Explore the pre-aggregated results supplied by the connected service.") : <>
       The default view displays a pre-aggregated dataset showing two simulated education policy interventions applied to 16–29 year olds in 2025, compared against a <strong>Baseline</strong> with no policy change. The <strong> Medium Education Scenario </strong> increases the proportion of 16–29 year olds with a medium level of education; the<strong> Low Education Scenario</strong> increases the proportion with a low level of education.
+      </>}
     </p>
     <p style={{ margin: "0 0 10px", lineHeight: 1.6, color: TEXT_MID, fontSize: "13.5px" }}>
-      To use your own data, SimPaths outputs must be organised into <strong>Baseline</strong> and <strong>Scenario</strong> folders, each containing the runs from your model output. Use "Visualise Your Own Data" to select the parent folder that your <strong>Baseline</strong> and <strong>Scenario</strong> folders sit within.
+      To use your own data, SimPaths outputs must be organised into <strong>Baseline</strong> and <strong>Scenario</strong> folders, each containing the runs from your model output.{" "}<FolderStructureHelp />{" "}Use "Visualise Locally Saved Data" to select the parent folder that your <strong>Baseline</strong> and <strong>Scenario</strong> folders sit within.
     </p>
     <p style={{ margin: 0, lineHeight: 1.6, color: TEXT_MID, fontSize: "13.5px" }}>
-      This tool is entirely JavaScript-based — all aggregation happens locally in your browser, and no data you upload is ever stored or sent anywhere.
+      {hasDataSource
+        ? "Connected results are supplied by the host service. Locally selected files are processed entirely in your browser and are not uploaded."
+        : "This tool is entirely JavaScript-based — all aggregation happens locally in your browser, and no data you upload is ever stored or sent anywhere."}
     </p>
   </div>
 
@@ -439,85 +494,27 @@ function App() {
 
         {/* Workspace Operations */}
         <div style={{ display: "flex", gap: 30, alignItems: "flex-start", flexWrap: windowWidth < 1200 ? "wrap" : "nowrap" }}>
-          
+
           {/* Left Sidebar */}
           <div style={{ width: "300px", flexShrink: 0, display: "flex", flexDirection: "column", gap: 20, minWidth: windowWidth < 1200 ? "100%" : "300px" }}>
-            
+
             {/* Connect Data Card */}
             <div style={{ background: BG_DARK, border: `1px solid ${BG_PANEL}`, padding: 20, borderRadius: 12, boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
                             <div style={{ background: CORAL, borderRadius: 8, padding: "10px 14px", marginBottom: 12 }}>
                 <h3 style={{ margin: 0, fontSize: 15, textTransform: "uppercase", letterSpacing: "0.05em", color: "#fff", fontWeight: 700 }}>Connect Data</h3>
               </div>
-              <p style = {{margin: "0 0 8px", fontSize: 12, color: TEXT_DARK}}> Select parent folder with runs organised into <strong>Baseline</strong> and <strong>Scenario</strong> subfolders <span
-              style={{
-                position: "relative",
-                display: "inline-block",
-              }}
-              onMouseEnter={() => setShowFolderStructure(true)}
-              onMouseLeave={() => setShowFolderStructure(false)}
-            >
-              <button
-                type="button"
-                style={{
-                  background: "none",
-                  border: "none",
-                  padding: 0,
-                  color: "#2563eb",
-                  fontSize: "13.5px",
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  textDecoration: "underline",
-                }}
-              >
-                View folder structure.
-              </button>
-
-              {showFolderStructure && (
-                <span
-                  style={{
-                    position: "absolute",
-                    left: 0,
-                    top: "calc(100% + 8px)",
-                    background: "#fff",
-                    border: "1px solid #ddd",
-                    borderRadius: "8px",
-                    padding: "12px 16px",
-                    boxShadow: "0 4px 12px rgba(0, 0, 0, 0.15)",
-                    zIndex: 100,
-                    minWidth: "280px",
-                    textAlign: "left",
-                  }}
-                >
-                  <pre
-                    style={{
-                      margin: 0,
-                      fontSize: "12px",
-                      lineHeight: 1.5,
-                      fontFamily: "monospace",
-                      color: "#333",
-                    }}
-                  >
-          {`Your Data Folder/
-          ├── Baseline/
-          │   ├── Run 1/
-          │   ├── Run 2/
-          │   └── Run 3/
-          └── Scenario/
-              ├── Run 1/
-              ├── Run 2/
-              └── Run 3/`}
-                  </pre>
-                </span>
-              )}
-            </span></p>
+              {hasDataSource ? (
+                <AggregateDataPanel source={dataSource} error={connectedData.error} rowCount={displayedRows.length} />
+              ) : <>
+              <p style={{margin: "0 0 8px", fontSize: 12, color: TEXT_DARK}}>Select the parent folder containing your <strong>Baseline</strong> and <strong>Scenario</strong> folders.</p>
               <p style={{ margin: "0 0 16px", fontSize: 11, color: TEAL, lineHeight: 1.5, fontStyle: "italic" }}>
                 Nothing you select is uploaded or stored anywhere — all aggregation happens locally, in your browser.
               </p>
-              
+
               <button onClick={handleSelectFolder} disabled={isProcessing} style={{margin: "0 0 10px", width: "100%", padding: "10px", borderRadius: 6, border: `1px solid ${AQUA}`, background: AQUA, color: BG_DARK, fontWeight: 600, fontSize: 16, textAlign: "center", cursor: "pointer" }}>
-                {isProcessing ? "Aggregating data..." : "Visualise Your Own Data"}
+                {isProcessing ? "Aggregating data..." : "Visualise Locally Saved Data"}
               </button>
-            
+
               {statusMessage && <p style={{ fontSize: 11, color: "#c2410c", margin: "8px 0 0", fontStyle: "italic", lineHeight: 1.4 }}>{statusMessage}</p>}
               <div style={{
                 fontSize: 12,
@@ -536,6 +533,7 @@ function App() {
                   <span style={{ cursor: "pointer", float: "right", color: "#b91c1c", fontWeight: "bold" }} onClick={loadDefaultDataset}>✕</span>
                 )}
               </div>
+              </>}
             </div>
 
             {/* Explore Variables Card */}
@@ -555,7 +553,10 @@ function App() {
                     {isOpen && (
                       <div style={{ paddingLeft: 4, marginBottom: 6 }}>
                         {vars.map(v => (
-                          <button key={v} onClick={() => setActiveVariable(v)} style={{ display: "block", width: "100%", textAlign: "left", background: activeVariable === v ? `${CORAL}18` : "transparent", border: "none", fontSize: 13, padding: "6px 10px", borderRadius: 6, cursor: "pointer", marginBottom: 2, color: activeVariable === v ? CORAL : TEXT_MID, fontWeight: activeVariable === v ? 600 : 400, outline: "none" }}>
+                          <button key={v} onClick={() => setActiveVariable(v)}
+                            onMouseEnter={() => hintVariable(v)} onFocus={() => hintVariable(v)}
+                            onMouseLeave={cancelHint} onBlur={cancelHint}
+                            style={{ display: "block", width: "100%", textAlign: "left", background: activeVariable === v ? `${CORAL}18` : "transparent", border: "none", fontSize: 13, padding: "6px 10px", borderRadius: 6, cursor: "pointer", marginBottom: 2, color: activeVariable === v ? CORAL : TEXT_MID, fontWeight: activeVariable === v ? 600 : 400, outline: "none" }}>
                             {v}
                           </button>
                         ))}
@@ -629,16 +630,19 @@ function App() {
       {" "}for further information.
     </>
   )}
-  
 
-  
+
+
               </p>
             )}
             <p style={{ margin: "0 0 20px", fontSize: "clamp(12px, 1.5vw, 13px)", color: "#64748b" }}>
-              Side-by-side comparative graphics between the <strong>Baseline</strong> and the chosen <strong>Policy Scenario</strong> outputs.
+              {hasDataSource
+                ? <>Compare <strong>{comparisonLabel("baseline", dataSource.names)}</strong> with the selected alternative scenarios.</>
+                : <>Side-by-side comparative graphics between the <strong>Baseline</strong> and the chosen <strong>Policy Scenario</strong> outputs.</>}
             </p>
+            {hasDataSource && sourceText(dataSource.notice) && <p style={{ fontSize: 13, color: TEXT_MID }}>{dataSource.notice}</p>}
             <hr style={{ border: "none", borderTop: `1px solid ${BG_PANEL}`, marginBottom: 20 }} />
-            {isLoadingDefault
+            {!hasDataSource && isLoadingDefault
               ? <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:320,gap:20,padding:"40px 20px"}}>
                   <p style={{margin:0,fontSize:15,color:TEAL,fontWeight:600}}>Loading dataset…</p>
                   <div style={{width:"min(420px,90%)",background:BG_PANEL,borderRadius:8,overflow:"hidden",height:10}}>
@@ -647,7 +651,7 @@ function App() {
                   <p style={{margin:0,fontSize:12.5,color:TEXT_MID}}>Fetching and parsing the pre-aggregated dataset — this may take a few moments.</p>
                   <style>{`@keyframes loadbar{0%{width:0%;margin-left:0}60%{width:80%;margin-left:0}100%{width:0%;margin-left:100%}}`}</style>
                 </div>
-              : <DashboardSection parsedCache={parsedCache} targetVariable={activeVariable} bgBase={BG} bgDark={BG_DARK} bgPanel={BG_PANEL} />
+              : (!hasDataSource || displayedRows.length > 0 || (dataSource.viewSource && !connectedData.error)) && <DashboardSection key={hasDataSource ? `connected:${sourceText(dataSource.key, "default")}` : "standalone"} showDelta={!hasDataSource || dataSource.showDelta !== false} viewSource={dataSource?.viewSource} parsedCache={displayedRows} targetVariable={activeVariable} bgBase={BG} bgDark={BG_DARK} bgPanel={BG_PANEL} />
             }
           </div>
         </div>
@@ -714,6 +718,7 @@ function App() {
         </div>
       </div>
     </div>
+    </ComparisonNamesContext.Provider>
   );
 }
 
