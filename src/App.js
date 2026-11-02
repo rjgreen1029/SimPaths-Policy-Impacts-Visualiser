@@ -414,7 +414,7 @@ function App() {
   <div style={{ background: `${AQUA}08`, border: `1px solid ${AQUA}20`, borderRadius: "8px", padding: isMobile ? "16px" : "18px", marginBottom: "18px", borderLeft: `4px solid ${AQUA}` }}>
     <h4 style={{ margin: "0 0 10px", fontSize: "13px", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600, color: TEAL }}>Getting Started</h4>
     <p style={{ margin: "0 0 10px", lineHeight: 1.6, color: TEXT_MID, fontSize: "13.5px" }}>
-      The default view displays a pre-aggregated dataset showing two simulated education policy interventions applied to 16–29 year olds in 2025, compared against a <strong>Baseline</strong> with no policy change. The <strong> Medium Education Scenario </strong> increases the proportion of 16–29 year olds with a medium level of education; the<strong> Low Education Scenario</strong> increases the proportion with a low level of education.
+      The default view displays a pre-aggregated dataset showing two simulated education policy interventions applied to 16–29 year olds in 2025, compared against a <strong>Baseline</strong> with no policy change. The <strong> Moderate Education Scenario </strong> increases the proportion of 16–29 year olds in education by 5%; the<strong> Low Education Scenario</strong> increases the proportion with in education by 2%.
     </p>
     <p style={{ margin: "0 0 10px", lineHeight: 1.6, color: TEXT_MID, fontSize: "13.5px" }}>
       To use your own data, SimPaths outputs must be organised into <strong>Baseline</strong> and <strong>Scenario</strong> folders, each containing the runs from your model output. Use "Visualise Your Own Data" to select the parent folder that your <strong>Baseline</strong> and <strong>Scenario</strong> folders sit within.
