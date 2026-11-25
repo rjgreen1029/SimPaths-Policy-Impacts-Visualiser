@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Work+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg:#f3ede3; --bg-dark:#faf7ef; --bg-panel:#f3ede3;
+    --bg:#f7f3ed; --bg-dark:#fcfaf5; --bg-panel:#f7f3ed;
     --teal:#14687c; --aqua:#0f93a1; --coral:#ff6e51; --indigo:#5975f8;
     --text-dark:#1e293b; --text-mid:#475569; --text-soft:#64748b;
   }
@@ -84,9 +84,8 @@
 <body>
 
   <div class="header">
-    <div class="logo-box"><img src="/pmh_logo.png" alt="Logo" onerror="this.parentElement.style.display='none'"></div>
-    <p class="header-title">SimPaths Policy Impacts Visualiser</p>
-    <a class="back-link" href="/">← Back to Visualiser</a>
+        <p class="header-title">SimPaths Policy Impacts Visualiser</p>
+    <a class="back-link" href="./">← Back to Visualiser</a>
   </div>
 
   <div class="container">
@@ -134,8 +133,20 @@
 
     <div class="card">
       <h2 class="big">When an estimate is suppressed</h2>
-      <p>If the underlying sample size within any contributing run drops below 100 — for example, a small population slice for a narrow age band in a small region — that estimate is too unreliable to show responsibly. Rather than plotting a noisy point, the visualiser suppresses it: on charts you'll see a gap in the line, or a small-multiple panel showing "Sample too small — suppressed" instead of a chart. This is a deliberate choice to avoid implying more precision than the underlying data supports.</p>
+      <p>Every estimate must be based on at least <strong>20 people in every single model run</strong>. If any one run has fewer than 20 — or none at all — for example, a small population slice for a narrow age band in a small region — that estimate is too unreliable to show responsibly. The threshold applies to each run separately, not to the total pooled across runs, and it also applies to the Baseline → Scenario difference: if either side is suppressed, the difference is suppressed too. Rather than plotting a noisy point, the visualiser suppresses it: on charts you'll see a gap in the line, or a small-multiple panel showing "Sample too small — suppressed" instead of a chart. This is a deliberate choice to avoid implying more precision than the underlying data supports.</p>
       <p>A suppressed estimate does not mean nothing changed — it means the sample was too small to say reliably.</p>
+    </div>
+
+    <div class="card">
+      <h2 class="big">How missing values are handled</h2>
+      <p>SimPaths records missing values as <code>-9</code>. The visualiser treats every <code>-9</code> (and every blank cell) as <strong>missing</strong>, never as a real value or as zero:</p>
+      <ul>
+        <li><strong>Averages</strong> (for example income, hourly earnings, health scores and hours worked) are calculated only from people with a valid value. Where some values are missing, the tooltip shows the percentage missing.</li>
+        <li><strong>Percentages for categories</strong> (for example employment status) are calculated only among people with a valid value, so the categories add up to 100%.</li>
+        <li><strong>Earnings and income distributions</strong> do not place missing values in any band (including the lowest, £0, band). Band percentages are percentages of people with a valid value.</li>
+        <li><strong>Breakdowns by subgroup</strong> (age, gender, region and so on) leave out anyone whose subgroup value is missing; they are still included in the Overall figures.</li>
+      </ul>
+      <p>Missing values also do not count towards the minimum sample of 20 described above.</p>
     </div>
 
     <div class="card">
@@ -200,7 +211,8 @@
       <div class="link-row">
         <a class="link-btn" href="https://simpaths.org/" target="_blank" rel="noopener noreferrer">SimPaths documentation ↗</a>
         <a class="link-btn" href="https://github.com/rjgreen1029/SimPaths-Policy-Impacts-Visualiser" target="_blank" rel="noopener noreferrer">GitHub repository ↗</a>
-        <a class="link-btn" href="/citation.html">How do I cite this? →</a>
+        <a class="link-btn" href="citation.html">How do I cite this? →</a>
+        <a class="link-btn" href="funders.html">Funders &amp; partners →</a>
       </div>
     </div>
 
