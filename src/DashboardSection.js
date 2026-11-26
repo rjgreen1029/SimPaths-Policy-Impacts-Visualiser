@@ -121,37 +121,10 @@ function fmtDelta(v,isCat){
 }
 /** Formats a row's sample-size info for a tooltip, e.g. "Sample: 1,234 (12 runs)" — pooled total_sample across every contributing run, plus how many runs contributed. Returns "" (nothing to append) if the row has no usable sample info. */
 /** Formats a row's sample-size info for a tooltip, e.g. "Sample: 103 (avg across 12 runs)" — the average per-run sample size for that specific variable/stratifier/baseline-or-scenario slice, not the pooled total across runs. Returns "" if the row has no usable sample info. */
-/** Below this many runs, tooltips warn that the 95% interval is unreliable.
- *  Keep in sync with MIN_RUNS_WARN in App.js (the warning above the charts). */
-export const MIN_RUNS_WARN = 5;
-function LowRunWarning({rows}) {
-  const label = useComparisonLabel();
-  // Fewest runs in any scenario (Baseline included) of the loaded data. Each
-  // scenario's run count is the largest n_runs among its rows (the Overall
-  // rows exist in every run). Drives the low-run warning above the charts.
-  const runsByScenario = useMemo(() => {
-    const m = new Map();
-    for (const r of rows) {
-      if (r.n_runs > (m.get(r.scenario) ?? 0)) m.set(r.scenario, r.n_runs);
-    }
-    return m;
-  }, [rows]);
-  const fewestRuns = runsByScenario.size ? Math.min(...runsByScenario.values()) : null;
-  if (fewestRuns == null || fewestRuns >= MIN_RUNS_WARN) return null;
-  return (
-    <div role="alert" style={{ margin: "0 0 16px", padding: "10px 14px", background: "#fffbeb", border: "1px solid #fcd34d", borderLeft: "4px solid #d97706", borderRadius: 8, fontSize: 13, color: "#92400e", lineHeight: 1.5 }}>
-      <strong>⚠ Low number of model runs.</strong>{" "}
-      {[...runsByScenario].filter(([, n]) => n < MIN_RUNS_WARN).map(([sc, n]) => `${label(sc)}: ${n} run${n === 1 ? "" : "s"}`).join(" · ")}.
-      {" "}With fewer than {MIN_RUNS_WARN} runs, the 95% uncertainty intervals (and Baseline → Scenario differences) are unreliable{fewestRuns === 1 ? " — with a single run there is no measure of uncertainty at all" : ""}. Interpret results with caution.
-    </div>
-  );
-}
-
-/** Tooltip line warning about a low run count; "" when n is fine or unknown. */
+/** Tooltip note when an estimate comes from a single run (so it has no 95%
+ *  interval); "" otherwise. */
 function fmtRunsWarning(n){
-  if (n==null||isNaN(n)||n>=MIN_RUNS_WARN) return "";
-  if (n===1) return `\n⚠ Based on a single run — no uncertainty interval can be computed`;
-  return `\n⚠ Based on only ${n} run${n===1?"":"s"} — the uncertainty interval may be unreliable`;
+  return n===1 ? `\nBased on a single run — no uncertainty interval can be computed` : "";
 }
 function fmtSample(row){
   if (!row||row.mean_sample==null||isNaN(row.mean_sample)) return "";
@@ -213,15 +186,17 @@ function buildYDomain(data,isCat){
   return [yLo,yHi];
 }
 const EMPTY_ROWS=[];
-/* ── Y-axis zoom (drag to zoom) ────────────────────────────────────────────────
-   On line charts (and the Baseline → Scenario difference chart), dragging up or
-   down over the plot highlights a band; letting go zooms the y-axis to that
-   band. "↺ Reset" (bottom-left, under the y-axis) or a double-click returns to
-   the normal fitted range. Each chart zooms on its own, and every chart resets
-   when the variable changes (reset key from YZoomResetContext, provided by
-   DashboardSection). Bar charts don't zoom. */
+/* ── Box zoom (drag to zoom) ───────────────────────────────────────────────────
+   On line charts (and the Baseline → Scenario difference chart), dragging over
+   the plot draws a box; letting go zooms to it — the years (x) and the values
+   (y). A tall thin box zooms only the y-axis, a wide flat one only the years.
+   While zoomed, a "↺ Reset zoom" button (top right of the chart) or a
+   double-click returns to the full view, and Shift + drag moves the view.
+   Each chart zooms on its own, and every chart resets when the variable
+   changes (reset key from YZoomResetContext, provided by DashboardSection).
+   Bar charts don't zoom. */
 export const YZoomResetContext = createContext(null);
-const Y_VIEW_DEFAULT = { domain: null };     // null = normal fitted range
+const Y_VIEW_DEFAULT = { domain: null, xDomain: null };   // null = normal fitted range (y values / years)
 const MIN_BRUSH_PX = 6;                     // smaller drags count as clicks
 /** Per-chart zoom state; resets when the dashboard's variable changes. */
 function useYView(){
@@ -234,6 +209,12 @@ function useYView(){
 function zoomDomain(domain, view){
   return view?.domain || domain;
 }
+/** The x (year) domain to draw: the zoomed years if any, else the full range. */
+function zoomXDomain(domain, view){
+  return view?.xDomain || domain;
+}
+/** True when the chart is zoomed on either axis. */
+const isZoomed = view => !!(view?.domain || view?.xDomain);
 let plotClipCounter=0;
 /** Appends a group clipped to the plot area (iW × iH, with a little horizontal
  *  slack for markers on the first/last year), so data zoomed out of range is
@@ -256,17 +237,18 @@ function clampWindow([lo,hi],[flo,fhi]){
   if (hi>fhi){ lo-=hi-fhi; hi=fhi; }
   return [lo,hi];
 }
-/** Drag up/down over the plot to highlight a y-range and zoom to it.
- *  Shift + drag (when zoomed) slides the visible range up or down instead.
+/** Drag over the plot to draw a box and zoom to it (years and values). A box
+ *  narrower than MIN_BRUSH_PX zooms only the y-axis; one flatter than that only
+ *  the years. Shift + drag (when zoomed) moves the visible window instead.
  *  Small movements still count as clicks (tooltips, clicking a year). */
-function enableBrushZoom(g,dataLayer,iW,iH,yScale,view,setView,fitted){
+function enableBrushZoom(g,dataLayer,iW,iH,yScale,view,setView,fitted,xScale=null,xFitted=null){
   if (!setView) return;
-  // Crosshair-style cursor over the empty parts of the plot, to hint that you can drag.
+  // Crosshair cursor over the empty parts of the plot, to hint that you can drag a box.
   d3.select(dataLayer.node().parentNode).insert("rect",":first-child").attr("class","pub-skip")
-    .attr("width",iW).attr("height",iH).attr("fill","transparent").style("cursor","ns-resize");
+    .attr("width",iW).attr("height",iH).attr("fill","transparent").style("cursor","crosshair");
   const layer=g.append("g").attr("class","pub-skip").style("pointer-events","none");
-  const clampY=y=>Math.max(0,Math.min(iH,y));
-  let y0=0, y1=0, band=null, panning=false;
+  const clampY=y=>Math.max(0,Math.min(iH,y)), clampX=x=>Math.max(0,Math.min(iW,x));
+  let x0=0, y0=0, x1=0, y1=0, box=null, panning=false;
   const drag=d3.drag().clickDistance(4)
     .filter(e=>{
       if (e.button) return false;
@@ -274,60 +256,107 @@ function enableBrushZoom(g,dataLayer,iW,iH,yScale,view,setView,fitted){
       return x>=0&&x<=iW&&y>=0&&y<=iH;
     })
     .on("start",e=>{
-      y0=y1=clampY(d3.pointer(e.sourceEvent,g.node())[1]);
-      panning=!!(e.sourceEvent?.shiftKey&&view.domain);
+      [x0,y0]=d3.pointer(e.sourceEvent,g.node()); x0=clampX(x0); y0=clampY(y0); x1=x0; y1=y0;
+      panning=!!(e.sourceEvent?.shiftKey&&isZoomed(view));
       if (panning){ g.style("cursor","grabbing"); return; }
-      band=layer.append("rect").attr("x",0).attr("width",iW).attr("y",y0).attr("height",0)
+      box=layer.append("rect").attr("x",x0).attr("y",y0).attr("width",0).attr("height",0)
         .attr("fill",TEAL).attr("opacity",0.12).attr("stroke",TEAL).attr("stroke-dasharray","4,3");
     })
     .on("drag",e=>{
-      y1=d3.pointer(e.sourceEvent,g.node())[1];
-      if (panning){ dataLayer.attr("transform",`translate(0,${y1-y0})`); return; }
-      y1=clampY(y1);
-      band.attr("y",Math.min(y0,y1)).attr("height",Math.abs(y1-y0));
+      [x1,y1]=d3.pointer(e.sourceEvent,g.node());
+      if (panning){
+        const dx=xScale&&view.xDomain?x1-x0:0, dy=view.domain?y1-y0:0;
+        dataLayer.attr("transform",`translate(${dx},${dy})`); return;
+      }
+      x1=clampX(x1); y1=clampY(y1);
+      // Thin boxes show as full-width / full-height stripes, matching what they'll zoom.
+      const w=Math.abs(x1-x0), h=Math.abs(y1-y0);
+      const yOnly=!xScale||w<MIN_BRUSH_PX, xOnly=h<MIN_BRUSH_PX&&!yOnly;
+      box.attr("x",yOnly?0:Math.min(x0,x1)).attr("width",yOnly?iW:w)
+         .attr("y",xOnly?0:Math.min(y0,y1)).attr("height",xOnly?iH:h);
     })
     .on("end",()=>{
       if (panning){
         g.style("cursor",null);
-        if (Math.abs(y1-y0)<MIN_BRUSH_PX){ dataLayer.attr("transform",null); return; }
-        const shift=yScale.invert(0)-yScale.invert(y1-y0);       // data units moved
-        const [lo,hi]=yScale.domain();
-        setView({domain:clampWindow([lo+shift,hi+shift],fitted)||view.domain});
+        if (Math.abs(y1-y0)<MIN_BRUSH_PX&&Math.abs(x1-x0)<MIN_BRUSH_PX){ dataLayer.attr("transform",null); return; }
+        const next={...view};
+        if (view.domain){
+          const shift=yScale.invert(0)-yScale.invert(y1-y0);       // data units moved
+          const [lo,hi]=yScale.domain();
+          next.domain=clampWindow([lo+shift,hi+shift],fitted)||view.domain;
+        }
+        if (xScale&&view.xDomain){
+          const shift=xScale.invert(0)-xScale.invert(x1-x0);
+          const [lo,hi]=xScale.domain();
+          next.xDomain=clampWindow([lo+shift,hi+shift],xFitted)||view.xDomain;
+        }
+        setView(next);
         return;
       }
-      band?.remove(); band=null;
-      if (Math.abs(y1-y0)<MIN_BRUSH_PX) return;
-      const hi=yScale.invert(Math.min(y0,y1)), lo=yScale.invert(Math.max(y0,y1));
-      if (hi>lo) setView({domain:[lo,hi]});
+      box?.remove(); box=null;
+      const w=Math.abs(x1-x0), h=Math.abs(y1-y0);
+      if (w<MIN_BRUSH_PX&&h<MIN_BRUSH_PX) return;
+      const next={...view};
+      if (h>=MIN_BRUSH_PX){
+        const hi=yScale.invert(Math.min(y0,y1)), lo=yScale.invert(Math.max(y0,y1));
+        if (hi>lo) next.domain=[lo,hi];
+      }
+      if (xScale&&w>=MIN_BRUSH_PX){
+        let lo=xScale.invert(Math.min(x0,x1)), hi=xScale.invert(Math.max(x0,x1));
+        if (hi-lo<1){ const c=(lo+hi)/2; lo=c-0.5; hi=c+0.5; }     // at least one year wide
+        next.xDomain=clampWindow([lo,hi],xFitted||xScale.domain())||null;
+      }
+      setView(next);
     });
   g.call(drag);
-  if (view.domain) g.on("dblclick.zoomreset",()=>setView(Y_VIEW_DEFAULT));
+  if (isZoomed(view)) g.on("dblclick.zoomreset",()=>setView(Y_VIEW_DEFAULT));
 }
 /** Bottom-left, under the y-axis, while zoomed: ▲ / ▼ (move the view up or
  *  down by a quarter of what's visible), − (zoom out ×2) and ↺ (reset).
  *  On full-size charts that aren't zoomed, a small hint above the plot says
  *  how to zoom. All are "pub-skip", so they're left out of PNG downloads. */
-function drawZoomControls(g,iH,leftRoom,view,setView,small=false,fitted=null){
+function drawZoomControls(g,iH,leftRoom,view,setView,small=false,fitted=null,iW=null){
   if (!setView) return;
-  if (!view.domain){
+  if (!isZoomed(view)){
     if (!small) g.append("text").attr("class","pub-skip").attr("x",0).attr("y",-8)
       .style("font-size","10.5px").style("fill",TEXT_S).style("font-family",PUB_FONT).style("pointer-events","none")
-      .text("↕ Drag up or down on the chart to zoom the y-axis");
+      .text("Drag a box on the chart to zoom in");
     return;
   }
+  // While zoomed: a clearly labelled "↺ Reset zoom" button, top right of the plot.
+  if (iW){
+    const label=small?"↺ Reset":"↺ Reset zoom", w=small?44:84, h=small?15:20;
+    const rb=g.append("g").attr("class","pub-skip").attr("transform",`translate(${iW-w-(small?2:0)},${small?2:-24})`)   // small panels: just inside the plot's top-right corner
+      .attr("role","button").attr("tabindex",0).attr("aria-label","Reset zoom (or double-click the chart)")
+      .style("cursor","pointer").style("outline","none");
+    rb.append("title").text("Reset zoom (or double-click the chart)");
+    const r=rb.append("rect").attr("width",w).attr("height",h).attr("rx",5).attr("fill","#fff").attr("stroke",TEAL);
+    rb.append("text").attr("x",w/2).attr("y",h/2).attr("dy","0.35em").attr("text-anchor","middle")
+      .style("font-size",small?"9px":"11px").style("font-weight",700).style("font-family",PUB_FONT)
+      .style("fill",TEAL).style("pointer-events","none").style("user-select","none").text(label);
+    rb.on("click",e=>{e.stopPropagation();setView(Y_VIEW_DEFAULT);})
+      .on("mousedown",e=>e.stopPropagation())
+      .on("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();setView(Y_VIEW_DEFAULT);}})
+      .on("mouseover focus",()=>r.attr("fill",`${TEAL}18`)).on("mouseout blur",()=>r.attr("fill","#fff"));
+    if (!small) g.append("text").attr("class","pub-skip").attr("x",0).attr("y",-8)
+      .style("font-size","10.5px").style("fill",TEXT_S).style("font-family",PUB_FONT).style("pointer-events","none")
+      .text("Zoomed in — double-click the chart to reset");
+  }
+  if (!view.domain) return;   // the ▲ ▼ − buttons below move/zoom the y-axis only
   const [lo,hi]=view.domain, span=hi-lo;
   const fit=fitted||view.domain;
-  const moveBy=f=>setView(v=>({domain:clampWindow([v.domain[0]+f*span,v.domain[1]+f*span],fit)||v.domain}));
+  const moveBy=f=>setView(v=>({...v,domain:clampWindow([v.domain[0]+f*span,v.domain[1]+f*span],fit)||v.domain}));
   const btns=[
     {label:"▲",title:"Move the view up",disabled:hi>=fit[1]-span*1e-6,fn:()=>moveBy(0.25)},
     {label:"▼",title:"Move the view down",disabled:lo<=fit[0]+span*1e-6,fn:()=>moveBy(-0.25)},
-    {label:"−",title:"Zoom out",disabled:false,fn:()=>setView(v=>{const [a,b]=v.domain,c=(a+b)/2,h=(b-a);return {domain:clampWindow([c-h,c+h],fit)};})},
-    {label:"↺",title:"Reset the y-axis zoom (or double-click the chart)",disabled:false,fn:()=>setView(Y_VIEW_DEFAULT)},
+    {label:"−",title:"Zoom the y-axis out",disabled:false,fn:()=>setView(v=>{const [a,b]=v.domain,c=(a+b)/2,h=(b-a);return {...v,domain:clampWindow([c-h,c+h],fit)};})},
   ];
   const sz=small?14:18, gap=small?2:3;
   const total=btns.length*sz+(btns.length-1)*gap;
   if (total+4>leftRoom) return;
-  const x0=-Math.min(leftRoom-2,total+8), y=iH+(small?6:8);
+  // Ends 18px left of the y-axis, so it never covers the first year label
+  // (which sits right at the axis when the years are zoomed).
+  const x0=-Math.min(leftRoom-2,total+18), y=iH+(small?6:8);
   const layer=g.append("g").attr("class","pub-skip").attr("role","group").attr("aria-label","Y-axis zoom");
   btns.forEach((b,i)=>{
     const bg=layer.append("g").attr("transform",`translate(${x0+i*(sz+gap)},${y})`)
@@ -1139,18 +1168,20 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
     // only fall back to deriving it from this instance's own baseData/scenData
     // when no explicit list was passed in.
     const allYears=allYearsProp&&allYearsProp.length?allYearsProp:[...new Set([...baseData,...scenData].map(d=>d.year))].filter(Boolean).sort((a,b)=>a-b);
-    const xScale=d3.scaleLinear().domain(safeYearDomain(allYears)).range([0,iW]);
+    const xFitted=safeYearDomain(allYears);
+    const xScale=d3.scaleLinear().domain(zoomXDomain(xFitted,yView)).range([0,iW]);
+    const inX=x=>x>=-0.5&&x<=iW+0.5;   // a year inside the (possibly zoomed) x-range
     const yScale=d3.scaleLinear().domain(zoomDomain(yDomain,yView)).range([iH,0]).clamp(false);
-    applyTimeXAxis(g,xScale,iH,small,allYears);
+    applyTimeXAxis(g,xScale,iH,small,allYears.filter(yr=>inX(xScale(yr))));
     applyYAxis(g,yScale,iW,iH,isCategorical,small,yAxisLabel(varLabel,isCategorical));
     const gp=clippedPlot(svg,g,iW,iH);   // data layer, clipped to the axes
-    drawZoomControls(g,iH,mar.left,yView,setYView,small,yDomain);
-    enableBrushZoom(g,gp,iW,iH,yScale,yView,setYView,yDomain);
+    drawZoomControls(g,iH,mar.left,yView,setYView,small,yDomain,iW);
+    enableBrushZoom(g,gp,iW,iH,yScale,yView,setYView,yDomain,xScale,xFitted);
 
     // Year-selection indicator (pub-skip so stripped in export) — shown at
     // small size too now, so a clicked panel visibly shows which year it's
     // currently pinned to (each panel tracks its own selectedYear).
-    if (selectedYear){
+    if (selectedYear&&inX(xScale(selectedYear))){
       const skip=g.append("g").attr("class","pub-skip");
       const sx=xScale(selectedYear);
       skip.append("rect").attr("x",sx-12).attr("y",0).attr("width",24).attr("height",iH).attr("fill",TEAL).attr("opacity",0.08).attr("rx",2).style("pointer-events","none");
@@ -1264,7 +1295,7 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
         // dot is drawn, so tooltips and year-click always work.
         // Kept on the top layer (not the clipped data layer) so it sits above the
         // year-click strips and receives hovers; skipped when zoomed off-screen.
-        if (cy<0||cy>iH) return;
+        if (cy<0||cy>iH||!inX(cx)) return;
         g.append("circle").attr("cx",cx).attr("cy",cy).attr("r",Math.max(8,dotR+5))
           .attr("fill","transparent")
           .style("cursor",onYearClick?"pointer":"default")
@@ -1288,7 +1319,7 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
       : (showScenario ? [{name:"scenario",dash:SCENARIO_DASHES[0],series:buildSeriesList(scenData,0),label:"Scenario"}] : []);
 
     if (onYearClick){
-      allYears.forEach(yr=>{
+      allYears.filter(yr=>inX(xScale(yr))).forEach(yr=>{
         g.append("rect").attr("x",xScale(yr)-10).attr("y",0).attr("width",20).attr("height",iH)
           .attr("fill","transparent").style("cursor","pointer")
           .style("pointer-events","all")
@@ -1790,17 +1821,19 @@ function DeltaChart({svgRef,deltaData,colourMap,highlighted,isCategorical,
     // Always include zero so the reference line is visible
     const yLo=Math.min(dataMin-pad, 0);
     const yHi=Math.max(dataMax+pad, 0);
-    const xScale=d3.scaleLinear().domain(safeYearDomain(allYears)).range([0,iW]);
+    const xFitted=safeYearDomain(allYears);
+    const xScale=d3.scaleLinear().domain(zoomXDomain(xFitted,yView)).range([0,iW]);
+    const inX=x=>x>=-0.5&&x<=iW+0.5;   // a year inside the (possibly zoomed) x-range
     const yScale=d3.scaleLinear().domain(zoomDomain([yLo,yHi],yView)).range([iH,0]).clamp(false);
-    applyTimeXAxis(g,xScale,iH,false,allYears);
+    applyTimeXAxis(g,xScale,iH,false,allYears.filter(yr=>inX(xScale(yr))));
     applyYAxis(g,yScale,iW,iH,isCategorical,false,yAxisLabel(varLabel,isCategorical,true));
     const gp=clippedPlot(svg,g,iW,iH);   // data layer, clipped to the axes
-    drawZoomControls(g,iH,M.left,yView,setYView,false,[yLo,yHi]);
-    enableBrushZoom(g,gp,iW,iH,yScale,yView,setYView,[yLo,yHi]);
+    drawZoomControls(g,iH,M.left,yView,setYView,false,[yLo,yHi],iW);
+    enableBrushZoom(g,gp,iW,iH,yScale,yView,setYView,[yLo,yHi],xScale,xFitted);
     gp.append("line").attr("x1",0).attr("x2",iW).attr("y1",yScale(0)).attr("y2",yScale(0)).attr("stroke","#64748b").attr("stroke-width",1).attr("stroke-dasharray","4,3");
 
     // Selected year indicator
-    if (selectedYear) {
+    if (selectedYear&&inX(xScale(selectedYear))) {
       const sx=xScale(selectedYear);
       g.append("line").attr("x1",sx).attr("x2",sx).attr("y1",0).attr("y2",iH)
         .attr("stroke",TEAL).attr("stroke-width",1.5).attr("stroke-dasharray","3,3").attr("opacity",0.7).style("pointer-events","none");
@@ -1808,7 +1841,7 @@ function DeltaChart({svgRef,deltaData,colourMap,highlighted,isCategorical,
     }
     // Invisible click zones per year
     if (onYearClick) {
-      allYears.forEach(yr=>{
+      allYears.filter(yr=>inX(xScale(yr))).forEach(yr=>{
         g.append("rect").attr("x",xScale(yr)-10).attr("y",0).attr("width",20).attr("height",iH)
           .attr("fill","transparent").style("cursor","pointer")
           .on("click",()=>onYearClick(yr===selectedYear?null:yr));
@@ -1903,7 +1936,7 @@ function DeltaChart({svgRef,deltaData,colourMap,highlighted,isCategorical,
           gp.append("path").attr("d",sp).attr("transform",`translate(${cx},${cy})`).attr("fill",fc).attr("opacity",opacity).style("pointer-events","none");
         }
         // Invisible hit area for tooltips
-        if (cy<0||cy>iH) return;   // zoomed off-screen; hit areas stay on the top layer for tooltips
+        if (cy<0||cy>iH||!inX(cx)) return;   // zoomed off-screen; hit areas stay on the top layer for tooltips
         g.append("circle").attr("cx",cx).attr("cy",cy).attr("r",8).attr("fill","transparent")
           .on("mouseover",e=>showTT(ttContent,e)).on("mousemove",moveTT).on("mouseout",hideTT);
       });
@@ -3635,7 +3668,6 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
     <YZoomResetContext.Provider value={targetVariable}>
     <ExportScenariosContext.Provider value={exportSelection}>
     <div ref={containerRef} style={{width:"100%",maxWidth:"100%",overflowX:"hidden"}}>
-      <LowRunWarning rows={parsedCache} />
       {view.loading&&<p role="status">Loading chart data…</p>}
       {view.error&&<p role="alert">{view.error} <button onClick={view.retry}>Retry chart</button></p>}
 

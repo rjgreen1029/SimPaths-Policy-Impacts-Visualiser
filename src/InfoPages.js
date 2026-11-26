@@ -51,7 +51,7 @@ export function DatasetPage({ onNavigate }) {
 
       <div style={S.card}>
         <h2 style={S.h2}>The preloaded dataset</h2>
-        <p style={S.pLast}>By default the visualiser shows a simulated education policy scenario applied to 16–29 year olds from 2025, compared with a <strong>Baseline</strong> with no policy change. The <strong>Moderate Education Scenario</strong> increases the proportion of 16–29 year olds in education by 5%.</p>
+        <p style={S.pLast}>By default the visualiser shows a simulated education policy scenario applied to 16–29 year olds from 2025, compared with a <strong>Baseline</strong> with no policy change. The <strong>Increased Education Scenario</strong> increases the proportion of 16–29 year olds in education by 5%.</p>
       </div>
 
       <div style={S.card}>

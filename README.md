@@ -101,7 +101,7 @@ npm start        # development server at http://localhost:3000
 npm run build    # production build in /build
 ```
 
-The default dataset (`public/SimPaths_All_Aggregated_Outputs.csv`) loads automatically. The default view shows the **Baseline** and the **Moderate Education** scenario (+5% of 16–29 year olds in education from 2025). Every scenario in the CSV is shown, so the CSV should contain only those two.
+The default dataset (`public/SimPaths_All_Aggregated_Outputs.csv`) loads automatically. The default view shows the **Baseline** and the **Increased Education** scenario (+5% of 16–29 year olds in education from 2025). Every scenario in the CSV is shown, so the CSV should contain only those two.
 
 ## Data inputs
 
@@ -224,7 +224,6 @@ Everything runs in your browser. Nothing selected with "Visualise Your Own Data"
 | Category / stratum order and variable types | `VARIABLE_DEFS`, `STRATIFIER_DEFS` in `useAggregatedData.js` |
 | Colours | `useAggregatedData.js` (`BRAND_QUAL`, `INDIGO_EDU`, `SEQ_*`, …) |
 | Minimum sample per run | `MIN_RUN_SAMPLE` in `parseCore.js` (and the R script) |
-| Low-run warning threshold | `MIN_RUNS_WARN` in `DashboardSection.js` |
 | Oldest single year in the pyramid | `PYRAMID_TOP_AGE` in `parseCore.js` (and the R script) |
 | Full-screen line-chart shape / text size | `FS_LINE_ASPECT`, `FS_TEXT_SCALE` in `DashboardSection.js` |
 | Default view text | `renderDefaultViewSection` in `App.js`; `ScenarioGraphic.js`; `InfoPages.js` |
@@ -241,7 +240,7 @@ If you change an aggregation rule, change it in both `parseCore.js` and the R sc
 
 - Outputs are simulated, for research purposes — not forecasts or official statistics.
 - Estimates are hidden unless every run has at least 20 people behind them.
-- A 95% interval needs at least 2 runs (or 2 matched pairs for differences); with fewer than 5 runs a warning is shown (`MIN_RUNS_WARN`).
+- A 95% interval needs at least 2 runs (or 2 matched pairs for differences); with a single run the tooltip says so. Intervals from only a few runs are less reliable.
 - −9 is treated as missing everywhere; a variable that uses −9 as a real value would be wrongly excluded.
 - Benefit-unit variables (including Provided care and Income Quintile) are given to every person in the benefit unit, so their shares are shares of people, not of benefit units — e.g. income quintiles are not 20% each when counted by person.
 - Baseline → Scenario differences are modelled policy effects, not observed outcomes.

@@ -17,7 +17,7 @@ const TEXT_MID = "#475569";
 // uplift: extra bar width (%) drawn for the scenario — exaggerated so it is visible
 const SCENARIOS = [
   { label: "Baseline",                    note: "No policy change", uplift: 0,  tag: null },
-  { label: "Moderate Education Scenario", note: "+5% in education", uplift: 15, tag: "+5%" },
+  { label: "Increased Education Scenario", note: "+5% in education", uplift: 15, tag: "+5%" },
 ];
 const BASE_WIDTH = 55;
 
@@ -36,7 +36,7 @@ export default function ScenarioGraphic({ isMobile }) {
 
   return (
     <figure
-      aria-label="Diagram of the education scenario: from 2025, the share of 16 to 29 year olds in education rises by 5% in the Moderate Education Scenario, compared with a Baseline with no policy change."
+      aria-label="Diagram of the education scenario: from 2025, the share of 16 to 29 year olds in education rises by 5% in the Increased Education Scenario, compared with a Baseline with no policy change."
       style={{ margin: 0, background: "#ffffff", border: `1px solid ${AQUA}25`, borderRadius: "8px", padding: isMobile ? "12px" : "14px 16px" }}
     >
       {/* Who / when */}

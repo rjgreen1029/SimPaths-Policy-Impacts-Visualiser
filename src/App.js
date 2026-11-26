@@ -347,7 +347,7 @@ function App({ dataSource } = {}) {
   <div style={{ flex: "1 1 320px", minWidth: 0 }}>
     <p style={{ margin: 0, lineHeight: 1.6, color: TEXT_MID, fontSize: "15.5px" }}>
       {hasDataSource ? sourceText(dataSource.description, "Explore the pre-aggregated results supplied by the connected service.") : <>
-      The default view displays a pre-aggregated dataset showing a simulated education policy intervention applied to 16–29 year olds from 2025, compared against a <strong>Baseline</strong> with no policy change. The <strong>Moderate Education Scenario</strong> increases the proportion of 16–29 year olds in education by 5%.
+      The default view displays a pre-aggregated dataset showing a simulated education policy intervention applied to 16–29 year olds from 2025, compared against a <strong>Baseline</strong> with no policy change. The <strong>Increased Education Scenario</strong> increases the proportion of 16–29 year olds in education by 5%.
       </>}
     </p>
     <p style={{ margin: "16px 0 0", lineHeight: 1.6, color: TEXT_MID, fontSize: "15.5px" }}>

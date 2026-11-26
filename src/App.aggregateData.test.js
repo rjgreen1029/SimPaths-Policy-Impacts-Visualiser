@@ -260,7 +260,7 @@ test("connected charts open on the Visualiser tab and the scenario disclosure de
   expect(screen.getByRole("tab", {name: "Visualiser"})).toHaveAttribute("aria-selected", "true");
   fireEvent.click(screen.getByRole("button", {name: /About this experiment/}));
   expect(screen.getByText("A pension policy comparison", {selector: "#home-scenario p"})).toBeVisible();
-  expect(screen.queryByText("Moderate Education Scenario")).toBeNull();
+  expect(screen.queryByText("Increased Education Scenario")).toBeNull();
   expect(screen.getByTestId("charts")).toBeVisible();
   expectNoSourceRequests();
 });
