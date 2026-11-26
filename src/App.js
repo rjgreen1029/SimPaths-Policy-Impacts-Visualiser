@@ -17,6 +17,8 @@
  */
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import * as d3 from "d3";
+import { csvParse } from "./csvParse.js";
+import FolderStructureHelp from "./FolderStructureHelp";
 import DashboardSection, { MIN_RUNS_WARN } from "./DashboardSection";
 import ScenarioGraphic from "./ScenarioGraphic";
 import StaticPage from "./StaticPage";
@@ -184,7 +186,8 @@ function App() {
     setDefaultLoadFailed(false);
     setIsLoadingDefault(true);
     setStatusMessage("Loading default dataset…");
-    d3.csv(url, parseCsvRow)
+    d3.text(url)
+      .then(text => csvParse(text, parseCsvRow))
       .then(rows => {
         if (!rows.length) throw new Error("File was found but contained no rows — check it's the actual CSV and not an HTML/error page being served at that URL.");
         setParsedCache(rows);
@@ -277,7 +280,6 @@ function App() {
   const linkBtnStyle = { color: AQUA, textDecoration: "none", fontSize: "14px", padding: "10px 14px", background: `${AQUA}10`, borderRadius: "6px", border: `1px solid ${AQUA}30`, transition: "all 0.2s", display: "inline-flex", alignItems: "center", fontWeight: 500 };
   // Compact pill variant used inline next to the "Explore changes across..." text
   const smallLinkStyle = { color: AQUA, textDecoration: "none", fontSize: "12px", padding: "5px 10px", background: `${AQUA}10`, borderRadius: "6px", border: `1px solid ${AQUA}30`, transition: "all 0.2s", display: "inline-flex", alignItems: "center", fontWeight: 500, whiteSpace: "nowrap" };
-  const [showFolderStructure, setShowFolderStructure] = useState(false);
   // Home page drop-down sections (both start closed).
   const [homeOpen, setHomeOpen] = useState({ scenario: false, limits: false });
   const toggleHomeSection = key => setHomeOpen(o => ({ ...o, [key]: !o[key] }));
@@ -558,30 +560,7 @@ function App() {
 
           <p style={{ margin: "0 0 4px", fontSize: 13, color: TEXT_DARK }}>
             Select parent folder with runs organised into <strong>Baseline</strong> and <strong>Scenario</strong> subfolders.{" "}
-            <span style={{ position: "relative", display: "inline-block" }}
-              onMouseEnter={() => setShowFolderStructure(true)}
-              onMouseLeave={() => setShowFolderStructure(false)}>
-              <button type="button"
-                onFocus={() => setShowFolderStructure(true)} onBlur={() => setShowFolderStructure(false)}
-                style={{ background: "none", border: "none", padding: 0, color: "#2563eb", fontSize: 13, fontWeight: 600, cursor: "pointer", textDecoration: "underline" }}>
-                View folder structure
-              </button>
-              {showFolderStructure && (
-                <span style={{ position: "absolute", left: 0, top: "calc(100% + 8px)", background: "#fff", border: "1px solid #ddd", borderRadius: "8px", padding: "12px 16px", boxShadow: "0 4px 12px rgba(0, 0, 0, 0.15)", zIndex: 100, minWidth: "280px", textAlign: "left" }}>
-                  <pre style={{ margin: 0, fontSize: "12px", lineHeight: 1.5, fontFamily: "monospace", color: "#333" }}>
-{`Your Data Folder/
-├── Baseline/
-│   ├── Run 1/
-│   ├── Run 2/
-│   └── Run 3/
-└── Scenario/
-    ├── Run 1/
-    ├── Run 2/
-    └── Run 3/`}
-                  </pre>
-                </span>
-              )}
-            </span>
+            <FolderStructureHelp />
           </p>
           <p style={{ margin: 0, fontSize: 11, color: TEAL, lineHeight: 1.5, fontStyle: "italic" }}>
             Nothing you select is uploaded or stored anywhere — all aggregation happens locally, in your browser.

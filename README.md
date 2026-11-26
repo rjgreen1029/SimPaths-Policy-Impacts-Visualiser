@@ -264,3 +264,5 @@ The full licence text is in [`LICENSE`](LICENSE). SimPaths itself is distributed
 ## Feedback
 
 Use the Feedback button in the app, or email [healthmod@glasgow.ac.uk](mailto:healthmod@glasgow.ac.uk?subject=SimPaths%20Policy%20Impacts%20Visualiser).
+
+The Connect Data panel includes keyboard and pointer access to the folder layout. CSV imports use D3’s row parser without dynamic code generation. Chart tooltips display labels as literal text.

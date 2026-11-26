@@ -25,6 +25,7 @@
  */
 import React, { useState, useRef, useEffect, useMemo, useCallback, createContext, useContext } from "react";
 import * as d3 from "d3";
+import { setTooltipContent } from "./tooltipContent.js";
 import { createPortal } from "react-dom";
 import {
   useAggregatedData, useScenarioNames, scenarioLabel,
@@ -124,22 +125,22 @@ export const MIN_RUNS_WARN = 5;
 /** Tooltip line warning about a low run count; "" when n is fine or unknown. */
 function fmtRunsWarning(n){
   if (n==null||isNaN(n)||n>=MIN_RUNS_WARN) return "";
-  if (n===1) return `<br/><span style="color:#b45309;font-weight:600">⚠ Based on a single run — no uncertainty interval can be computed</span>`;
-  return `<br/><span style="color:#b45309;font-weight:600">⚠ Based on only ${n} run${n===1?"":"s"} — the uncertainty interval may be unreliable</span>`;
+  if (n===1) return `\n⚠ Based on a single run — no uncertainty interval can be computed`;
+  return `\n⚠ Based on only ${n} run${n===1?"":"s"} — the uncertainty interval may be unreliable`;
 }
 function fmtSample(row){
   if (!row||row.mean_sample==null||isNaN(row.mean_sample)) return "";
   const n=row.n_runs;
-  return `<br/>Based on: ${Math.round(row.mean_sample).toLocaleString()} people per run${n!=null&&n>1?` (average of ${n} runs)`:""}`+fmtRunsWarning(n);
+  return `\nBased on: ${Math.round(row.mean_sample).toLocaleString()} people per run${n!=null&&n>1?` (average of ${n} runs)`:""}`+fmtRunsWarning(n);
 }
 /** Delta-specific variant of fmtSample() — shows paired run count when a paired
  *  delta is available, otherwise both sides' avg sample size. */
 function fmtDeltaSample(row){
   if (!row) return "";
   const people=row.base_mean_sample!=null&&row.scen_mean_sample!=null
-    ?`<br/>Based on (people per run, average): Baseline ${Math.round(row.base_mean_sample).toLocaleString()} · Scenario ${Math.round(row.scen_mean_sample).toLocaleString()}`:"";
+    ?`\nBased on (people per run, average): Baseline ${Math.round(row.base_mean_sample).toLocaleString()} · Scenario ${Math.round(row.scen_mean_sample).toLocaleString()}`:"";
   if (row.paired_n_runs>0){
-    return `<br/>Matched run pairs: ${row.paired_n_runs} (Baseline and scenario runs with the same seed)${people}`+fmtRunsWarning(row.paired_n_runs);
+    return `\nMatched run pairs: ${row.paired_n_runs} (Baseline and scenario runs with the same seed)${people}`+fmtRunsWarning(row.paired_n_runs);
   }
   if (!people) return "";
   const minRuns=Math.min(row.base_n_runs??Infinity,row.scen_n_runs??Infinity);
@@ -160,7 +161,7 @@ function fmtMissing(mrow){
   if (pct==="0.0") return "";
   const avgN=mrow.mean_sample!=null&&!isNaN(mrow.mean_sample)?Math.round(mrow.mean_sample):null;
   const n=mrow.n_runs;
-  return `<br/>Missing: ${pct}%`+(avgN!=null?` (avg ${avgN.toLocaleString()} missing${n!=null?` per run, across ${n} run${n===1?"":"s"}`:""})`:"");
+  return `\nMissing: ${pct}%`+(avgN!=null?` (avg ${avgN.toLocaleString()} missing${n!=null?` per run, across ${n} run${n===1?"":"s"}`:""})`:"");
 }
 /** d3.extent() over a list of years, but guards the two degenerate cases: no years at all (→ [0,1]) and a single distinct year (→ that year ±1, so the axis isn't zero-width). */
 function safeYearDomain(yrs){
@@ -635,8 +636,8 @@ function getTooltip(){
   if (!el){ el=document.createElement("div"); el.id="smpaths-tt"; Object.assign(el.style,{position:"fixed",pointerEvents:"none",zIndex:9999,background:"rgba(15,23,42,0.93)",color:"#f8fafc",padding:"9px 13px",borderRadius:"8px",fontSize:"13px",lineHeight:"1.65",maxWidth:"240px",boxShadow:"0 4px 20px rgba(0,0,0,0.3)",opacity:0,transition:"opacity 0.1s ease",fontFamily:"system-ui,sans-serif"}); document.body.appendChild(el); }
   return el;
 }
-/** Sets the tooltip's HTML content and fades it in, positioned at the given mouse event's location. */
-function showTT(html,e){const t=getTooltip();t.innerHTML=html;t.style.opacity=1;moveTT(e);}
+/** Sets the tooltip's text and fades it in, positioned at the given mouse event's location. */
+function showTT(content,e){const t=getTooltip();setTooltipContent(t,content);t.style.opacity=1;moveTT(e);}
 /** Repositions the tooltip to follow the mouse, flipping to the left of the cursor if it would otherwise overflow the right edge of the viewport. */
 function moveTT(e){const t=getTooltip();const w=t.offsetWidth||220;t.style.left=(e.clientX+14+w>window.innerWidth?e.clientX-w-14:e.clientX+14)+"px";t.style.top=(e.clientY-20)+"px";}
 /** Fades the tooltip out (on mouseout). */
@@ -1191,7 +1192,7 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
       sorted.filter(d=>!isNaN(d.mean_value)).forEach(d=>{
         const cx=xScale(d.year), cy=yScale(d.mean_value);
         const mrow=missingLookup?missingLookup.get(`${scenarioKey}|${d.year}|${stratValKey}`):null;
-        const ttHtml=`<strong>${label}</strong><br/>${scenLabel}: ${fmt(d.mean_value,isCategorical)}`+(!isNaN(d.lower_ci)?`<br/>95% CI: [${fmt(d.lower_ci,isCategorical)}, ${fmt(d.upper_ci,isCategorical)}]`:"")+fmtSample(d)+fmtMissing(mrow)+`<br/>Year: ${d.year}${onYearClick?" · click to filter a cross-section":""}`;
+        const ttContent = {title: `${label}`, lines: [`\n${scenLabel}: ${fmt(d.mean_value,isCategorical)}`+(!isNaN(d.lower_ci)?`\n95% CI: [${fmt(d.lower_ci,isCategorical)}, ${fmt(d.upper_ci,isCategorical)}]`:"")+fmtSample(d)+fmtMissing(mrow)+`\nYear: ${d.year}${onYearClick?" · click to filter a cross-section":""}`]};
         const dotR=small?(isLit?2.5:1.5):(isLit?3.5:2);
         // Only draw visible markers on combined/stratified-categorical plots
         // (where symIdx is set). Plain line charts get no visible dots —
@@ -1209,7 +1210,7 @@ function LineChart({svgRef,baseData,scenData,colourMap,highlighted,
         g.append("circle").attr("cx",cx).attr("cy",cy).attr("r",Math.max(8,dotR+5))
           .attr("fill","transparent")
           .style("cursor",onYearClick?"pointer":"default")
-          .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT)
+          .on("mouseover",e=>showTT(ttContent,e)).on("mousemove",moveTT).on("mouseout",hideTT)
           .on("click",()=>{if(onYearClick) onYearClick(d.year);});
       });
     };
@@ -1354,11 +1355,11 @@ function StackedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
           const fc=isLit?baseC:GREY;
           const barY=yScale(seg.y1), barH=Math.abs(yScale(seg.y0)-yScale(seg.y1));
           const bh=Math.max(0.5,barH);
-          const ttHtml=`<strong>${addSpaces(stratLabel(seg.vv,varLabel))}</strong><br/>${isBase?"Baseline":scenLbl}: ${fmt(seg.val,true)}`+(seg.row&&!isNaN(seg.row.lower_ci)?`<br/>95% CI: [${fmt(seg.row.lower_ci,true)}, ${fmt(seg.row.upper_ci,true)}]`:"")+fmtSample(seg.row)+`<br/>Year: ${yr}`;
+          const ttContent = {title: `${addSpaces(stratLabel(seg.vv,varLabel))}`, lines: [`\n${isBase?"Baseline":scenLbl}: ${fmt(seg.val,true)}`+(seg.row&&!isNaN(seg.row.lower_ci)?`\n95% CI: [${fmt(seg.row.lower_ci,true)}, ${fmt(seg.row.upper_ci,true)}]`:"")+fmtSample(seg.row)+`\nYear: ${yr}`]};
           if (isBase){
             g.append("rect").attr("x",ox+bx).attr("y",barY).attr("width",bw).attr("height",bh)
               .attr("fill",fc).attr("opacity",isLit?0.88:0.18)
-              .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
+              .on("mouseover",e=>showTT(ttContent,e)).on("mousemove",moveTT).on("mouseout",hideTT);
           } else {
             g.append("rect").attr("x",ox+bx).attr("y",barY).attr("width",bw).attr("height",bh)
               .attr("fill",fc).attr("opacity",isLit?0.32:0.07);
@@ -1366,7 +1367,7 @@ function StackedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
             else drawHatchClipped(svg,g,ox+bx,barY,bw,bh,fc,isLit?0.55:0.1,4,hatchAngle);
             g.append("rect").attr("x",ox+bx).attr("y",barY).attr("width",bw).attr("height",bh)
               .attr("fill","none").attr("stroke",fc).attr("stroke-width",1).attr("opacity",isLit?0.65:0.12)
-              .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
+              .on("mouseover",e=>showTT(ttContent,e)).on("mousemove",moveTT).on("mouseout",hideTT);
           }
         });
       });
@@ -1385,10 +1386,10 @@ function StackedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
           const isLit=allLit||highlighted.has(seg.vv);
           const colour=colourMap[seg.vv]||GREY, fc=isLit?colour:GREY;
           const barY=yScale(seg.y1), barH=Math.abs(yScale(seg.y0)-yScale(seg.y1));
-          const ttHtml=`<strong>${addSpaces(stratLabel(seg.vv,varLabel))}</strong><br/>${label}: ${fmt(seg.val,true)}`+(seg.row&&!isNaN(seg.row.lower_ci)?`<br/>95% CI: [${fmt(seg.row.lower_ci,true)}, ${fmt(seg.row.upper_ci,true)}]`:"")+fmtSample(seg.row)+`<br/>Year: ${yr}`;
+          const ttContent = {title: `${addSpaces(stratLabel(seg.vv,varLabel))}`, lines: [`\n${label}: ${fmt(seg.val,true)}`+(seg.row&&!isNaN(seg.row.lower_ci)?`\n95% CI: [${fmt(seg.row.lower_ci,true)}, ${fmt(seg.row.upper_ci,true)}]`:"")+fmtSample(seg.row)+`\nYear: ${yr}`]};
           g.append("rect").attr("x",ox+bx).attr("y",barY).attr("width",bw).attr("height",Math.max(0.5,barH))
             .attr("fill","transparent")
-            .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
+            .on("mouseover",e=>showTT(ttContent,e)).on("mousemove",moveTT).on("mouseout",hideTT);
         });
       });
     });
@@ -1549,17 +1550,17 @@ function GroupedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
             if (!row||isNaN(row.mean_value)) return;
             const bx=xInner(key), barY=yScale(row.mean_value), barH=Math.abs(y0-barY);
             const barColour=isBase?(isCategorical?fc:(isLit?NUMERIC_BASE_COLOUR:GREY)):(scenColour&&isLit?scenColour:fc);
-            const ttHtml=`<strong>${addSpaces(stratLabel(vv,varLabel))} — ${addSpaces(stratLabel(sv,viewBy))}</strong><br/>${lbl}: ${fmt(row.mean_value,isCategorical)}`+(!isNaN(row.lower_ci)?`<br/>95% CI: [${fmt(row.lower_ci,isCategorical)}, ${fmt(row.upper_ci,isCategorical)}]`:"")+fmtSample(row)+(year?`<br/>Year: ${year}`:"");
+            const ttContent = {title: `${addSpaces(stratLabel(vv,varLabel))} — ${addSpaces(stratLabel(sv,viewBy))}`, lines: [`\n${lbl}: ${fmt(row.mean_value,isCategorical)}`+(!isNaN(row.lower_ci)?`\n95% CI: [${fmt(row.lower_ci,isCategorical)}, ${fmt(row.upper_ci,isCategorical)}]`:"")+fmtSample(row)+(year?`\nYear: ${year}`:"")]};
             const gx=ox+mx+bx;
             if (isBase){
-              gp.append("rect").attr("x",gx).attr("y",Math.min(y0,barY)).attr("width",bw).attr("height",Math.max(1,barH)).attr("fill",barColour).attr("opacity",isLit?0.85:0.18).attr("rx",2).on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
+              gp.append("rect").attr("x",gx).attr("y",Math.min(y0,barY)).attr("width",bw).attr("height",Math.max(1,barH)).attr("fill",barColour).attr("opacity",isLit?0.85:0.18).attr("rx",2).on("mouseover",e=>showTT(ttContent,e)).on("mousemove",moveTT).on("mouseout",hideTT);
             } else {
               const _gy=Math.min(y0,barY), _gh=Math.max(1,barH);
               gp.append("rect").attr("x",gx).attr("y",_gy).attr("width",bw).attr("height",_gh).attr("fill",barColour).attr("opacity",isLit?0.32:0.07).attr("rx",2);
               if (fillStyle==="dot") drawDotPattern(svg,gp,gx,_gy,bw,_gh,barColour,isLit?0.7:0.15,5);
               else drawHatchClipped(svg,gp,gx,_gy,bw,_gh,barColour,isLit?0.55:0.1,4,hatchAngle);
               gp.append("rect").attr("x",gx).attr("y",_gy).attr("width",bw).attr("height",_gh).attr("fill","none").attr("stroke",barColour).attr("stroke-width",1.5).attr("opacity",isLit?0.9:0.2).attr("rx",2)
-                .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
+                .on("mouseover",e=>showTT(ttContent,e)).on("mousemove",moveTT).on("mouseout",hideTT);
             }
             if (!isNaN(row.lower_ci)&&!isNaN(row.upper_ci)&&isLit){
               const ciColour=d3.color(barColour).darker(0.8).toString();
@@ -1583,10 +1584,10 @@ function GroupedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
             if (!sRow||isNaN(sRow.mean_value)) return;
             const barY=yScale(sRow.mean_value), y0loc=yScale(Math.max(0,yDom[0]>0?yDom[0]:0));
             const barH=Math.abs(y0loc-barY);
-            const ttHtml=`<strong>${addSpaces(stratLabel(vv,varLabel))} — ${addSpaces(stratLabel(sv,viewBy))}</strong><br/>${label}: ${fmt(sRow.mean_value,isCategorical)}`+(!isNaN(sRow.lower_ci)?`<br/>95% CI: [${fmt(sRow.lower_ci,isCategorical)}, ${fmt(sRow.upper_ci,isCategorical)}]`:"")+fmtSample(sRow)+(year?`<br/>Year: ${year}`:"");
+            const ttContent = {title: `${addSpaces(stratLabel(vv,varLabel))} — ${addSpaces(stratLabel(sv,viewBy))}`, lines: [`\n${label}: ${fmt(sRow.mean_value,isCategorical)}`+(!isNaN(sRow.lower_ci)?`\n95% CI: [${fmt(sRow.lower_ci,isCategorical)}, ${fmt(sRow.upper_ci,isCategorical)}]`:"")+fmtSample(sRow)+(year?`\nYear: ${year}`:"")]};
             gp.append("rect").attr("x",ox+mx+bx).attr("y",Math.min(y0loc,barY)).attr("width",bw).attr("height",Math.max(1,barH))
               .attr("fill","transparent")
-              .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
+              .on("mouseover",e=>showTT(ttContent,e)).on("mousemove",moveTT).on("mouseout",hideTT);
           });
         });
       });
@@ -1632,16 +1633,16 @@ function GroupedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
         const row=getRow(rows,vv); if (!row) return;
         const bx=xInner(key), barY=yScale(row.mean_value), barH=Math.abs(y0-barY);
         const barColour=isBase?(isCategorical?fc:(isLit?NUMERIC_BASE_COLOUR:GREY)):(scenColour&&isLit?scenColour:fc);
-        const ttHtml=`<strong>${addSpaces(stratLabel(vv,varLabel))}</strong><br/>${lbl}: ${fmt(row.mean_value,isCategorical)}`+(!isNaN(row.lower_ci)?`<br/>95% CI: [${fmt(row.lower_ci,isCategorical)}, ${fmt(row.upper_ci,isCategorical)}]`:"")+fmtSample(row)+fmtMissing(isBase?missingBase:null)+(year?`<br/>Year: ${year}`:"");
+        const ttContent = {title: `${addSpaces(stratLabel(vv,varLabel))}`, lines: [`\n${lbl}: ${fmt(row.mean_value,isCategorical)}`+(!isNaN(row.lower_ci)?`\n95% CI: [${fmt(row.lower_ci,isCategorical)}, ${fmt(row.upper_ci,isCategorical)}]`:"")+fmtSample(row)+fmtMissing(isBase?missingBase:null)+(year?`\nYear: ${year}`:"")]};
         if (isBase){
-          gp.append("rect").attr("x",ox+bx).attr("y",Math.min(y0,barY)).attr("width",bw).attr("height",Math.max(1,barH)).attr("fill",barColour).attr("opacity",isLit?0.85:0.18).attr("rx",2).on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
+          gp.append("rect").attr("x",ox+bx).attr("y",Math.min(y0,barY)).attr("width",bw).attr("height",Math.max(1,barH)).attr("fill",barColour).attr("opacity",isLit?0.85:0.18).attr("rx",2).on("mouseover",e=>showTT(ttContent,e)).on("mousemove",moveTT).on("mouseout",hideTT);
         } else {
           const _gx=ox+bx, _gy=Math.min(y0,barY), _gh=Math.max(1,barH);
           gp.append("rect").attr("x",_gx).attr("y",_gy).attr("width",bw).attr("height",_gh).attr("fill",barColour).attr("opacity",isLit?0.32:0.07).attr("rx",2);
           if (fillStyle==="dot") drawDotPattern(svg,gp,_gx,_gy,bw,_gh,barColour,isLit?0.7:0.15,5);
           else drawHatchClipped(svg,gp,_gx,_gy,bw,_gh,barColour,isLit?0.55:0.1,4,hatchAngle);
           gp.append("rect").attr("x",_gx).attr("y",_gy).attr("width",bw).attr("height",_gh).attr("fill","none").attr("stroke",barColour).attr("stroke-width",1.5).attr("opacity",isLit?0.9:0.2).attr("rx",2)
-            .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
+            .on("mouseover",e=>showTT(ttContent,e)).on("mousemove",moveTT).on("mouseout",hideTT);
         }
         if (!isNaN(row.lower_ci)&&!isNaN(row.upper_ci)&&isLit){
           const ciColour=d3.color(barColour).darker(0.8).toString();
@@ -1663,10 +1664,10 @@ function GroupedBarChart({svgRef,baseData,scenData,colourMap,highlighted,
         if (!sRow||isNaN(sRow.mean_value)) return;
         const barY=yScale(sRow.mean_value), y0loc=yScale(Math.max(0,yDom[0]>0?yDom[0]:0));
         const barH=Math.abs(y0loc-barY);
-        const ttHtml=`<strong>${addSpaces(stratLabel(vv,varLabel))}</strong><br/>${label}: ${fmt(sRow.mean_value,isCategorical)}`+(!isNaN(sRow.lower_ci)?`<br/>95% CI: [${fmt(sRow.lower_ci,isCategorical)}, ${fmt(sRow.upper_ci,isCategorical)}]`:"")+fmtSample(sRow)+(year?`<br/>Year: ${year}`:"");
+        const ttContent = {title: `${addSpaces(stratLabel(vv,varLabel))}`, lines: [`\n${label}: ${fmt(sRow.mean_value,isCategorical)}`+(!isNaN(sRow.lower_ci)?`\n95% CI: [${fmt(sRow.lower_ci,isCategorical)}, ${fmt(sRow.upper_ci,isCategorical)}]`:"")+fmtSample(sRow)+(year?`\nYear: ${year}`:"")]};
         gp.append("rect").attr("x",ox+bx).attr("y",Math.min(y0loc,barY)).attr("width",bw).attr("height",Math.max(1,barH))
           .attr("fill","transparent")
-          .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
+          .on("mouseover",e=>showTT(ttContent,e)).on("mousemove",moveTT).on("mouseout",hideTT);
       });
     });
     if (!small) drawBSKey(g,iW,iH,showBaseline,scenEntries.map(({name,label},i)=>({name,dash:SCENARIO_DASHES[i%SCENARIO_DASHES.length],label})));
@@ -1835,7 +1836,7 @@ function DeltaChart({svgRef,deltaData,colourMap,highlighted,isCategorical,
         .attr("opacity",opacity).style("pointer-events","none");
       sorted.filter(d=>!isNaN(d.mean_value)).forEach(d=>{
         const cx=xScale(d.year), cy=yScale(d.mean_value);
-        const ttHtml=`<strong>${label}</strong><br/>Difference (scenario − Baseline): ${fmtDelta(d.mean_value,isCategorical)}`+(!isNaN(d.lower_ci)?`<br/>95% interval: [${fmtDelta(d.lower_ci,isCategorical)}, ${fmtDelta(d.upper_ci,isCategorical)}]`:"")+fmtDeltaSample(d)+`<br/>Year: ${d.year}`;
+        const ttContent = {title: `${label}`, lines: [`\nDifference (scenario − Baseline): ${fmtDelta(d.mean_value,isCategorical)}`+(!isNaN(d.lower_ci)?`\n95% interval: [${fmtDelta(d.lower_ci,isCategorical)}, ${fmtDelta(d.upper_ci,isCategorical)}]`:"")+fmtDeltaSample(d)+`\nYear: ${d.year}`]};
         if (symIdx!==undefined){
           const sp=d3.symbol().type(SYMBOLS[symIdx]).size(isLit?48:24)();
           gp.append("path").attr("d",sp).attr("transform",`translate(${cx},${cy})`).attr("fill",fc).attr("opacity",opacity).style("pointer-events","none");
@@ -1843,7 +1844,7 @@ function DeltaChart({svgRef,deltaData,colourMap,highlighted,isCategorical,
         // Invisible hit area for tooltips
         if (cy<0||cy>iH) return;   // zoomed off-screen; hit areas stay on the top layer for tooltips
         g.append("circle").attr("cx",cx).attr("cy",cy).attr("r",8).attr("fill","transparent")
-          .on("mouseover",e=>showTT(ttHtml,e)).on("mousemove",moveTT).on("mouseout",hideTT);
+          .on("mouseover",e=>showTT(ttContent,e)).on("mousemove",moveTT).on("mouseout",hideTT);
       });
     });
 
@@ -2572,7 +2573,7 @@ function PopulationPyramid({ baselineData, scenarioData, year, showBaseline, sho
       scenLookups.forEach(({ lookup, label }) => lines.push(`${label}: ♀ ${pct(lookup.Female?.[a])} · ♂ ${pct(lookup.Male?.[a])}`));
       const nF = baseCounts.Female?.[a], nM = baseCounts.Male?.[a];
       if (hasBase && (nF != null || nM != null)) lines.push(`Based on (Baseline, people per run): ♀ ${nF != null ? Math.round(nF) : "—"} · ♂ ${nM != null ? Math.round(nM) : "—"}`);
-      const tt = `<strong>Age ${a}</strong><br/>` + lines.join("<br/>");
+      const tt = {title: `Age ${a}`, lines};
       root.append("rect").attr("x", 0).attr("y", y0 - (yScale.step() - bh) / 2).attr("width", iW).attr("height", yScale.step())
         .attr("fill", "transparent").style("cursor", "default")
         .on("mouseover", e => showTT(tt, e)).on("mousemove", moveTT).on("mouseout", hideTT);
@@ -2928,7 +2929,7 @@ function WageDistributionChart({ baselineData, scenarioData, year, showAllYears,
     for (const { lk, isScen, label:scenLbl, fillStyle, colour:scenarioColour } of scenarios) {
       for (const sv of stratVals) {
         const colour   = isStratified ? (stratColours[sv] || TEAL) : scenarioColour;
-        const stratTip = sv === "Overall" ? "" : `<br/>${sv}`;
+        const stratTip = sv === "Overall" ? "" : `\n${sv}`;
         const gIdx     = groupIdx++;
         const yMap = lk.get(yr);
         if (!yMap) continue;
@@ -2946,7 +2947,7 @@ function WageDistributionChart({ baselineData, scenarioData, year, showAllYears,
           const bh = iH - by;
           if (bh <= 0) continue;
 
-          const ttHtml = `<strong>${bl}</strong>${stratTip}<br/>${scenLbl}: ${(v*100).toFixed(1)}%`+(typeof row === "object" ? fmtRunsWarning(row.n_runs) : "");
+          const ttContent = {title: `${bl}`, lines: [`${stratTip}\n${scenLbl}: ${(v*100).toFixed(1)}%`+(typeof row === "object" ? fmtRunsWarning(row.n_runs) : "")]};
 
           if (isScen) {
             dg.append("rect").attr("x",bx+gx).attr("y",by).attr("width",bw).attr("height",bh)
@@ -2963,7 +2964,7 @@ function WageDistributionChart({ baselineData, scenarioData, year, showAllYears,
           if (!small) {
             dg.append("rect").attr("x",bx+gx).attr("y",by).attr("width",bw).attr("height",bh)
               .attr("fill","transparent").style("cursor","default")
-              .on("mouseover", e => showTT(ttHtml, e))
+              .on("mouseover", e => showTT(ttContent, e))
               .on("mousemove", moveTT)
               .on("mouseout",  hideTT);
           }

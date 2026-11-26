@@ -29,7 +29,7 @@
  *      over all columns.
  */
 
-import * as d3 from "d3";
+import { csvParse } from "./csvParse.js";
 
 // ─── Binning helpers ──────────────────────────────────────────────────────────
 /** Population pyramid: single years of age, with ages PYRAMID_TOP_AGE and over
@@ -293,7 +293,7 @@ function buildBenefitMap(benefitText) {
   };
 
   if (delim === ",") {
-    d3.csvParse(benefitText, parseRow);
+    csvParse(benefitText, parseRow);
   } else {
     // Manual parse for semicolon/tab delimited files
     const lines = benefitText.split("\n");
