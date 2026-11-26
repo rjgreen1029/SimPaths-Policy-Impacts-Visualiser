@@ -19,11 +19,13 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import * as d3 from "d3";
 import { csvParse } from "./csvParse.js";
 import FolderStructureHelp from "./FolderStructureHelp";
-import DashboardSection, { MIN_RUNS_WARN } from "./DashboardSection";
+import AggregateDataPanel from "./AggregateDataPanel";
+import { normaliseAggregateRows, comparisonLabel, sourceText, ComparisonNamesContext } from "./aggregateDataSource";
+import DashboardSection from "./DashboardSection";
 import ScenarioGraphic from "./ScenarioGraphic";
 import StaticPage from "./StaticPage";
 import { DatasetPage, ResourcesPage, BENEFIT_UNIT_DEFINITION } from "./InfoPages";
-import { parseCsvRow, scenarioLabel, titleCase } from "./useAggregatedData";
+import { parseCsvRow, titleCase } from "./useAggregatedData";
 import { parseLocalFolder } from "./localFolderParser";
 
 /** Top navigation tabs. Each has its own URL (#/id) so links can be shared and
@@ -126,7 +128,7 @@ function withBenefitUnitInfo(text) {
  * or the full page: header banner → intro card → sidebar + DashboardSection
  * → closing banner.
  */
-function App() {
+function App({ dataSource } = {}) {
   const [activeVariable, setActiveVariable]   = useState("Highest Level of Education");
   const [tab, setTab] = useState(tabFromHash);   // which top tab is showing
   // Follow the URL (#/id), so back/forward and shared links land on the right tab.
@@ -150,6 +152,31 @@ function App() {
   const [defaultLoadFailed, setDefaultLoadFailed] = useState(false); // true = the default CSV fetch/parse failed — distinct from isUsingDefault, which alone can't tell success from failure
   const [statusMessage,  setStatusMessage]    = useState("");        // loading/error text shown near the Connect Data panel
   const [isProcessing,   setIsProcessing]     = useState(false);     // true while a local folder is being read/aggregated
+  // A supplied source is controlled by its host, even while empty/loading.
+  // It never falls back to default CSVs or performs an API request itself.
+  const hasDataSource = dataSource != null;
+  const sourceIsObject = typeof dataSource === "object" && !Array.isArray(dataSource);
+  const suppliedRows = dataSource?.rows;
+  // Optional intent hints are best-effort; they never change the active chart.
+  function hintVariable(variable) {
+    try { dataSource?.viewSource?.hint?.({variable}); } catch {}
+  }
+  function cancelHint() {
+    try { dataSource?.viewSource?.cancelHint?.(); } catch {}
+  }
+  const connectedData = useMemo(() => {
+    if (!hasDataSource) return { rows: [], error: "" };
+    try {
+      if (!sourceIsObject) throw new TypeError("Expected a data source object.");
+      return { rows: normaliseAggregateRows(suppliedRows === undefined ? [] : suppliedRows), error: "" };
+    } catch {
+      return { rows: [], error: "Connected aggregate data could not be displayed. Ask the data source to supply chart-ready aggregate rows." };
+    }
+  }, [hasDataSource, sourceIsObject, suppliedRows]);
+  const displayedRows = hasDataSource ? connectedData.rows : parsedCache;
+  const sourceRef = useRef(dataSource);
+  useEffect(() => { sourceRef.current = dataSource; }, [dataSource]);
+  const requestGeneration = useRef(0);
   const [openDomains, setOpenDomains] = useState({ "Demographics": true }); // which sidebar domain accordions are expanded
   const [windowWidth, setWindowWidth] = useState(typeof window !== "undefined" ? window.innerWidth : 1024);
   // Only truly unusable widths (older feature-phone-class viewports) get the
@@ -182,6 +209,10 @@ function App() {
   const [isLoadingDefault, setIsLoadingDefault] = useState(true);
 
   const loadDefaultDataset = useCallback(() => {
+    if (sourceRef.current != null) return;
+    const generation = ++requestGeneration.current;
+    setIsProcessing(false);
+    setParsedCache([]);
     const url = `${process.env.PUBLIC_URL}/SimPaths_All_Aggregated_Outputs.csv`;
     setDefaultLoadFailed(false);
     setIsLoadingDefault(true);
@@ -189,6 +220,7 @@ function App() {
     d3.text(url)
       .then(text => csvParse(text, parseCsvRow))
       .then(rows => {
+        if (generation !== requestGeneration.current || sourceRef.current != null) return;
         if (!rows.length) throw new Error("File was found but contained no rows — check it's the actual CSV and not an HTML/error page being served at that URL.");
         setParsedCache(rows);
         setIsUsingDefault(true);
@@ -196,6 +228,7 @@ function App() {
         setStatusMessage("");
       })
       .catch(err => {
+        if (generation !== requestGeneration.current || sourceRef.current != null) return;
         console.warn("Could not load the default dataset.", err);
         setIsUsingDefault(true);
         setDefaultLoadFailed(true);
@@ -205,13 +238,18 @@ function App() {
           `Check that SimPaths_All_Aggregated_Outputs.csv exists at exactly that path in your deployment's public folder — or select a simulation directory below.`
         );
       })
-      .finally(() => setIsLoadingDefault(false));
+      .finally(() => {
+        if (generation === requestGeneration.current && sourceRef.current == null) setIsLoadingDefault(false);
+      });
   }, []);
 
-  // Fetch the bundled default dataset once on mount.
+  // Connected sources never request the bundled dataset. Fence stale loads.
   useEffect(() => {
-    loadDefaultDataset();
-  }, [loadDefaultDataset]);
+    const requests = requestGeneration;
+    requests.current++;
+    if (!hasDataSource) loadDefaultDataset();
+    return () => { requests.current++; };
+  }, [hasDataSource, loadDefaultDataset]);
 
   // Tracks window width for the mobile/tablet responsive breakpoints above.
   useEffect(() => {
@@ -224,14 +262,20 @@ function App() {
   }, []);
 
   /**
-   * "Visualise Your Own Data" handler — opens the native folder picker.
+   * "Visualise Locally Saved Data" handler — opens the native folder picker.
    */
   const handleSelectFolder = async () => {
+    let generation = requestGeneration.current;
     try {
       const directoryHandle = await window.showDirectoryPicker();
+      if (generation !== requestGeneration.current || sourceRef.current != null) return;
+      generation = ++requestGeneration.current;
       setIsProcessing(true);
       setStatusMessage("Reading local folder hierarchy...");
-      const freshlyAggregated = await parseLocalFolder(directoryHandle, msg => setStatusMessage(msg));
+      const freshlyAggregated = await parseLocalFolder(directoryHandle, msg => {
+        if (generation === requestGeneration.current && sourceRef.current == null) setStatusMessage(msg);
+      });
+      if (generation !== requestGeneration.current || sourceRef.current != null) return;
       if (!Array.isArray(freshlyAggregated)) throw new Error("Aggregation returned no data.");
       setParsedCache(freshlyAggregated);
       setIsUsingDefault(false);
@@ -239,10 +283,13 @@ function App() {
       setIsProcessing(false);
       setStatusMessage("");
     } catch (err) {
+      if (generation !== requestGeneration.current || sourceRef.current != null) return;
       console.error(err);
       setIsProcessing(false);
       setStatusMessage(
-        err.name === "AbortError" ? "" : `Aggregation Error: ${err.message || "Check folder tree construction."}`
+        err.name === "AbortError"
+          ? ""
+          : `Aggregation Error: ${err.message || "Check folder tree construction."}`
       );
     }
   };
@@ -289,7 +336,7 @@ function App() {
   <button type="button" onClick={() => toggleHomeSection(key)} aria-expanded={!!homeOpen[key]} aria-controls={`home-${key}`}
     style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: `1px solid ${BG_PANEL}`, padding: "8px 2px", margin: "2px 0 6px", cursor: "pointer", fontFamily: "inherit" }}>
     <span style={{ fontSize: 13, color: TEAL, display: "inline-block", transition: "transform 0.2s", transform: homeOpen[key] ? "rotate(90deg)" : "rotate(0deg)" }}>▶</span>
-    <span style={{ fontSize: "clamp(18px, 2.4vw, 21px)", fontWeight: 700, color: TEAL, letterSpacing: "-0.2px" }}>The default view: education policy scenario</span>
+    <span style={{ fontSize: "clamp(18px, 2.4vw, 21px)", fontWeight: 700, color: TEAL, letterSpacing: "-0.2px" }}>{hasDataSource ? "About this experiment" : "The default view: education policy scenario"}</span>
     <span style={{ marginLeft: "auto", fontSize: 12.5, color: TEXT_MID, fontWeight: 500 }}>{homeOpen[key] ? "Hide" : "Show"}</span>
   </button>
   {homeOpen[key] && (<div id={`home-${key}`}>
@@ -299,19 +346,21 @@ function App() {
   {/* Left column: both paragraphs */}
   <div style={{ flex: "1 1 320px", minWidth: 0 }}>
     <p style={{ margin: 0, lineHeight: 1.6, color: TEXT_MID, fontSize: "15.5px" }}>
+      {hasDataSource ? sourceText(dataSource.description, "Explore the pre-aggregated results supplied by the connected service.") : <>
       The default view displays a pre-aggregated dataset showing a simulated education policy intervention applied to 16–29 year olds from 2025, compared against a <strong>Baseline</strong> with no policy change. The <strong>Moderate Education Scenario</strong> increases the proportion of 16–29 year olds in education by 5%.
+      </>}
     </p>
     <p style={{ margin: "16px 0 0", lineHeight: 1.6, color: TEXT_MID, fontSize: "15.5px" }}>
-      To use your own data, SimPaths outputs must be organised into <strong>Baseline</strong> and <strong>Scenario</strong> folders, each containing the runs from your model output. Use "Visualise Your Own Data" to select the parent folder that your <strong>Baseline</strong> and <strong>Scenario</strong> folders sit within.
+      To use your own data, SimPaths outputs must be organised into <strong>Baseline</strong> and <strong>Scenario</strong> folders, each containing the runs from your model output. Use "Visualise Locally Saved Data" to select the parent folder that your <strong>Baseline</strong> and <strong>Scenario</strong> folders sit within.
       <br /><br />
-      This tool is entirely JavaScript-based — all aggregation happens locally in your browser, and no data you upload is ever stored or sent anywhere.
+      {hasDataSource ? "Connected results are supplied by the host service." : "Local files are processed in your browser."}
     </p>
   </div>
 
   {/* Right column: graphic */}
-  <div style={{ flex: "1 1 340px", minWidth: 0 }}>
+  {!hasDataSource && <div style={{ flex: "1 1 340px", minWidth: 0 }}>
     <ScenarioGraphic isMobile={isMobile || windowWidth < 1200} />
-  </div>
+  </div>}
 
 </div>
   </div>
@@ -319,17 +368,6 @@ function App() {
   </>);
 
 
-  // Fewest runs in any scenario (Baseline included) of the loaded data. Each
-  // scenario's run count is the largest n_runs among its rows (the Overall
-  // rows exist in every run). Drives the low-run warning above the charts.
-  const runsByScenario = useMemo(() => {
-    const m = new Map();
-    for (const r of parsedCache) {
-      if (r.n_runs > (m.get(r.scenario) ?? 0)) m.set(r.scenario, r.n_runs);
-    }
-    return m;
-  }, [parsedCache]);
-  const fewestRuns = runsByScenario.size ? Math.min(...runsByScenario.values()) : null;
   if (windowWidth < MIN_WIDTH) {
     return (
       <div style={{
@@ -364,6 +402,7 @@ function App() {
   }
 
   return (
+    <ComparisonNamesContext.Provider value={hasDataSource ? dataSource.names || {} : {}}>
     <div style={{ fontFamily: "Work Sans, sans-serif", minHeight: "100vh", background: BG, color: TEXT_DARK, display: "flex", flexDirection: "column", gap: 30 }}>
       
      {/* Header + Title Banner */}
@@ -389,6 +428,7 @@ function App() {
   >
     SimPaths Policy Impacts Visualiser
   </p>
+  {hasDataSource && dataSource.navigation}
 
       {/* Logos + SimPaths branding */}
       <div
@@ -527,15 +567,16 @@ function App() {
 
         {/* ── Visualiser (same page, below the intro) ── */}
         {/* Connect Data — full width, above the variable list and charts.
-            Row 1: heading + "Visualise Your Own Data" button + what's loaded.
+            Row 1: heading + "Visualise Locally Saved Data" button + what's loaded.
             Row 2: folder instructions and privacy note. */}
         <div ref={connectDataRef} style={{ background: BG_DARK, border: `1px solid ${BG_PANEL}`, padding: isMobile ? 16 : "18px 24px", borderRadius: 12, boxShadow: "0 1px 2px rgba(0,0,0,0.04)", scrollMarginTop: 12 }}>
           <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: isMobile ? "10px 14px" : "10px 20px", marginBottom: 10 }}>
             <h3 style={{ margin: 0, fontSize: "clamp(17px, 2.2vw, 20px)", fontWeight: 700, color: TEAL, letterSpacing: "-0.2px", borderBottom: `3px solid ${CORAL}`, paddingBottom: 3 }}>
               Connect Data
             </h3>
+            {hasDataSource ? <AggregateDataPanel source={dataSource} error={connectedData.error} rowCount={displayedRows.length} /> : <>
             <button onClick={handleSelectFolder} disabled={isProcessing} style={{ padding: "8px 18px", borderRadius: 6, border: `1px solid ${AQUA}`, background: AQUA, color: BG_DARK, fontWeight: 600, fontSize: 15, cursor: isProcessing ? "default" : "pointer", width: isMobile ? "100%" : "auto" }}>
-              {isProcessing ? "Aggregating data..." : "Visualise Your Own Data"}
+              {isProcessing ? "Aggregating data..." : "Visualise Locally Saved Data"}
             </button>
             <div style={{
               fontSize: 12,
@@ -556,6 +597,7 @@ function App() {
                 <span title="Go back to the preloaded data" style={{ cursor: "pointer", color: "#b91c1c", fontWeight: "bold" }} onClick={loadDefaultDataset}>✕</span>
               )}
             </div>
+            </>}
           </div>
 
           <p style={{ margin: "0 0 4px", fontSize: 13, color: TEXT_DARK }}>
@@ -563,7 +605,7 @@ function App() {
             <FolderStructureHelp />
           </p>
           <p style={{ margin: 0, fontSize: 11, color: TEAL, lineHeight: 1.5, fontStyle: "italic" }}>
-            Nothing you select is uploaded or stored anywhere — all aggregation happens locally, in your browser.
+            {hasDataSource && "Connected results are supplied by the host service. "}Locally selected files are processed entirely in your browser.
           </p>
           {statusMessage && <p style={{ fontSize: 11, color: "#c2410c", margin: "6px 0 0", fontStyle: "italic", lineHeight: 1.4 }}>{statusMessage}</p>}
         </div>
@@ -591,7 +633,10 @@ function App() {
                     {isOpen && (
                       <div style={{ paddingLeft: 4, marginBottom: 6 }}>
                         {vars.map(v => (
-                          <button key={v} onClick={() => setActiveVariable(v)} style={{ display: "block", width: "100%", textAlign: "left", background: activeVariable === v ? `${CORAL}18` : "transparent", border: "none", fontSize: 13, padding: "6px 10px", borderRadius: 6, cursor: "pointer", marginBottom: 2, color: activeVariable === v ? CORAL : TEXT_MID, fontWeight: activeVariable === v ? 600 : 400, outline: "none" }}>
+                          <button key={v} onClick={() => setActiveVariable(v)}
+                            onMouseEnter={() => hintVariable(v)} onFocus={() => hintVariable(v)}
+                            onMouseLeave={cancelHint} onBlur={cancelHint}
+                            style={{ display: "block", width: "100%", textAlign: "left", background: activeVariable === v ? `${CORAL}18` : "transparent", border: "none", fontSize: 13, padding: "6px 10px", borderRadius: 6, cursor: "pointer", marginBottom: 2, color: activeVariable === v ? CORAL : TEXT_MID, fontWeight: activeVariable === v ? 600 : 400, outline: "none" }}>
                             {titleCase(v)}
                           </button>
                         ))}
@@ -726,17 +771,13 @@ function App() {
               </p>
             )}
             <p style={{ margin: "0 0 20px", fontSize: "clamp(12px, 1.5vw, 13px)", color: "#64748b" }}>
-              Side-by-side comparative graphics between the <strong>Baseline</strong> and the chosen <strong>Policy Scenario</strong> outputs.
+              {hasDataSource && dataSource.showDelta === false ? "Explore the available results for the selected configurations." : hasDataSource
+                ? <>Compare <strong>{comparisonLabel("baseline", dataSource.names)}</strong> with the selected alternative scenarios.</>
+                : <>Side-by-side comparative graphics between the <strong>Baseline</strong> and the chosen <strong>Policy Scenario</strong> outputs.</>}
             </p>
-            {fewestRuns != null && fewestRuns < MIN_RUNS_WARN && !isLoadingDefault && (
-              <div role="alert" style={{ margin: "0 0 16px", padding: "10px 14px", background: "#fffbeb", border: "1px solid #fcd34d", borderLeft: "4px solid #d97706", borderRadius: 8, fontSize: 13, color: "#92400e", lineHeight: 1.5 }}>
-                <strong>⚠ Low number of model runs.</strong>{" "}
-                {[...runsByScenario].filter(([, n]) => n < MIN_RUNS_WARN).map(([sc, n]) => `${scenarioLabel(sc)}: ${n} run${n === 1 ? "" : "s"}`).join(" · ")}.
-                {" "}With fewer than {MIN_RUNS_WARN} runs, the 95% uncertainty intervals (and Baseline → Scenario differences) are unreliable{fewestRuns === 1 ? " — with a single run there is no measure of uncertainty at all" : ""}. Interpret results with caution.
-              </div>
-            )}
+            {hasDataSource && sourceText(dataSource.notice) && <p style={{ fontSize: 13, color: TEXT_MID }}>{dataSource.notice}</p>}
             <hr style={{ border: "none", borderTop: `1px solid ${BG_PANEL}`, marginBottom: 20 }} />
-            {isLoadingDefault
+            {!hasDataSource && isLoadingDefault
               ? <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:320,gap:20,padding:"40px 20px"}}>
                   <p style={{margin:0,fontSize:15,color:TEAL,fontWeight:600}}>Loading dataset…</p>
                   <div style={{width:"min(420px,90%)",background:BG_PANEL,borderRadius:8,overflow:"hidden",height:10}}>
@@ -745,7 +786,7 @@ function App() {
                   <p style={{margin:0,fontSize:12.5,color:TEXT_MID}}>Fetching and parsing the pre-aggregated dataset — this may take a few moments.</p>
                   <style>{`@keyframes loadbar{0%{width:0%;margin-left:0}60%{width:80%;margin-left:0}100%{width:0%;margin-left:100%}}`}</style>
                 </div>
-              : <DashboardSection parsedCache={parsedCache} targetVariable={activeVariable} bgBase={BG} bgDark={BG_DARK} bgPanel={BG_PANEL} />
+              : (!hasDataSource || displayedRows.length > 0 || (dataSource.viewSource && !connectedData.error)) && <DashboardSection key={hasDataSource ? `connected:${sourceText(dataSource.key, "default")}` : "standalone"} showDelta={!hasDataSource || dataSource.showDelta !== false} viewSource={dataSource?.viewSource} parsedCache={displayedRows} targetVariable={activeVariable} bgBase={BG} bgDark={BG_DARK} bgPanel={BG_PANEL} />
             }
           </div>
         </div>
@@ -814,6 +855,7 @@ function App() {
         </div>
       </div>
     </div>
+    </ComparisonNamesContext.Provider>
   );
 }
 

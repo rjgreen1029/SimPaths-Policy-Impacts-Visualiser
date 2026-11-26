@@ -9,7 +9,7 @@ beforeEach(()=>d3.text.mockImplementation(()=>new Promise(()=>{})));
 test('standalone startup shows the Visualiser and requests its bundled data',()=>{
   render(<App/>);
   expect(screen.getByText('SimPaths Policy Impacts Visualiser',{exact:true})).toBeInTheDocument();
-  expect(screen.getByRole('button',{name:'Visualise Your Own Data'})).toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'Visualise Locally Saved Data'})).toBeInTheDocument();
   expect(screen.getByText('Loading default dataset…')).toBeInTheDocument();
   expect(d3.text).toHaveBeenCalledWith('/SimPaths_All_Aggregated_Outputs.csv');
 });
