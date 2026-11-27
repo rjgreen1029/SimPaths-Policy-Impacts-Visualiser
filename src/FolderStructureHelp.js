@@ -35,7 +35,7 @@ export default function FolderStructureHelp() {
     onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
     <button type="button" aria-expanded={open} aria-controls={open ? id : undefined}
       aria-describedby={open ? id : undefined}
-      style={{ padding: 0, border: 0, background: "none", color: "#14687c", font: "inherit",
+      style={{ padding: 0, border: 0, background: "none", color: "#1d2d41", textDecorationColor: "#6095DA", font: "inherit",
         fontWeight: 600, textDecoration: "underline", cursor: "pointer" }}
       onFocus={() => setOpen(true)}
       onBlur={event => { if (!event.currentTarget.parentElement.contains(event.relatedTarget)) setOpen(false); }}
@@ -47,7 +47,7 @@ export default function FolderStructureHelp() {
       style={{ display: "block", position: "absolute", top: "calc(100% + 8px)", left,
         zIndex: 100, boxSizing: "border-box", width: "max-content",
         maxWidth: "min(260px, calc(100vw - 32px))", padding: "12px 16px", background: "#fff",
-        border: "1px solid #ddd", borderRadius: 8, color: "#333", boxShadow: "0 4px 12px #00000026",
+        border: "1px solid #ddd", borderRadius: 8, color: "#333", boxShadow: "0 4px 12px rgba(96,149,218,0.3)",
         textAlign: "left" }}>
       <code style={{ display: "block", overflow: "auto", whiteSpace: "pre", font: "12px/1.5 monospace" }}>{`Your Data Folder/
 ├── Baseline/

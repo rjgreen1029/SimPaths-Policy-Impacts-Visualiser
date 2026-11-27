@@ -8,7 +8,7 @@
  *   - Layout / colour / font constants shared by every chart
  *   - Small stateless helpers (label formatting, y-domain calc, hatch
  *     patterns for Scenario bars, the shared floating tooltip singleton,
- *     CSV/PNG export)
+ *     .xlsx/PNG export)
  *   - Chart components: LineChart, StackedBarChart, GroupedBarChart,
  *     DeltaChart — each owns its own D3 rendering via a ref + useEffect
  *   - Layout wrappers: PanelChart/SmallMultiplesPanel (small-multiples grid),
@@ -23,6 +23,7 @@
  * rows for just that variable, and passes those down to whichever chart
  * component is currently relevant.
  */
+import { dataRows, downloadWorkbook } from "./datasetExport";
 import React, { createContext, useContext, useState, useRef, useEffect, useMemo, useCallback } from "react";
 import * as d3 from "d3";
 import { setTooltipContent } from "./tooltipContent.js";
@@ -51,17 +52,18 @@ const M     = { top:24, right:24, bottom:70, left:92 }; // extra bottom for key;
 const M_SM  = { top:12, right:10, bottom:46, left:72 };
 
 // ─── Colours / fonts ──────────────────────────────────────────────────────────
-const TEAL    = "#14687c";
-const BG_CARD = "#fcfaf7"; // slightly lighter than before
-const BG_CARD_LIGHT = "#fdfcf8"; // chart cards — a touch lighter than the page, not quite white
+const TEAL    = "#6095DA";   // SimPaths logo blue: chart marks, borders, fills
+const TEAL_TEXT = "#1d2d41"; // text that goes with it (navy; the blue is too light for text)
+const BG_CARD = "#ffffff"; // panel cards (white, with a grey outline)
+const BG_CARD_LIGHT = "#ffffff"; // chart cards (white, with a grey outline)
 /** Light card drawn behind every chart. CARD_PAD = its horizontal padding +
  *  border, so a chart inside is drawn that much narrower to fit. */
-const CHART_CARD = {background:BG_CARD_LIGHT,borderRadius:10,padding:"10px 12px",border:"1px solid #f0ece4",boxSizing:"border-box"};
+const CHART_CARD = {background:BG_CARD_LIGHT,borderRadius:6,padding:"10px 12px",border:"1px solid #E1DFE5",boxSizing:"border-box"};
 const CARD_PAD = 26;
 const TEXT_D  = "#1e293b";
 const TEXT_M  = "#475569";
 const TEXT_S  = "#64748b";
-const PUB_FONT= "'Work Sans', Arial, sans-serif";
+const PUB_FONT= "'Inter', Arial, sans-serif";
 const FONT_SZ = "12.5px"; // single source of truth for all chart text
 // Distinct stroke-dasharray patterns for Scenario 1, 2, 3, 4 …
 // Baseline is always solid (no entry needed). Patterns chosen to be
@@ -71,8 +73,8 @@ const SCENARIO_DASHES = ["2,2", "6,4", "8,3,2,3", "4,2,1,2"];
 
 // Colours used for numeric variables (single line per scenario).
 // Baseline = dashboard teal; scenarios = coral/orange shades.
-const NUMERIC_BASE_COLOUR   = "#586369";
-const NUMERIC_SCEN_COLOURS  = ["#0f93a1", "#0f93a1", "#0f93a1", "#0f93a1"];
+const NUMERIC_BASE_COLOUR   = "#363d42";   // Baseline: dark grey
+const NUMERIC_SCEN_COLOURS  = ["#6095DA", "#6095DA", "#6095DA", "#6095DA"];
 
 // Dot symbols for categorical stratifiers (d3 symbol path generators).
 // 12 distinct shapes — Region has 12 values, and with only 6 shapes (the
@@ -333,7 +335,7 @@ function drawZoomControls(g,iH,leftRoom,view,setView,small=false,fitted=null,iW=
     const r=rb.append("rect").attr("width",w).attr("height",h).attr("rx",5).attr("fill","#fff").attr("stroke",TEAL);
     rb.append("text").attr("x",w/2).attr("y",h/2).attr("dy","0.35em").attr("text-anchor","middle")
       .style("font-size",small?"9px":"11px").style("font-weight",700).style("font-family",PUB_FONT)
-      .style("fill",TEAL).style("pointer-events","none").style("user-select","none").text(label);
+      .style("fill",TEAL_TEXT).style("pointer-events","none").style("user-select","none").text(label);
     rb.on("click",e=>{e.stopPropagation();setView(Y_VIEW_DEFAULT);})
       .on("mousedown",e=>e.stopPropagation())
       .on("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();setView(Y_VIEW_DEFAULT);}})
@@ -367,7 +369,7 @@ function drawZoomControls(g,iH,leftRoom,view,setView,small=false,fitted=null,iW=
       .attr("fill",b.disabled?"#f1eee8":"#fff").attr("stroke",b.disabled?"#e2ddd5":TEAL);
     bg.append("text").attr("x",sz/2).attr("y",sz/2).attr("dy","0.36em").attr("text-anchor","middle")
       .style("font-size",small?"9px":"11px").style("font-weight",700).style("font-family",PUB_FONT)
-      .style("fill",b.disabled?"#bdb7ad":TEAL).style("pointer-events","none").style("user-select","none").text(b.label);
+      .style("fill",b.disabled?"#bdb7ad":TEAL_TEXT).style("pointer-events","none").style("user-select","none").text(b.label);
     if (b.disabled) return;
     bg.on("click",e=>{e.stopPropagation();b.fn();})
       .on("mousedown",e=>e.stopPropagation())
@@ -378,7 +380,7 @@ function drawZoomControls(g,iH,leftRoom,view,setView,small=false,fitted=null,iW=
   if (!small) layer.append("text").attr("x",x0).attr("y",y+sz+11).style("font-size","9.5px")
     .style("fill",TEXT_S).style("font-family",PUB_FONT).text("Shift+drag to move");
 }
-/** Turns an arbitrary label into a filesystem-safe filename fragment (used for CSV/PNG download filenames). */
+/** Turns an arbitrary label into a filesystem-safe filename fragment (used for .xlsx/PNG download filenames). */
 function slugify(s){ return String(s||"").replace(/\W+/g,"_").toLowerCase(); }
 
 /**
@@ -682,7 +684,7 @@ function DownloadBtn({svgRef,svgKey,filename,pubProps,small=false}){
       downloadPublicationPng(svgEl,filename,publicationProps(pubProps||{}));
     }}
     title="Download publication-ready PNG"
-    style={{fontSize:small?10:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:small?"1px 6px":"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ PNG</button>;
+    style={{fontSize:small?10:11,color:TEXT_M,background:"#e1ebf8",border:"1px solid #cbdcf1",borderRadius:5,padding:small?"1px 6px":"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ PNG</button>;
 }
 
 // ─── Tooltip ──────────────────────────────────────────────────────────────────
@@ -692,7 +694,7 @@ function DownloadBtn({svgRef,svgKey,filename,pubProps,small=false}){
 /** Lazily creates (once) and returns the shared tooltip DOM node, appended directly to <body> so it isn't clipped by any chart's overflow/positioning. */
 function getTooltip(){
   let el=document.getElementById("smpaths-tt");
-  if (!el){ el=document.createElement("div"); el.id="smpaths-tt"; Object.assign(el.style,{position:"fixed",pointerEvents:"none",zIndex:9999,background:"rgba(15,23,42,0.93)",color:"#f8fafc",padding:"9px 13px",borderRadius:"8px",fontSize:"13px",lineHeight:"1.65",maxWidth:"240px",boxShadow:"0 4px 20px rgba(0,0,0,0.3)",opacity:0,transition:"opacity 0.1s ease",fontFamily:"system-ui,sans-serif"}); document.body.appendChild(el); }
+  if (!el){ el=document.createElement("div"); el.id="smpaths-tt"; Object.assign(el.style,{position:"fixed",pointerEvents:"none",zIndex:9999,background:"rgba(15,23,42,0.93)",color:"#f8fafc",padding:"9px 13px",borderRadius:"8px",fontSize:"13px",lineHeight:"1.65",maxWidth:"240px",boxShadow:"0 4px 20px rgba(96,149,218,0.48)",opacity:0,transition:"opacity 0.1s ease",fontFamily:"system-ui,sans-serif"}); document.body.appendChild(el); }
   return el;
 }
 /** Sets the tooltip's text and fades it in, positioned at the given mouse event's location. */
@@ -702,12 +704,8 @@ function moveTT(e){const t=getTooltip();const w=t.offsetWidth||220;t.style.left=
 /** Fades the tooltip out (on mouseout). */
 function hideTT(){const t=document.getElementById("smpaths-tt");if(t)t.style.opacity=0;}
 
-// Friendlier column headers for the three sample-size fields, applied when
-// downloading a CSV from the dashboard.
-const CSV_HEADER_RENAMES={total_sample:"Total Sample: Across Runs",min_sample:"Minimum Sample: Across Runs",mean_sample:"Average Sample: Across Runs"};
-
 /**
- * Sorts CSV rows for download in a consistent, human-readable order:
+ * Sorts chart rows for download in a consistent, human-readable order:
  *   1. year ascending
  *   2. scenario (baseline rows before scenario/delta rows, alphabetically within each)
  *   3. variable (alphabetically)
@@ -718,7 +716,7 @@ const CSV_HEADER_RENAMES={total_sample:"Total Sample: Across Runs",min_sample:"M
  * @param {boolean} isContinuous - true for numeric/mean variables; skips variable_value sort
  * @returns {object[]} new sorted array (original is not mutated)
  */
-function sortCsvRows(data, isContinuous=false){
+function sortExportRows(data, isContinuous=false){
   if (!data?.length) return data;
   // Determine the scenario value that should sort first (the baseline).
   // We look for a row whose scenario string contains "baseline" (case-insensitive);
@@ -778,33 +776,37 @@ function sortCsvRows(data, isContinuous=false){
   });
 }
 
+/** What a chart download contains, from its filename: shown on the About sheet. */
+const CHART_KINDS=[
+  [/_all_panels$/,"All panels (every group of the stratifier)"],
+  [/_time_series$/,"Line chart over time"],
+  [/_stacked$/,"Stacked bar chart over time"],
+  [/_delta$/,"Baseline → Scenario difference"],
+  [/^cross_section_avg$/,"Average across all years"],
+  [/^cross_section_/,"Single year"],
+  [/^population_pyramid/,"Population pyramid"],
+  [/^hourly_earnings_distribution/,"Hourly earnings distribution"],
+];
+function chartKind(filename){
+  const stem=filename.replace(/\.[a-z]+$/i,"");
+  const hit=CHART_KINDS.find(([re])=>re.test(stem));
+  return hit?hit[1]:"Chart data";
+}
+
 /**
- * Serialises `data` to CSV and triggers a browser download.
- * Column order follows the first row's key order; the three sample-size fields
- * are relabelled via CSV_HEADER_RENAMES for readability.
- *
- * @param {object[]} data - rows to export
- * @param {string} filename
- * @param {object} [opts]
- * @param {boolean} [opts.isDelta=false] - if true, labels the comparison while retaining each alternative's identity
- * @param {boolean} [opts.isContinuous=false] - if true, skips variable_value in the sort order
+ * Rows a chart download contains, sorted, with each row's scenario shown by
+ * its display name. Exported for tests.
  */
-export function formatChartCsv(data, {isDelta=false, isContinuous=false,scenarioLabel=name=>name}={}){
-  if (!data?.length) return "";
-  // Preserve each alternative's identity, including rows with unavailable deltas.
-  const rows=data.map(d=>({...d,scenario:isDelta?(d.scenarioName||d.scenario):d.scenario,
-    configuration_name:scenarioLabel(d.scenarioName||d.scenario),
-    ...(isDelta?{comparison:"Scenario minus Baseline"}:{})}));
-  const sorted = sortCsvRows(rows, isContinuous);
-  const keys=[...new Set(sorted.flatMap(d=>Object.keys(d)))];
-  const formatted=sorted.map(d=>Object.fromEntries(keys.map(k=>[
-    CSV_HEADER_RENAMES[k]||k, typeof d[k]==="number"&&!Number.isFinite(d[k])?null:d[k],
-  ])));
-  return d3.csvFormat(formatted,keys.map(k=>CSV_HEADER_RENAMES[k]||k));
+export function chartExportRows(data,{isDelta=false,isContinuous=false,scenarioLabel=name=>name}={}){
+  if (!data?.length) return [];
+  const labelOf=r=>scenarioLabel(r.scenarioName||r.scenario);
+  return dataRows(sortExportRows(data,isContinuous),labelOf,{isDelta});
 }
 
 const ExportScenariosContext=createContext(null);
-function useExportCsv(selection){
+/** Returns a function that downloads a chart's data as an .xlsx workbook (an
+ *  "About" sheet, then the data), limited to the scenarios currently shown. */
+function useExportXlsx(selection){
   const inherited=useContext(ExportScenariosContext);
   const visible=selection||inherited;
   const scenarioLabel=useComparisonLabel();
@@ -813,9 +815,16 @@ function useExportCsv(selection){
       const name=d.scenarioName||d.scenario;
       return name==="baseline"?visible.showBaseline:visible.enabledScenarios.has(name);
     }):data;
-    const csv=formatChartCsv(rows,{...options,scenarioLabel});
-    if(!csv)return;
-    const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download=filename;a.click();URL.revokeObjectURL(a.href);
+    if(!rows?.length)return;
+    const {isDelta=false,isContinuous=false,chart}=options;
+    const variable=rows.find(r=>r.variable)?.variable||"";
+    const stratifier=rows.find(r=>r.stratifier)?.stratifier||"Overall";
+    return downloadWorkbook(sortExportRows(rows,isContinuous),r=>scenarioLabel(r.scenarioName||r.scenario),{
+      filename,isDelta,
+      title:"SimPaths Policy Impacts Visualiser — chart data",
+      info:[["Chart",chart||chartKind(filename)],["Variable",variable],["Split by",stratifier]],
+      notes:["The Data sheet holds the estimates behind this chart, for the scenarios and groups shown when it was downloaded. Each row is one estimate averaged across several SimPaths model runs."],
+    });
   },[visible,scenarioLabel]);
 }
 function usePublicationProps(){
@@ -901,7 +910,7 @@ function LegendRow({label,entries,highlighted,onToggle,showSymbols=false,stratDe
           return (
             <button key={lbl} onClick={()=>onToggle(lbl)} title={addSpaces(stratLabel(lbl,scope))} style={{
               display:"flex",alignItems:"center",gap:7,cursor:"pointer",padding:"7px 13px",borderRadius:20,
-              border:`1.5px solid ${isH?swatchColour:"#ddd8ce"}`,
+              border:`1.5px solid ${isH?swatchColour:"#cbdcf1"}`,
               background:isH?`${swatchColour}18`:"#fff",
               transition:"all 0.15s",flexShrink:0,maxWidth:180,
             }}>
@@ -920,7 +929,7 @@ function LegendRow({label,entries,highlighted,onToggle,showSymbols=false,stratDe
             </button>
           );
         })}
-        {highlighted.size>0&&<button onClick={()=>onToggle(null)} style={{fontSize:13,fontWeight:600,color:TEAL,background:"none",border:"none",cursor:"pointer",padding:"7px 10px",textDecoration:"underline",whiteSpace:"nowrap",flexShrink:0}}>Clear all</button>}
+        {highlighted.size>0&&<button onClick={()=>onToggle(null)} style={{fontSize:13,fontWeight:600,color:TEAL_TEXT,background:"none",border:"none",cursor:"pointer",padding:"7px 10px",textDecoration:"underline",whiteSpace:"nowrap",flexShrink:0}}>Clear all</button>}
       </div>
     </div>
   );
@@ -929,9 +938,14 @@ function LegendRow({label,entries,highlighted,onToggle,showSymbols=false,stratDe
 /* ─────────────────────────────────────────────────────────────────────────────
    AXES
 ─────────────────────────────────────────────────────────────────────────────── */
-/** Draws the shared time (year) x-axis: gridline-free tick marks, thinning to ~6 ticks for wide year ranges (rather than one tick per year), plus an "Year" axis label (omitted for small-multiple panels). */
+/** Draws the shared time (year) x-axis: gridline-free tick marks, thinning to ~6 ticks for wide year ranges (rather than one tick per year), and fewer on narrow charts, plus an "Year" axis label (omitted for small-multiple panels). */
 function applyTimeXAxis(g,xScale,iH,small,allYears){
-  const xTicks=allYears.length<=8?allYears:d3.ticks(allYears[0],allYears[allYears.length-1],6).filter(t=>t%1===0);
+  // No more labels than fit (a year label needs about 45px), so narrow charts
+  // (e.g. on a phone) don't run the years into each other.
+  const fit=Math.max(2,Math.floor((xScale.range()[1]-xScale.range()[0])/45));
+  let xTicks=allYears.length<=Math.min(8,fit)?allYears:d3.ticks(allYears[0],allYears[allYears.length-1],Math.min(6,fit)).filter(t=>t%1===0);
+  // d3 rounds to "nice" steps, which can still give more labels than fit.
+  while (xTicks.length>fit) xTicks=xTicks.filter((_,i)=>i%2===0);
   g.append("g").attr("transform",`translate(0,${iH})`).call(d3.axisBottom(xScale).tickValues(xTicks).tickFormat(d3.format("d")).tickSize(3))
     .call(ax=>{ax.select(".domain").remove();ax.selectAll("text").style("font-size",small?"9px":FONT_SZ).style("fill",TEXT_M).style("font-family",PUB_FONT);ax.selectAll(".tick line").style("stroke","#e2ddd5");});
   g.append("text").attr("x",xScale.range()[1]/2).attr("y",iH+(small?32:44)).attr("text-anchor","middle").style("font-size",small?"9px":FONT_SZ).style("fill",TEXT_M).style("font-family",PUB_FONT).text("Year");
@@ -2045,8 +2059,8 @@ function SuppressedNote({rows,style}){
   );
 }
 
-/** "⤢ Full screen" button, shown next to every chart's PNG / CSV buttons. */
-const FS_BTN_STYLE={fontSize:11,color:TEAL,background:"#fff",border:`1px solid ${TEAL}80`,borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6,fontWeight:600};
+/** "⤢ Full screen" button, shown next to every chart's PNG / XLSX buttons. */
+const FS_BTN_STYLE={fontSize:11,color:TEAL_TEXT,background:"#fff",border:`1px solid ${TEAL}80`,borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6,fontWeight:600};
 function FullscreenButton({onClick,label="this chart"}){
   return <button onClick={onClick} title="View this chart full screen" aria-label={`View ${label} full screen`} style={FS_BTN_STYLE}>⤢ Full screen</button>;
 }
@@ -2092,12 +2106,12 @@ function FullscreenPanel({title,onClose,legend,downloadBtn,children}){
     <div role="dialog" aria-modal="true" aria-label={title} onClick={onClose}
       style={{position:"fixed",inset:0,zIndex:1000,background:"rgba(15,23,42,0.55)",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
       <div onClick={e=>e.stopPropagation()}
-        style={{background:BG_CARD,borderRadius:12,boxShadow:"0 10px 40px rgba(0,0,0,0.3)",width:"min(1240px, 100%)",maxHeight:"100%",overflowY:"auto",padding:"16px 20px 18px",boxSizing:"border-box",fontFamily:PUB_FONT}}>
+        style={{background:BG_CARD,borderRadius:12,boxShadow:"0 10px 40px rgba(96,149,218,0.48)",width:"min(1240px, 100%)",maxHeight:"100%",overflowY:"auto",padding:"16px 20px 18px",boxSizing:"border-box",fontFamily:PUB_FONT}}>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}>
           <p style={{margin:0,fontSize:17,fontWeight:700,color:TEXT_D,flex:1}}>{title}</p>
           {downloadBtn}
           <button ref={closeRef} onClick={onClose} aria-label="Close full screen view"
-            style={{fontSize:13,fontWeight:600,color:TEAL,background:"#fff",border:`1px solid ${TEAL}`,borderRadius:6,padding:"5px 12px",cursor:"pointer"}}>✕ Close</button>
+            style={{fontSize:13,fontWeight:600,color:TEAL_TEXT,background:"#fff",border:`1px solid ${TEAL}`,borderRadius:6,padding:"5px 12px",cursor:"pointer"}}>✕ Close</button>
         </div>
         {children}
         {legend}
@@ -2124,11 +2138,11 @@ function CrossSectionBarPanel({baseData,scenData,colourMap,highlighted,isCategor
 /**
  * Lays out one PanelChart per enabled stratum value in a responsive grid
  * (column count adapts to available width via PANEL_MIN_W), each in its own
- * card with its own download buttons, plus "download all panels" PNG/CSV
+ * card with its own download buttons, plus "download all panels" PNG/XLSX
  * buttons at the top. A stratum whose data is entirely suppressed (every
  * point NaN) renders SmallSampleOverlay instead of an empty/broken chart.
  *
- * @param {object[]} props.allBaseData,props.allScenData - the FULL unfiltered baseline/scenario rows (not just enabled values), used only for the "download all" CSV export so it isn't scoped to the visible panels alone
+ * @param {object[]} props.allBaseData,props.allScenData - the FULL unfiltered baseline/scenario rows (not just enabled values), used only for the "download all" .xlsx export so it isn't scoped to the visible panels alone
  * @param {(stratValue:string)=>object} props.pubPropsFactory - builds the buildPublicationSvg() props for one panel's PNG export, given its stratum value
  * @param {string} [props.viewBy] - the active stratifier's display name — used to scope stratLabel() lookups for each panel's stratum-value label (see STRATIFIER_VALUE_LABELS)
  */
@@ -2136,7 +2150,7 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
     isCategorical,varValues,enabledVarVals,enabledStrats,showBaseline,showScenario,
     chartType,width,pubPropsFactory,targetVariable,allBaseData,allScenData,missingLookup,viewBy="",
     scenarioMap=null,enabledScenarios=null,allScenarioNames=[],showCI=true}){
-  const exportCsv=useExportCsv();
+  const exportXlsx=useExportXlsx();
   const publicationProps=usePublicationProps();
   const varLabel=titleCase(addSpaces(targetVariable||""));
   // Which year is pinned in EACH panel's own line chart, keyed by stratum
@@ -2189,18 +2203,18 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
     });
   },[visible,targetVariable,pubPropsFactory,viewBy,publicationProps]);
 
-  const handleDownloadAllCsv=useCallback(()=>{
+  const handleDownloadAllXlsx=useCallback(()=>{
     const slug=slugify(targetVariable||"chart");
     const allData=[...allBaseData,...allScenRows].filter(d=>enabledStrats.has(d.stratifier_value)&&enabledVarVals.has(d.variable_value));
-    exportCsv(allData,`${slug}_all_panels.csv`,{isContinuous:!isCategorical});
-  },[allBaseData,allScenRows,enabledStrats,enabledVarVals,targetVariable,isCategorical,exportCsv]);
+    exportXlsx(allData,`${slug}_all_panels.xlsx`,{isContinuous:!isCategorical});
+  },[allBaseData,allScenRows,enabledStrats,enabledVarVals,targetVariable,isCategorical,exportXlsx]);
 
   return (
     <div>
       <div style={{display:"flex",justifyContent:"flex-end",gap:6,marginBottom:8,alignItems:"center"}}>
         <span style={{fontSize:11,color:TEXT_S}}>All panels:</span>
-        <button onClick={handleDownloadAll} style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ PNG ×{visible.length}</button>
-        <button onClick={handleDownloadAllCsv} style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ CSV (all)</button>
+        <button onClick={handleDownloadAll} style={{fontSize:11,color:TEXT_M,background:"#e1ebf8",border:"1px solid #cbdcf1",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ PNG ×{visible.length}</button>
+        <button onClick={handleDownloadAllXlsx} style={{fontSize:11,color:TEXT_M,background:"#e1ebf8",border:"1px solid #cbdcf1",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ XLSX (all)</button>
       </div>
       {/* Shared y-domain for cross-section bar charts — computed across ALL
           visible strata and ALL pinned years so panels can be compared directly. */}
@@ -2237,16 +2251,16 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
           const csScenMap=isLine&&selYear!=null&&panelScenMap?new Map([...panelScenMap].map(([n,r])=>[n,csFilter(r).filter(d=>d.year===selYear)])):null;
           const csAllScen=csScenMap?[...csScenMap.values()].flat():csScen;
           return (
-            <div key={sv} ref={afterRender} style={{width:panelW,background:BG_CARD,borderRadius:10,padding:"10px 12px",border:"1px solid #f0ece4",position:"relative",flexShrink:0}}>
+            <div key={sv} ref={afterRender} style={{width:panelW,background:BG_CARD,borderRadius:10,padding:"10px 12px",border:"1px solid #E1DFE5",position:"relative",flexShrink:0}}>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
                 <p style={{margin:0,fontSize:12,fontWeight:600,color:TEXT_D}}>{addSpaces(stratLabel(sv,viewBy))}</p>
                 {!suppressed&&(
                   <div style={{display:"flex",gap:4}}>
                     <button onClick={()=>setFullSv(sv)} title="View this panel full screen" aria-label={`View ${stratLabel(sv,viewBy)} full screen`}
-                      style={{fontSize:10,color:TEAL,background:"#fff",border:`1px solid ${TEAL}80`,borderRadius:4,padding:"1px 6px",cursor:"pointer",lineHeight:1.6,fontWeight:600}}>⤢ Full screen</button>
+                      style={{fontSize:10,color:TEAL_TEXT,background:"#fff",border:`1px solid ${TEAL}80`,borderRadius:4,padding:"1px 6px",cursor:"pointer",lineHeight:1.6,fontWeight:600}}>⤢ Full screen</button>
                     <DownloadBtn small svgRef={panelSvgRefs} svgKey={sv} filename={`${slugify(targetVariable||"chart")}_${slugify(stratLabel(sv,viewBy))}.png`} pubProps={pubPropsFactory(sv)}/>
-                    <button onClick={()=>exportCsv([...bR,...(panelScenMap?[...panelScenMap.values()].flat():sR)].filter(d=>enabledVarVals.has(d.variable_value)),`${slugify(targetVariable||"chart")}_${slugify(stratLabel(sv,viewBy))}.csv`,{isContinuous:!isCategorical})}
-                      style={{fontSize:10,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:4,padding:"1px 6px",cursor:"pointer",lineHeight:1.6}}>↓ CSV</button>
+                    <button onClick={()=>exportXlsx([...bR,...(panelScenMap?[...panelScenMap.values()].flat():sR)].filter(d=>enabledVarVals.has(d.variable_value)),`${slugify(targetVariable||"chart")}_${slugify(stratLabel(sv,viewBy))}.xlsx`,{isContinuous:!isCategorical,chart:`One panel: ${stratLabel(sv,viewBy)}`})}
+                      style={{fontSize:10,color:TEXT_M,background:"#e1ebf8",border:"1px solid #cbdcf1",borderRadius:4,padding:"1px 6px",cursor:"pointer",lineHeight:1.6}}>↓ XLSX</button>
                   </div>
                 )}
               </div>
@@ -2268,7 +2282,7 @@ function SmallMultiplesPanel({baseData,scenData,stratValues,colourMap,highlighte
                   <div style={{marginBottom:2}}>
                     <span style={{fontSize:10,fontWeight:600,color:TEXT_S}}>
                       Year {selYear}
-                      <button onClick={()=>setPanelYears(prev=>({...prev,[sv]:null}))} style={{fontSize:10,color:TEAL,background:"none",border:"none",cursor:"pointer",textDecoration:"underline",marginLeft:4,padding:0}}>clear</button>
+                      <button onClick={()=>setPanelYears(prev=>({...prev,[sv]:null}))} style={{fontSize:10,color:TEAL_TEXT,background:"none",border:"none",cursor:"pointer",textDecoration:"underline",marginLeft:4,padding:0}}>clear</button>
                     </span>
                   </div>
                   <CrossSectionBarPanel baseData={csBase} scenData={csScen} colourMap={colourMap} highlighted={highlighted}
@@ -2336,7 +2350,7 @@ function CrossSectionPanel({baseData,scenData,colourMap,highlighted,isCategorica
     varValues,enabledVarVals,enabledStrats,viewBy,showBaseline,showScenario,
     width,year,isAverage,pubPropsFactory,targetVariable,
     scenarioMap=null,enabledScenarios=null,allScenarioNames=[]}){
-  const exportCsv=useExportCsv();
+  const exportXlsx=useExportXlsx();
 
   const svgRef=useRef();
   const [fullOpen,setFullOpen]=useState(false);
@@ -2442,8 +2456,8 @@ function CrossSectionPanel({baseData,scenData,colourMap,highlighted,isCategorica
           <SuppressedNote rows={[...bRows,...allScenRows]}/>
           <FullscreenButton onClick={()=>setFullOpen(true)}/>
           <DownloadBtn svgRef={svgRef} filename={`cross_section_${yrTag}.png`} pubProps={pubPropsFactory(null)}/>
-          <button onClick={()=>exportCsv([...bRows,...allScenRows],`cross_section_${yrTag}.csv`,{isContinuous:!isCategorical})}
-            style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer"}}>↓ CSV</button>
+          <button onClick={()=>exportXlsx([...bRows,...allScenRows],`cross_section_${yrTag}.xlsx`,{isContinuous:!isCategorical})}
+            style={{fontSize:11,color:TEXT_M,background:"#e1ebf8",border:"1px solid #cbdcf1",borderRadius:5,padding:"2px 8px",cursor:"pointer"}}>↓ XLSX</button>
         </div>
       </div>
     );
@@ -2452,7 +2466,7 @@ function CrossSectionPanel({baseData,scenData,colourMap,highlighted,isCategorica
   const yDomain=buildYDomain([...bRows,...allScenRows],isCategorical);
   if (!bRows.length&&!allScenRows.length) return <p style={{fontSize:13,color:TEXT_S,fontStyle:"italic",margin:0}}>No data.</p>;
   return (
-    <div style={{display:"flex",flexDirection:"column",gap:4}}>
+    <div style={{display:"flex",flexDirection:"column",gap:4,flex:1}}>
       {[false,true].map(fs=>{
         const chart=({width:w,svgRef:r})=>(
           <GroupedBarChart svgRef={r} baseData={bRows} scenData={sRows} colourMap={colourMap}
@@ -2466,12 +2480,12 @@ function CrossSectionPanel({baseData,scenData,colourMap,highlighted,isCategorica
         return fullOpen&&<FullscreenView key="fs" title={csTitle} onClose={()=>setFullOpen(false)} render={chart}
           filename={`cross_section_${year||"avg"}.png`} pubProps={pubPropsFactory(null)} noteRows={[...bRows,...allScenRows]}/>;
       })}
-      <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
+      <div style={{display:"flex",gap:4,justifyContent:"flex-end",marginTop:"auto"}}>
         <SuppressedNote rows={[...bRows,...allScenRows]}/>
         <FullscreenButton onClick={()=>setFullOpen(true)}/>
         <DownloadBtn svgRef={svgRef} filename={`cross_section_${year||"avg"}.png`} pubProps={pubPropsFactory(null)}/>
-        <button onClick={()=>exportCsv([...bRows,...allScenRows],`cross_section_${year||"avg"}.csv`,{isContinuous:!isCategorical})}
-          style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer"}}>↓ CSV</button>
+        <button onClick={()=>exportXlsx([...bRows,...allScenRows],`cross_section_${year||"avg"}.xlsx`,{isContinuous:!isCategorical})}
+          style={{fontSize:11,color:TEXT_M,background:"#e1ebf8",border:"1px solid #cbdcf1",borderRadius:5,padding:"2px 8px",cursor:"pointer"}}>↓ XLSX</button>
       </div>
     </div>
   );
@@ -2624,7 +2638,7 @@ function PopulationPyramid({ baselineData, scenarioData, year, showBaseline, sho
     const yScale = d3.scaleBand().domain(ages).range([0, iH]).padding(singleYear ? 0.06 : 0.18);
     const bh = yScale.bandwidth();
     const baseCounts  = hasBase ? buildCounts(baseRows) : {};
-    const femColour = "#ff6e51";
+    const femColour = "#ff5d51";
     const malColour = TEAL;
     const sideX = (g, v) => g === "Female" ? cx - 40 - xScale(v) : cx + 40 + xScale(v);
 
@@ -2739,10 +2753,10 @@ function PopulationPyramid({ baselineData, scenarioData, year, showBaseline, sho
     // Column labels: "← Female" and "Male →"
     root.append("text").attr("x", cx - 40 - halfW / 2).attr("y", -6)
       .attr("text-anchor","middle").attr("font-size","12px").attr("font-weight","700")
-      .attr("fill","#ff6e51").attr("font-family",PUB_FONT).text("← Female");
+      .attr("fill","#cc4a41").attr("font-family",PUB_FONT).text("← Female");   // text-safe shade of the orange (4.5:1)
     root.append("text").attr("x", cx + 40 + halfW / 2).attr("y", -6)
       .attr("text-anchor","middle").attr("font-size","12px").attr("font-weight","700")
-      .attr("fill",TEAL).attr("font-family",PUB_FONT).text("Male →");
+      .attr("fill",TEAL_TEXT).attr("font-family",PUB_FONT).text("Male →");
 
     // Centre divider line removed — age labels in the gap provide sufficient separation
 
@@ -2765,7 +2779,7 @@ function PopulationPyramid({ baselineData, scenarioData, year, showBaseline, sho
             <span style={{fontSize:12,color:TEXT_S,fontWeight:500}}>Male</span>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:5}}>
-            <span style={{width:22,height:13,background:"#ff6e51",display:"inline-block",borderRadius:2,opacity:0.88}}/>
+            <span style={{width:22,height:13,background:"#ff5d51",display:"inline-block",borderRadius:2,opacity:0.88}}/>
             <span style={{fontSize:12,color:TEXT_S,fontWeight:500}}>Female</span>
           </div>
         </div>
@@ -2773,7 +2787,7 @@ function PopulationPyramid({ baselineData, scenarioData, year, showBaseline, sho
             Uses solid vs hatched swatch matching the line-type convention
             used in all other chart legends. */}
         {showBothLegend && (
-          <div style={{display:"flex",gap:12,alignItems:"center",borderLeft:"1px solid #e2ddd5",paddingLeft:16,flexWrap:"wrap"}}>
+          <div style={{display:"flex",gap:12,alignItems:"center",borderLeft:"1px solid #d4e2f3",paddingLeft:16,flexWrap:"wrap"}}>
             {showBaseline && (
               <div style={{display:"flex",alignItems:"center",gap:5}}>
                 <span style={{width:22,height:13,background:TEXT_M,display:"inline-block",borderRadius:2,opacity:0.88}}/>
@@ -2814,7 +2828,7 @@ function PopulationPyramid({ baselineData, scenarioData, year, showBaseline, sho
               ].map(b=>(
                 <button key={b.label} onClick={b.fn} disabled={b.disabled} title={b.title}
                   style={{fontSize:11.5,fontWeight:600,padding:"3px 9px",borderRadius:5,cursor:b.disabled?"default":"pointer",
-                    border:`1px solid ${b.disabled?"#e2ddd5":TEAL}`,background:b.disabled?"#f1eee8":"#fff",color:b.disabled?"#bdb7ad":TEAL}}>
+                    border:`1px solid ${b.disabled?"#e2ddd5":TEAL}`,background:b.disabled?"#f1eee8":"#fff",color:b.disabled?"#bdb7ad":TEAL_TEXT}}>
                   {b.label}
                 </button>
               ))}
@@ -3171,7 +3185,7 @@ function CiInfoTooltip(){
       {show&&(
         <span style={{position:"absolute",bottom:"calc(100% + 6px)",left:"50%",transform:"translateX(-50%)",
           background:"#1e293b",color:"#fff",fontSize:12,lineHeight:1.55,padding:"10px 13px",borderRadius:7,
-          whiteSpace:"normal",width:300,zIndex:9999,boxShadow:"0 4px 16px rgba(0,0,0,0.22)"}}>
+          whiteSpace:"normal",width:300,zIndex:9999,boxShadow:"0 4px 16px rgba(96,149,218,0.35)"}}>
           {text}
         </span>
       )}
@@ -3209,7 +3223,7 @@ function computeDeltaRows(filtB, filtScen, scenarioName) {
 function DeltaSection({baseData,scenData,colourMap,highlighted,isCategorical,
     varValues,enabledVarVals,enabledStrats,viewBy,width,legendEntries,stratValues=[],stratLegendEntries=[],
     scenarioMap=null,enabledScenarios=null,allScenarioNames=[],onYearClick,selectedYear}){
-  const exportCsv=useExportCsv();
+  const exportXlsx=useExportXlsx();
 
   const svgRef=useRef();
   const [fullOpen,setFullOpen]=useState(false);
@@ -3260,8 +3274,8 @@ function DeltaSection({baseData,scenData,colourMap,highlighted,isCategorical,
             <SuppressedNote rows={deltaData}/>
             <FullscreenButton onClick={()=>setFullOpen(true)}/>
             <DownloadBtn svgRef={svgRef} filename="delta.png" pubProps={{title:`Δ Baseline → Scenario: ${varLabel}`,legendEntries,stratLegendEntries,showBaseline:false,showScenario:false,comparison:true,highlighted,varScope:varLabel,stratScope:viewBy}}/>
-            <button onClick={()=>exportCsv(deltaData,`${slugify(varLabel)}_delta.csv`,{isDelta:true,isContinuous:!isCategorical})}
-              style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ CSV</button>
+            <button onClick={()=>exportXlsx(deltaData,`${slugify(varLabel)}_delta.xlsx`,{isDelta:true,isContinuous:!isCategorical})}
+              style={{fontSize:11,color:TEXT_M,background:"#e1ebf8",border:"1px solid #cbdcf1",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ XLSX</button>
           </div>
         </div>
       ):(
@@ -3328,8 +3342,8 @@ function ScenarioToggles({showBaseline,setShowBaseline,allScenarioNames,enabledS
     return(<button key={label} onClick={onClick} style={{
       display:"inline-flex",alignItems:"center",gap:6,
       padding:"7px 13px",borderRadius:18,fontSize:13,fontWeight:active?600:500,cursor:"pointer",
-      border:`1.5px solid ${active?c:"#ddd8ce"}`,
-      background:active?`${c}18`:"transparent",color:active?c:TEXT_S,transition:"all 0.15s",
+      border:`1.5px solid ${active?c:"#cbdcf1"}`,
+      background:active?`${c}18`:"transparent",color:active?TEAL_TEXT:TEXT_S,transition:"all 0.15s",
     }}>
       {dash
         ? <svg width="18" height="9" style={{flexShrink:0}}><line x1="0" y1="4" x2="18" y2="4" stroke={active?c:TEXT_S} strokeWidth="2" strokeDasharray={dash}/></svg>
@@ -3569,7 +3583,7 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
       dash:SCENARIO_DASHES[i%SCENARIO_DASHES.length],
     }]:[]),
   ]}),[showBaseline,enabledScenarios,allScenarioNames,scenarioLabel,isCategorical]);
-  const exportCsv=useExportCsv(exportSelection);
+  const exportXlsx=useExportXlsx(exportSelection);
 
   const showCrossSection=chartType==="line";
 
@@ -3629,11 +3643,11 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
   // Style helpers — a single flat toolbar rather than boxed cards: inline
   // labels next to each control, thin dividers between logical groups,
   // moderate (not oversized) touch targets.
-  const controlLabel={fontSize:12,fontWeight:700,color:TEAL,textTransform:"uppercase",letterSpacing:"0.04em",whiteSpace:"nowrap"};
+  const controlLabel={fontSize:12,fontWeight:700,color:TEXT_D,textTransform:"uppercase",letterSpacing:"0.06em",whiteSpace:"nowrap"};
   // Toolbar row labels share one width so every row's buttons start at the same x.
   const rowLabel={...controlLabel,width:108,flexShrink:0};
-  const segGroup={display:"flex",gap:2,background:"#f1efea",borderRadius:8,padding:3};
-  const togBtn=active=>({padding:"8px 16px",borderRadius:6,fontSize:13.5,fontWeight:600,cursor:"pointer",border:"none",background:active?"#fff":"transparent",color:active?TEAL:TEXT_S,boxShadow:active?"0 1px 2px rgba(0,0,0,0.08)":"none",transition:"all 0.15s"});
+  const segGroup={display:"flex",gap:2,background:"#eef4fb",borderRadius:8,padding:3};
+  const togBtn=active=>({padding:"8px 16px",borderRadius:6,fontSize:13.5,fontWeight:600,cursor:"pointer",border:"none",background:active?"#fff":"transparent",color:active?TEAL_TEXT:TEXT_M,boxShadow:active?"0 1px 2px rgba(96,149,218,0.13)":"none",transition:"all 0.15s"});
   // dvBtn removed — replaced by ScenarioToggles component
 
   const crossTitle=selectedYear===null?"Average across all years":`Year ${selectedYear}`;
@@ -3681,7 +3695,7 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
       {isPyramidModule&&(
         <div>
           {/* View controls — Baseline toggle + per-scenario toggles */}
-          <div style={{marginBottom:14,display:"flex",flexDirection:"column",gap:10,paddingBottom:10,borderBottom:"1px solid #e2ddd5"}}>
+          <div style={{marginBottom:14,display:"flex",flexDirection:"column",gap:10,paddingBottom:10,borderBottom:"1px solid #d4e2f3"}}>
             <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
               <span style={rowLabel}>View</span>
               <ScenarioToggles showBaseline={showBaseline} setShowBaseline={setShowBaseline}
@@ -3695,17 +3709,17 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
             <button
               onClick={()=>setSelectedYear(null)}
               style={{padding:"5px 12px",borderRadius:5,fontSize:12,cursor:"pointer",
-                border:selectedYear===null?`1px solid ${TEAL}`:"1px solid #ddd8ce",
-                background:selectedYear===null?`${TEAL}18`:"#f1efea",
-                color:selectedYear===null?TEAL:TEXT_S,fontWeight:selectedYear===null?700:500}}>
+                border:selectedYear===null?`1px solid ${TEAL}`:"1px solid #cbdcf1",
+                background:selectedYear===null?`${TEAL}18`:"#eef4fb",
+                color:selectedYear===null?TEAL_TEXT:TEXT_M,fontWeight:selectedYear===null?700:500}}>
               Avg
             </button>
             {allYears.map(yr=>(
               <button key={yr} onClick={()=>setSelectedYear(yr)}
                 style={{padding:"5px 12px",borderRadius:5,fontSize:12,cursor:"pointer",
-                  border:selectedYear===yr?`1px solid ${TEAL}`:"1px solid #ddd8ce",
-                  background:selectedYear===yr?`${TEAL}18`:"#f1efea",
-                  color:selectedYear===yr?TEAL:TEXT_S,fontWeight:selectedYear===yr?700:500}}>
+                  border:selectedYear===yr?`1px solid ${TEAL}`:"1px solid #cbdcf1",
+                  background:selectedYear===yr?`${TEAL}18`:"#eef4fb",
+                  color:selectedYear===yr?TEAL_TEXT:TEXT_M,fontWeight:selectedYear===yr?700:500}}>
                 {yr}
               </button>
             ))}
@@ -3747,10 +3761,10 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
                   ...(showBaseline?pyramidBaseData:[]),
                   ...(showScenario?(pyramidScenMap?[...pyramidScenMap.values()].flat():pyramidScenData):[]),
                 ].filter(d=>selectedYear===null||d.year===selectedYear);
-                exportCsv(src,"population_pyramid"+(selectedYear?`_${selectedYear}`:"_average")+".csv",{isContinuous:false});
+                exportXlsx(src,"population_pyramid"+(selectedYear?`_${selectedYear}`:"_average")+".xlsx",{isContinuous:false});
               }}
-              style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>
-              ↓ CSV
+              style={{fontSize:11,color:TEXT_M,background:"#e1ebf8",border:"1px solid #cbdcf1",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>
+              ↓ XLSX
             </button>
           </div>
           </div>}
@@ -3761,14 +3775,14 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
       {!isPyramidModule&&<>
 
       {/* ── Controls + filters + legend — flat toolbar, no boxes ── */}
-      <div style={{marginBottom:14,display:"flex",flexDirection:"column",gap:10,paddingBottom:10,borderBottom:"1px solid #e2ddd5"}}>
+      <div style={{marginBottom:14,display:"flex",flexDirection:"column",gap:10,paddingBottom:10,borderBottom:"1px solid #d4e2f3"}}>
 
         {/* Row 1: Stratify by, on its own — keeps the second row free for
             Chart type / View / Layout / CI / Compare to stay on one line */}
         <div style={{display:"flex",alignItems:"center",gap:12}}>
           <span style={rowLabel}>Stratify by</span>
           <select value={viewBy} onChange={e=>{setViewBy(e.target.value);setHighlighted(new Set());}}
-            style={{padding:"8px 12px",borderRadius:7,border:"1px solid #ddd8ce",fontSize:14,color:TEXT_D,background:"#f1efea",height:38,boxSizing:"border-box",cursor:"pointer",fontWeight:500}}>
+            style={{padding:"8px 12px",borderRadius:7,border:"1px solid #cbdcf1",fontSize:14,color:TEXT_D,background:"#eef4fb",height:38,boxSizing:"border-box",cursor:"pointer",fontWeight:500}}>
             {["Overall","Age","Gender","Disability Status","Region","Ethnicity","Income Quintile","Household Type"].map(o=>{
               // A variable can't be broken down by itself, so that option is greyed out.
               const isSelf=o===targetVariable;
@@ -3810,7 +3824,7 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
           {activeTab==="timeseries"&&chartType==="line"&&!showWageDist&&(
             <button onClick={()=>setShowCI(v=>!v)} title="Toggle 95% uncertainty interval bands"
               style={{padding:"7px 12px",borderRadius:6,fontSize:12.5,fontWeight:600,cursor:"pointer",lineHeight:1.6,
-                border:showCI?`1px solid ${TEAL}`:"1px solid #ddd8ce",background:showCI?`${TEAL}18`:"#f1efea",color:showCI?TEAL:TEXT_S}}>
+                border:showCI?`1px solid ${TEAL}`:"1px solid #cbdcf1",background:showCI?`${TEAL}18`:"#eef4fb",color:showCI?TEAL_TEXT:TEXT_S}}>
               {showCI?"▮ 95% CI":"▯ 95% CI"}
             </button>
           )}
@@ -3871,7 +3885,7 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
                       <button key={vv} onClick={()=>onToggleVarVal(vv)} title={addSpaces(stratLabel(vv,targetVariable))} style={{
                         display:"flex",alignItems:"center",gap:7,cursor:"pointer",padding:"7px 12px",borderRadius:18,
                         width:"auto",maxWidth:160,boxSizing:"border-box",
-                        border:`1.5px solid ${isOn?c:"#ddd8ce"}`,background:isOn?`${c}18`:"transparent",transition:"all 0.15s",
+                        border:`1.5px solid ${isOn?c:"#cbdcf1"}`,background:isOn?`${c}18`:"transparent",transition:"all 0.15s",
                       }}>
                         <span style={{width:9,height:9,borderRadius:"50%",background:isOn?c:"#c7c1b6",flexShrink:0}}/>
                         <span style={{fontSize:13,fontWeight:isOn?600:500,color:isOn?TEXT_D:TEXT_S,textAlign:"left",whiteSpace:"normal",wordBreak:"break-word",minWidth:0}}>{addSpaces(stratLabel(vv,targetVariable))}</span>
@@ -3880,7 +3894,7 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
                   })}
                 </div>
                 <div style={{display:"flex",gap:10}}>
-                  <button onClick={()=>setEnabledVarVals(new Set(varValues))} style={{fontSize:12,fontWeight:600,color:TEAL,background:"none",border:"none",cursor:"pointer",padding:0,textDecoration:"underline"}}>All</button>
+                  <button onClick={()=>setEnabledVarVals(new Set(varValues))} style={{fontSize:12,fontWeight:600,color:TEAL_TEXT,background:"none",border:"none",cursor:"pointer",padding:0,textDecoration:"underline"}}>All</button>
                   <button onClick={()=>setEnabledVarVals(new Set())} style={{fontSize:12,fontWeight:600,color:TEXT_S,background:"none",border:"none",cursor:"pointer",padding:0,textDecoration:"underline"}}>None</button>
                 </div>
               </div>
@@ -3899,7 +3913,7 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
                       <button key={sv} onClick={()=>onToggleStrat(sv)} title={addSpaces(stratLabel(sv,viewBy))} style={{
                         display:"flex",alignItems:"center",gap:7,cursor:"pointer",padding:"7px 12px",borderRadius:18,
                         width:"auto",maxWidth:160,boxSizing:"border-box",
-                        border:`1.5px solid ${isOn?TEAL:"#ddd8ce"}`,background:isOn?`${TEAL}18`:"transparent",transition:"all 0.15s",
+                        border:`1.5px solid ${isOn?TEAL:"#cbdcf1"}`,background:isOn?`${TEAL}18`:"transparent",transition:"all 0.15s",
                       }}>
                         <span style={{fontSize:13,fontWeight:isOn?600:500,color:isOn?TEXT_D:TEXT_S,textAlign:"left",whiteSpace:"normal",wordBreak:"break-word",minWidth:0}}>{addSpaces(stratLabel(sv,viewBy))}</span>
                       </button>
@@ -3907,7 +3921,7 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
                   })}
                 </div>
                 <div style={{display:"flex",gap:10}}>
-                  <button onClick={()=>setEnabledStrats(new Set(stratValues))} style={{fontSize:12,fontWeight:600,color:TEAL,background:"none",border:"none",cursor:"pointer",padding:0,textDecoration:"underline"}}>All</button>
+                  <button onClick={()=>setEnabledStrats(new Set(stratValues))} style={{fontSize:12,fontWeight:600,color:TEAL_TEXT,background:"none",border:"none",cursor:"pointer",padding:0,textDecoration:"underline"}}>All</button>
                   <button onClick={()=>setEnabledStrats(new Set())} style={{fontSize:12,fontWeight:600,color:TEXT_S,background:"none",border:"none",cursor:"pointer",padding:0,textDecoration:"underline"}}>None</button>
                 </div>
               </div>
@@ -3931,14 +3945,14 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
                         what this is; the extra "Highlight Stratifiers" label
                         only adds useful context when it's disambiguating
                         against the variable-value row shown alongside it. */}
-                    {legendEntries.length>1&&<span style={{...controlLabel,marginTop:4,paddingTop:8,borderTop:"1px solid #e2ddd5"}}>Highlight Stratifiers</span>}
+                    {legendEntries.length>1&&<span style={{...controlLabel,marginTop:4,paddingTop:8,borderTop:"1px solid #d4e2f3"}}>Highlight Stratifiers</span>}
                     <div style={{display:"flex",flexDirection:stackSidebar?"row":"column",flexWrap:"wrap",gap:6}}>
                       <LegendRow label={null} entries={stratLegendEntries} highlighted={highlighted} onToggle={onHighlight} showSymbols vertical={!stackSidebar} scope={viewBy}/>
                     </div>
                   </>
                 )}
                 {(showBaseline||showScenario)&&(
-                  <div style={{display:"flex",flexDirection:"column",gap:6,marginTop:4,paddingTop:8,borderTop:"1px solid #e2ddd5"}}>
+                  <div style={{display:"flex",flexDirection:"column",gap:6,marginTop:4,paddingTop:8,borderTop:"1px solid #d4e2f3"}}>
                     {showBaseline&&(
                       <div style={{display:"flex",alignItems:"center",gap:6}}>
                         <svg width="20" height="9"><line x1="0" y1="4" x2="20" y2="4" stroke={isCategorical?TEXT_M:NUMERIC_BASE_COLOUR} strokeWidth="2.5"/></svg>
@@ -3979,21 +3993,34 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
               // usably wide — stack them full-width instead (flexWrap below
               // then does the actual stacking; this just decides whether to
               // even attempt a 62/38 split in the first place).
-              const stackOverallLayout=isOverall&&chartAreaWidth<600;
-              // Widths for side-by-side (overall only)
-              const lineW   = isOverall ? (stackOverallLayout?chartAreaWidth:Math.round(chartAreaWidth*0.62)) : chartAreaWidth;
-              const crossW  = isOverall ? (stackOverallLayout?chartAreaWidth:Math.max(200, chartAreaWidth - lineW - 20)) : chartAreaWidth;
+              const stackOverallLayout=isOverall&&chartAreaWidth<560;
+              // Widths for side-by-side (overall only): two equal halves, so the
+              // line chart and the average bars are the same size.
+              const halfW   = Math.floor((chartAreaWidth-20)/2);
+              const lineW   = isOverall ? (stackOverallLayout?chartAreaWidth:halfW) : chartAreaWidth;
+              const crossW  = isOverall ? (stackOverallLayout?chartAreaWidth:halfW) : chartAreaWidth;
 
               const crossSectionTitle=selectedYear===null
                 ?<span>Average across all years <span style={{fontSize:11,color:TEXT_S,fontWeight:400}}>(click a point on the line chart to pin a year)</span></span>
-                :<span>Year {selectedYear} <button onClick={()=>setSelectedYear(null)} style={{fontSize:11,color:TEAL,background:"none",border:"none",cursor:"pointer",textDecoration:"underline",marginLeft:4,padding:0}}>reset to avg</button></span>;
+                :<span>Year {selectedYear} <button onClick={()=>setSelectedYear(null)} style={{fontSize:11,color:TEAL_TEXT,background:"none",border:"none",cursor:"pointer",textDecoration:"underline",marginLeft:4,padding:0}}>reset to avg</button></span>;
+              // Same wording as the full-screen view's title.
+              const lineTitle=<span>{varLabel} over time{isStratified?` by ${viewBy}`:""}</span>;
+              /** A chart card's title row. Side by side, both cards hold both titles in
+               *  the same spot (the other one invisible), so the rows are the same
+               *  height and the two charts line up even when one title wraps. */
+              const titleRow=(shown,other)=>(
+                <div style={{display:"grid",marginBottom:6,lineHeight:1.35}}>
+                  <div style={{gridArea:"1 / 1",fontSize:12,fontWeight:700,color:TEXT_D}}>{shown}</div>
+                  {other&&<div aria-hidden="true" style={{gridArea:"1 / 1",fontSize:12,fontWeight:700,visibility:"hidden"}}>{other}</div>}
+                </div>
+              );
 
               const lineChart=(
                 <LineChart svgRef={lineRef} baseData={combinedBaseTime} scenData={combinedScenTime}
                   colourMap={colourMap} highlighted={highlighted} isCategorical={isCategorical}
                   yDomain={combinedYDomain} varValues={varValues} enabledVarVals={enabledVarVals}
                   showBaseline={showBaseline} showScenario={showScenario}
-                  width={(isOverall?lineW:chartAreaWidth)-CARD_PAD} onYearClick={onYearClick} selectedYear={selectedYear}
+                  width={(isOverall?lineW:chartAreaWidth)-CARD_PAD} maxWidth={isOverall?lineW:chartAreaWidth} onYearClick={onYearClick} selectedYear={selectedYear}
                   isStratified={isStratified} stratValues={stratValues} enabledStrats={enabledStrats} viewBy={viewBy}
                   showCI={showCI} allYears={allYears} missingLookup={missingLookup} varLabel={varLabel}
                   scenarioMap={filteredScenMap} enabledScenarios={enabledScenarios} allScenarioNames={allScenarioNames}/>
@@ -4027,26 +4054,27 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
                     :<div>
                       {isOverall
                         /* Side-by-side: line left (with its own buttons below), cross-section right (with its own buttons) — stacks full-width on narrow screens instead */
-                        ?<div style={{display:"flex",gap:20,alignItems:"flex-start",flexWrap:"wrap"}}>
-                          {/* Line chart + its download buttons flush below.
-                              The invisible spacer matches the cross-section title row height
-                              so both SVGs share the same top edge. */}
-                          <div style={{flexShrink:0,display:"flex",flexDirection:"column",gap:4,width:stackOverallLayout?"100%":"auto",...CHART_CARD}}>
-                            <div style={{marginBottom:6,visibility:"hidden",fontSize:12,fontWeight:700}}>&nbsp;</div>
+                        ?<div style={{display:"flex",gap:20,alignItems:"stretch",flexWrap:"wrap"}}>
+                          {/* Line chart + its download buttons at the bottom. The two
+                              cards are equal halves of the row and stretch to the same
+                              height; titleRow keeps their title rows the same height. */}
+                          <div style={{flex:stackOverallLayout?"1 1 100%":"1 1 0",minWidth:0,display:"flex",flexDirection:"column",gap:4,...CHART_CARD}}>
+                            {titleRow(lineTitle,stackOverallLayout?null:crossSectionTitle)}
                             {lineChart}
-                            <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
+                            <div style={{display:"flex",gap:4,justifyContent:"flex-end",marginTop:"auto"}}>
                               <SuppressedNote rows={[...combinedBaseTime,...combinedAllScenTime]}/>
                               <FullscreenButton onClick={()=>setFsChart("line")}/>
                               <DownloadBtn svgRef={lineRef} filename="time_series.png" pubProps={pubProps(`${varLabel} over time`)}/>
-                              <button onClick={()=>exportCsv([...baseTime,...allScenTime].filter(d=>enabledVarVals.has(d.variable_value)),`${slugify(varLabel)}_time_series.csv`,{isContinuous:!isCategorical})}
-                                style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ CSV</button>
+                              <button onClick={()=>exportXlsx([...baseTime,...allScenTime].filter(d=>enabledVarVals.has(d.variable_value)),`${slugify(varLabel)}_time_series.xlsx`,{isContinuous:!isCategorical})}
+                                style={{fontSize:11,color:TEXT_M,background:"#e1ebf8",border:"1px solid #cbdcf1",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ XLSX</button>
                             </div>
                           </div>
                           {/* Cross-section with its own title + buttons handled inside CrossSectionPanel */}
-                          <div style={{flexShrink:0,flexGrow:1,minWidth:0,width:stackOverallLayout?"100%":"auto",...CHART_CARD}}>
-                            <div style={{marginBottom:6}}>
-                              <span style={{fontSize:12,fontWeight:700,color:TEXT_D}}>{crossSectionTitle}</span>
-                            </div>
+                          {/* Sized to its share of the row (not to its title's one-line
+                              width), so a long title wraps instead of pushing this card
+                              under the line chart. */}
+                          <div style={{flex:stackOverallLayout?"1 1 100%":"1 1 0",minWidth:0,display:"flex",flexDirection:"column",gap:4,...CHART_CARD}}>
+                            {titleRow(crossSectionTitle,stackOverallLayout?null:lineTitle)}
                             {crossSection}
                           </div>
                         </div>
@@ -4056,6 +4084,7 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
                            exactly like the Overall view does, via the same
                            onYearClick/selectedYear passed into lineChart. */
                         :<div style={{display:"flex",flexDirection:"column",gap:4,...CHART_CARD}}>
+                          {titleRow(lineTitle)}
                           {lineChart}
                           <CombinedLegend legendEntries={legendEntries} stratLegendEntries={stratLegendEntries}
                             enabledVarVals={enabledVarVals} isCategorical={isCategorical} varLabel={varLabel} viewBy={viewBy}/>
@@ -4063,8 +4092,8 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
                             <SuppressedNote rows={[...combinedBaseTime,...combinedAllScenTime]}/>
                             <FullscreenButton onClick={()=>setFsChart("line")}/>
                             <DownloadBtn svgRef={lineRef} filename="time_series.png" pubProps={pubProps(`${varLabel} over time by ${viewBy}`)}/>
-                            <button onClick={()=>exportCsv([...baseTime,...allScenTime].filter(d=>enabledStrats.has(d.stratifier_value)&&enabledVarVals.has(d.variable_value)),`${slugify(varLabel)}_time_series.csv`,{isContinuous:!isCategorical})}
-                              style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ CSV</button>
+                            <button onClick={()=>exportXlsx([...baseTime,...allScenTime].filter(d=>enabledStrats.has(d.stratifier_value)&&enabledVarVals.has(d.variable_value)),`${slugify(varLabel)}_time_series.xlsx`,{isContinuous:!isCategorical})}
+                              style={{fontSize:11,color:TEXT_M,background:"#e1ebf8",border:"1px solid #cbdcf1",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ XLSX</button>
                           </div>
                           <div style={{marginTop:12}}>
                             <div style={{marginBottom:6}}>
@@ -4102,8 +4131,8 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
                       <SuppressedNote rows={[...combinedBaseTime,...combinedAllScenTime]}/>
                       <FullscreenButton onClick={()=>setFsChart("bar")}/>
                       <DownloadBtn svgRef={barRef} filename="stacked_bar.png" pubProps={pubProps(`${varLabel} by year — stacked`)}/>
-                      <button onClick={()=>exportCsv([...baseTime,...allScenTime].filter(d=>enabledVarVals.has(d.variable_value)),`${slugify(varLabel)}_stacked.csv`,{isContinuous:!isCategorical})}
-                        style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ CSV</button>
+                      <button onClick={()=>exportXlsx([...baseTime,...allScenTime].filter(d=>enabledVarVals.has(d.variable_value)),`${slugify(varLabel)}_stacked.xlsx`,{isContinuous:!isCategorical})}
+                        style={{fontSize:11,color:TEXT_M,background:"#e1ebf8",border:"1px solid #cbdcf1",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>↓ XLSX</button>
                     </div>
                   </div>
                 }
@@ -4128,14 +4157,14 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
               {deltaYear&&(
                 <div style={CHART_CARD}>
                   <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
-                    <span style={{fontSize:13,fontWeight:700,color:TEAL}}>Means — Year {deltaYear}</span>
+                    <span style={{fontSize:13,fontWeight:700,color:TEAL_TEXT}}>Means — Year {deltaYear}</span>
                     <button onClick={()=>setDeltaYear(null)}
-                      style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>✕ Clear</button>
+                      style={{fontSize:11,color:TEXT_M,background:"#e1ebf8",border:"1px solid #cbdcf1",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>✕ Clear</button>
                   </div>
                   {/* Same component as the cross-section under the line chart: filters to
                       the selected breakdown (one group of bars per stratum when stratified),
                       fits its own y-axis to the bars and their intervals, and has its own
-                      Full screen / PNG / CSV buttons. */}
+                      Full screen / PNG / XLSX buttons. */}
                   <CrossSectionPanel baseData={baselineData} scenData={scenarioData}
                     colourMap={colourMap} highlighted={highlighted} isCategorical={isCategorical}
                     varValues={varValues} enabledVarVals={enabledVarVals}
@@ -4189,10 +4218,10 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
               onClick={()=>{
                 const pyrRows=[...(showBaseline?pyramidBaseData:[]),...(showScenario?(pyramidScenMap?[...pyramidScenMap.values()].flat():pyramidScenData):[])]
                   .filter(d=>selectedYear===null||d.year===selectedYear);
-                exportCsv(pyrRows,"population_pyramid"+(selectedYear?`_${selectedYear}`:"_average")+".csv",{isContinuous:false});
+                exportXlsx(pyrRows,"population_pyramid"+(selectedYear?`_${selectedYear}`:"_average")+".xlsx",{isContinuous:false});
               }}
-              style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>
-              ↓ CSV
+              style={{fontSize:11,color:TEXT_M,background:"#e1ebf8",border:"1px solid #cbdcf1",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>
+              ↓ XLSX
             </button>
           </div>
           </div>
@@ -4204,18 +4233,18 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
             <button
               onClick={()=>setSelectedYear(null)}
               style={{padding:"5px 10px",borderRadius:5,fontSize:12,cursor:"pointer",
-                border:selectedYear===null?`1px solid ${TEAL}`:"1px solid #ddd8ce",
-                background:selectedYear===null?`${TEAL}18`:"#f1efea",
-                color:selectedYear===null?TEAL:TEXT_S,fontWeight:selectedYear===null?700:500}}>
+                border:selectedYear===null?`1px solid ${TEAL}`:"1px solid #cbdcf1",
+                background:selectedYear===null?`${TEAL}18`:"#eef4fb",
+                color:selectedYear===null?TEAL_TEXT:TEXT_M,fontWeight:selectedYear===null?700:500}}>
               Avg
             </button>
             {allYears.map(yr=>(
               <button key={yr}
                 onClick={()=>setSelectedYear(yr)}
                 style={{padding:"5px 10px",borderRadius:5,fontSize:12,cursor:"pointer",
-                  border:selectedYear===yr?`1px solid ${TEAL}`:"1px solid #ddd8ce",
-                  background:selectedYear===yr?`${TEAL}18`:"#f1efea",
-                  color:selectedYear===yr?TEAL:TEXT_S,fontWeight:selectedYear===yr?700:500}}>
+                  border:selectedYear===yr?`1px solid ${TEAL}`:"1px solid #cbdcf1",
+                  background:selectedYear===yr?`${TEAL}18`:"#eef4fb",
+                  color:selectedYear===yr?TEAL_TEXT:TEXT_M,fontWeight:selectedYear===yr?700:500}}>
                 {yr}
               </button>
             ))}
@@ -4281,12 +4310,12 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
                     : d.stratifier === viewBy && enabledStrats.has(d.stratifier_value)) &&
                   (showAllYearsDist || selectedYear === null || d.year === selectedYear)
                 );
-                exportCsv(wbRows,
-                  `hourly_earnings_distribution${selectedYear?`_${selectedYear}`:showAllYearsDist?"_all_years":"_average"}.csv`,
+                exportXlsx(wbRows,
+                  `hourly_earnings_distribution${selectedYear?`_${selectedYear}`:showAllYearsDist?"_all_years":"_average"}.xlsx`,
                   { isContinuous: false });
               }}
-              style={{fontSize:11,color:TEXT_S,background:"#e2ddd5",border:"1px solid #ddd8ce",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>
-              ↓ CSV
+              style={{fontSize:11,color:TEXT_M,background:"#e1ebf8",border:"1px solid #cbdcf1",borderRadius:5,padding:"2px 8px",cursor:"pointer",lineHeight:1.6}}>
+              ↓ XLSX
             </button>
           </div>
           </div>
@@ -4297,17 +4326,17 @@ export default function DashboardSection({parsedCache:inputRows,targetVariable,s
               <span style={{fontSize:12,fontWeight:700,color:TEXT_S,textTransform:"uppercase",letterSpacing:"0.04em"}}>Year</span>
               <button onClick={()=>setSelectedYear(null)}
                 style={{padding:"5px 10px",borderRadius:5,fontSize:12,cursor:"pointer",
-                  border:selectedYear===null?`1px solid ${TEAL}`:"1px solid #ddd8ce",
-                  background:selectedYear===null?`${TEAL}18`:"#f1efea",
-                  color:selectedYear===null?TEAL:TEXT_S,fontWeight:selectedYear===null?700:500}}>
+                  border:selectedYear===null?`1px solid ${TEAL}`:"1px solid #cbdcf1",
+                  background:selectedYear===null?`${TEAL}18`:"#eef4fb",
+                  color:selectedYear===null?TEAL_TEXT:TEXT_M,fontWeight:selectedYear===null?700:500}}>
                 Average
               </button>
               {allYears.map(yr=>(
                 <button key={yr} onClick={()=>setSelectedYear(yr)}
                   style={{padding:"5px 10px",borderRadius:5,fontSize:12,cursor:"pointer",
-                    border:selectedYear===yr?`1px solid ${TEAL}`:"1px solid #ddd8ce",
-                    background:selectedYear===yr?`${TEAL}18`:"#f1efea",
-                    color:selectedYear===yr?TEAL:TEXT_S,fontWeight:selectedYear===yr?700:500}}>
+                    border:selectedYear===yr?`1px solid ${TEAL}`:"1px solid #cbdcf1",
+                    background:selectedYear===yr?`${TEAL}18`:"#eef4fb",
+                    color:selectedYear===yr?TEAL_TEXT:TEXT_M,fontWeight:selectedYear===yr?700:500}}>
                   {yr}
                 </button>
               ))}

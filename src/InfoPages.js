@@ -3,26 +3,24 @@
  * standalone pages in public/ (interpreting-results.html etc.) that the other
  * information tabs show.
  */
-const TEAL = "#14687c", AQUA = "#0f93a1", TEXT_DARK = "#1e293b", TEXT_MID = "#475569", BG_DARK = "#fcfaf5";
+import { BENEFIT_UNIT_DEFINITION } from "./variableInfo";
+const TEAL = "#1d2d41", AQUA = "#6095DA", TEXT_DARK = "#1e293b", TEXT_MID = "#475569", BG_DARK = "#ffffff";
 
 const S = {
   container: { width: "100%", boxSizing: "border-box", maxWidth: 880, margin: "0 auto", padding: "40px 24px 56px", display: "flex", flexDirection: "column", gap: 22 },
-  eyebrow: { fontSize: 12, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: AQUA, margin: "0 0 8px" },
+  eyebrow: { fontSize: 12, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: TEAL, margin: "0 0 8px" },
   h1: { fontSize: "clamp(26px,4.2vw,36px)", fontWeight: 700, color: TEAL, margin: "0 0 12px", letterSpacing: "-0.4px" },
   lede: { fontSize: 16, color: TEXT_MID, lineHeight: 1.7, margin: 0, maxWidth: 680 },
-  card: { background: BG_DARK, borderRadius: 12, padding: "28px 32px", boxShadow: "0 2px 8px rgba(0,0,0,0.08)" },
+  card: { background: BG_DARK, borderRadius: 6, padding: "28px 32px", border: "1px solid #E1DFE5" },
   h2: { fontSize: 19, fontWeight: 700, color: TEXT_DARK, margin: "0 0 12px", letterSpacing: "-0.2px" },
   p: { fontSize: 15, color: TEXT_DARK, lineHeight: 1.8, margin: "0 0 14px" },
   pLast: { fontSize: 15, color: TEXT_DARK, lineHeight: 1.8, margin: 0 },
-  linkBtn: { color: AQUA, textDecoration: "none", fontSize: 13, padding: "8px 14px", background: "rgba(15,147,161,0.06)", borderRadius: 6, border: "1px solid rgba(15,147,161,0.22)", fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 6 },
+  linkBtn: { color: TEAL, textDecoration: "none", fontSize: 13, padding: "8px 14px", background: `${AQUA}10`, borderRadius: 6, border: `1px solid ${AQUA}`, fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 6 },
   linkRow: { display: "flex", flexWrap: "wrap", gap: 10, marginTop: 6 },
 };
 
 const ext = { target: "_blank", rel: "noopener noreferrer" };
 
-/** Plain-English definition of a benefit unit, shared by the Dataset tab's
- *  "Key terms" and the ⓘ hover in variable descriptions (App.js). */
-export const BENEFIT_UNIT_DEFINITION = "A single adult or a couple, together with any dependent children they are responsible for. It is the unit used to assess benefit entitlement, and can be smaller than a household — for example, an adult living with their parents is a separate benefit unit.";
 
 /** "Dataset" tab: what data the visualiser shows and how to use your own. */
 export function DatasetPage({ onNavigate }) {
@@ -37,7 +35,7 @@ export function DatasetPage({ onNavigate }) {
       <div style={S.card}>
         <h2 style={S.h2}>Where the data comes from</h2>
         <p style={S.p}>SimPaths starts from a representative sample of the UK population drawn from <strong>Understanding Society: the UK Household Longitudinal Study</strong>, and simulates how each person's demographics, employment, income and health change year by year.</p>
-        <p style={S.pLast}>Every figure in the visualiser is an average across several model runs. Estimates based on fewer than 20 people in any single run are suppressed, and missing values (coded −9 in SimPaths) are left out rather than treated as zero.</p>
+        <p style={S.pLast}>Every figure in the visualiser is an average across several model runs. Estimates based on fewer than 20 people in any single run are suppressed, and missing values (coded −9 in SimPaths) are left out rather than treated as zero. The first simulated year is not shown: it is the starting population, before the model has run and before any policy starts. You can download the full aggregated dataset from the Visualiser tab ("Download full dataset (.xlsx)"), as an .xlsx workbook whose first sheet explains each column; estimates based on fewer than 20 people are left blank in it.</p>
         <div style={S.linkRow}>
           <a style={S.linkBtn} href="https://simpaths.org/getting-started/data/" {...ext}>SimPaths data documentation ↗</a>
           <a style={S.linkBtn} href="#/interpreting-results" onClick={e => { e.preventDefault(); onNavigate("interpreting-results"); }}>Interpreting the results →</a>
@@ -46,7 +44,7 @@ export function DatasetPage({ onNavigate }) {
 
       <div style={S.card} id="key-terms">
         <h2 style={S.h2}>Key terms</h2>
-        <p style={S.pLast}><strong>Benefit unit</strong> — {BENEFIT_UNIT_DEFINITION} Some variables are measured for the benefit unit rather than the individual (household type, income quintile, benefits received, equivalised income, region and provided care); every person in a benefit unit gets that unit's value.</p>
+        <p style={S.pLast}><strong>Benefit unit</strong> — {BENEFIT_UNIT_DEFINITION} Some variables are measured for the benefit unit rather than the individual (household type, income quintile, benefits received, equivalised income, region and provided care); every person in a benefit unit gets that unit's value. Their results therefore count people, not benefit units: a three-person benefit unit counts three times, so, for example, the income quintile shares are not 20% each.</p>
       </div>
 
       <div style={S.card}>
@@ -57,7 +55,7 @@ export function DatasetPage({ onNavigate }) {
       <div style={S.card}>
         <h2 style={S.h2}>Using your own SimPaths output</h2>
         <p style={S.p}>On the Visualiser tab, choose <strong>Visualise Your Own Data</strong> and select a folder containing a <strong>Baseline</strong> folder and one or more scenario folders, each holding the run folders from your SimPaths output. Runs are matched between Baseline and scenarios by the seed number in the run folder's name.</p>
-        <pre style={{ background: "#fff", border: "1px solid #e2ddd5", borderRadius: 8, padding: "12px 16px", fontSize: 12.5, lineHeight: 1.5, margin: "0 0 14px", overflowX: "auto" }}>
+        <pre style={{ background: "#fff", border: "1px solid #d4e2f3", borderRadius: 8, padding: "12px 16px", fontSize: 12.5, lineHeight: 1.5, margin: "0 0 14px", overflowX: "auto" }}>
 {`Your Data Folder/
 ├── Baseline/
 │   ├── Run 1/

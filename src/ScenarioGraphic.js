@@ -9,9 +9,9 @@
  * To change the scenarios shown, edit the SCENARIOS array below.
  */
 
-const TEAL = "#14687c";
-const AQUA = "#0f93a1";
-const GREY = "#586369";      // matches NUMERIC_BASE_COLOUR in DashboardSection.js
+const TEAL = "#1d2d41";  // text (navy)
+const AQUA = "#6095DA";  // SimPaths logo blue (decoration)
+const GREY = "#363d42";      // matches NUMERIC_BASE_COLOUR in DashboardSection.js
 const TEXT_MID = "#475569";
 
 // uplift: extra bar width (%) drawn for the scenario — exaggerated so it is visible
@@ -43,7 +43,7 @@ export default function ScenarioGraphic({ isMobile }) {
       <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "6px", marginBottom: "14px", paddingBottom: "12px", borderBottom: `1px solid ${AQUA}20` }}>
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
           <div style={{ display: "flex", gap: "2px" }}>
-            {[0, 1, 2, 3, 4].map(i => <Person key={i} colour={i < 2 ? AQUA : `${TEAL}55`} />)}
+            {[0, 1, 2, 3, 4].map(i => <Person key={i} colour={i < 2 ? AQUA : `${AQUA}55`} />)}
           </div>
           <span style={{ fontSize: "12.5px", color: TEXT_MID }}><strong style={{ color: TEAL }}>Who:</strong> 16–29 year olds</span>
         </div>
@@ -61,7 +61,7 @@ export default function ScenarioGraphic({ isMobile }) {
                 <div style={{ width: `${BASE_WIDTH}%`, background: GREY }} />
                 {s.uplift > 0 && <div style={{ width: `${s.uplift}%`, background: hatch, borderLeft: "2px solid #fff" }} />}
               </div>
-              <span style={{ fontSize: "12px", color: s.uplift ? AQUA : TEXT_MID, fontWeight: s.uplift ? 700 : 400, whiteSpace: "nowrap", minWidth: "112px" }}>{s.note}</span>
+              <span style={{ fontSize: "12px", color: s.uplift ? TEAL : TEXT_MID, fontWeight: s.uplift ? 700 : 400, whiteSpace: "nowrap", minWidth: "112px" }}>{s.note}</span>
             </div>
           </div>
         ))}

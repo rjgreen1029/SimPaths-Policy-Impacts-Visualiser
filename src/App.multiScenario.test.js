@@ -6,8 +6,20 @@ import React from "react";
 import {fireEvent, render, screen, waitFor} from "@testing-library/react";
 import App from "./App";
 import {normaliseAggregateRows} from "./aggregateDataSource";
-import {csvParse} from "./csvParse";
-import {formatChartCsv,buildPublicationSvg} from "./DashboardSection";
+import {chartExportRows,buildPublicationSvg} from "./DashboardSection";
+
+// Capture the sheets of each .xlsx download instead of building the file.
+jest.mock("./xlsxWriter",()=>{
+  const actual=jest.requireActual("./xlsxWriter");
+  return {...actual,buildXlsx:jest.fn(async sheets=>{global.__lastSheets=sheets;return {};})};
+});
+/** Data-sheet rows of the last .xlsx download, as objects keyed by column. */
+const exported=()=>{
+  const rows=global.__lastSheets.find(s=>s.name==="Data").rows;
+  const header=rows[0].map(c=>c.v);
+  return rows.slice(1).map(r=>Object.fromEntries(header.map((h,i)=>[h,r[i]])));
+};
+const asObjects=table=>table.slice(1).map(r=>Object.fromEntries(table[0].map((h,i)=>[h,r[i]])));
 import {useAggregatedData} from "./useAggregatedData";
 
 beforeEach(()=>{
@@ -49,24 +61,21 @@ test("paired statistics and bins pass through unchanged; missing paired values s
   expect(normaliseAggregateRows([pyramid])[0]).toEqual(pyramid);
 });
 
-test("CSV exports preserve scenario identities, paired metrics and quoted names",()=>{
+test("chart exports show each alternative by name, with paired metrics, and drop internal columns",()=>{
   const values=[row("scenario_2",50),row("baseline",40),row("scenario_1",45)];
   const names={baseline:"Reference",scenario_1:'Policy, "A"',scenario_2:"Policy\nB"};
   const label=name=>names[name];
-  const csv=csvParse(formatChartCsv(values,{scenarioLabel:label}));
-  expect(csv.map(r=>r.scenario)).toEqual(["baseline","scenario_1","scenario_2"]);
-  expect(csv.map(r=>r.configuration_name)).toEqual([names.baseline,names.scenario_1,names.scenario_2]);
-  expect(csv[2].paired_mean_delta).toBe("10");
-  const delta=csvParse(formatChartCsv(values.slice(0,1).map(r=>({...r,scenarioName:r.scenario,mean_value:10})),{isDelta:true,scenarioLabel:label}));
-  expect(delta[0].scenario).toBe("scenario_2");
-  expect(delta[0].comparison).toBe("Scenario minus Baseline");
+  const out=asObjects(chartExportRows(values,{scenarioLabel:label}));
+  expect(out.map(r=>r.scenario)).toEqual([names.baseline,names.scenario_1,names.scenario_2]);
+  expect(out[2].paired_mean_delta).toBe(10);
+  for (const gone of ["module","total_sample","min_sample","paired_n_runs"]) expect(out[0]).not.toHaveProperty(gone);
+  const delta=asObjects(chartExportRows(values.slice(0,1).map(r=>({...r,scenarioName:r.scenario,mean_value:10})),{isDelta:true,scenarioLabel:label}));
+  expect(delta[0].scenario).toBe(names.scenario_2);
+  expect(delta[0].difference).toBe(10);
   expect(values[0].mean_value).toBe(50);
 });
 
-test("chart CSV buttons export all displayed alternatives and honour scenario toggles",async()=>{
-  const originalBlob=global.Blob;
-  let saved;
-  global.Blob=class {constructor(parts){saved=parts.join("");}};
+test("chart XLSX buttons export all displayed alternatives and honour scenario toggles",async()=>{
   URL.createObjectURL=jest.fn(()=>"blob:fixture");URL.revokeObjectURL=jest.fn();
   jest.spyOn(HTMLAnchorElement.prototype,"click").mockImplementation(()=>{});
   try{
@@ -74,19 +83,16 @@ test("chart CSV buttons export all displayed alternatives and honour scenario to
       names:{baseline:"Reference",scenario_1:"Policy A",scenario_2:"Policy B"},key:"export-set"}}/>);
     fireEvent.click(screen.getByRole("button",{name:/^Health.*▼/}));
     fireEvent.click(screen.getByRole("button",{name:"Mental Component Summary (MCS)",exact:true}));
-    const button=await screen.findAllByRole("button",{name:"↓ CSV"});
+    const button=await screen.findAllByRole("button",{name:"↓ XLSX"});
     fireEvent.click(button[0]);
-    expect(new Set(csvParse(saved).map(r=>r.scenario))).toEqual(new Set(["baseline","scenario_1","scenario_2"]));
+    await waitFor(()=>expect(new Set(exported().map(r=>r.scenario))).toEqual(new Set(["Reference","Policy A","Policy B"])));
     fireEvent.click(screen.getByRole("button",{name:/Policy A/}));
-    fireEvent.click(screen.getAllByRole("button",{name:"↓ CSV"})[0]);
-    expect(new Set(csvParse(saved).map(r=>r.scenario))).toEqual(new Set(["baseline","scenario_2"]));
-  }finally{global.Blob=originalBlob;}
+    fireEvent.click(screen.getAllByRole("button",{name:"↓ XLSX"})[0]);
+    await waitFor(()=>expect(new Set(exported().map(r=>r.scenario))).toEqual(new Set(["Reference","Policy B"])));
+  }finally{delete global.__lastSheets;}
 });
 
 test("arriving scenarios are shown, hidden scenarios stay hidden, and a new source resets the choices", async () => {
-  const originalBlob = global.Blob;
-  let saved;
-  global.Blob = class { constructor(parts) { saved = parts.join(""); } };
   URL.createObjectURL = jest.fn(() => "blob:fixture"); URL.revokeObjectURL = jest.fn();
   jest.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
   const names = { baseline: "Reference", scenario_1: "Policy A", scenario_2: "Policy B", scenario_3: "Policy C" };
@@ -96,25 +102,25 @@ test("arriving scenarios are shown, hidden scenarios stay hidden, and a new sour
     const { rerender } = render(<App dataSource={source(first)} />);
     fireEvent.click(screen.getByRole("button", { name: /^Health.*▼/ }));
     fireEvent.click(screen.getByRole("button", { name: "Mental Component Summary (MCS)", exact: true }));
-    await screen.findAllByRole("button", { name: "↓ CSV" });
+    await screen.findAllByRole("button", { name: "↓ XLSX" });
     fireEvent.click(screen.getByRole("button", { name: /Policy B/ }));
     const next = [...first, row("scenario_3", 55)];
     rerender(<App dataSource={source(next)} />);
     await screen.findByRole("button", { name: /Policy C/ });
-    fireEvent.click(screen.getAllByRole("button", { name: "↓ CSV" })[0]);
-    expect(new Set(csvParse(saved).map(value => value.scenario))).toEqual(new Set(["baseline", "scenario_1", "scenario_3"]));
+    fireEvent.click(screen.getAllByRole("button", { name: "↓ XLSX" })[0]);
+    await waitFor(()=>expect(new Set(exported().map(r=>r.scenario))).toEqual(new Set(["Reference", "Policy A", "Policy C"])));
     fireEvent.click(screen.getByRole("button", { name: /Policy C/ }));
     rerender(<App dataSource={source(first)} />);
     await waitFor(() => expect(screen.queryByRole("button", { name: /Policy C/ })).toBeNull());
     rerender(<App dataSource={source(next)} />);
     await screen.findByRole("button", { name: /Policy C/ });
-    fireEvent.click(screen.getAllByRole("button", { name: "↓ CSV" })[0]);
-    expect(new Set(csvParse(saved).map(value => value.scenario))).toEqual(new Set(["baseline", "scenario_1"]));
+    fireEvent.click(screen.getAllByRole("button", { name: "↓ XLSX" })[0]);
+    await waitFor(()=>expect(new Set(exported().map(r=>r.scenario))).toEqual(new Set(["Reference", "Policy A"])));
     rerender(<App dataSource={{ ...source(next), key: "different-experiment" }} />);
     await waitFor(() => expect(screen.queryByText(/Loading chart/)).toBeNull());
-    fireEvent.click(screen.getAllByRole("button", { name: "↓ CSV" })[0]);
-    expect(new Set(csvParse(saved).map(value => value.scenario))).toEqual(new Set(["baseline", "scenario_1", "scenario_2", "scenario_3"]));
-  } finally { global.Blob = originalBlob; }
+    fireEvent.click(screen.getAllByRole("button", { name: "↓ XLSX" })[0]);
+    await waitFor(()=>expect(new Set(exported().map(r=>r.scenario))).toEqual(new Set(["Reference", "Policy A", "Policy B", "Policy C"])));
+  } finally { delete global.__lastSheets; }
 });
 
 test("publication SVG includes separate named alternatives and allocates space for long labels",()=>{

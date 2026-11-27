@@ -252,7 +252,9 @@ const DECILE_RAMP = [
   "#c4633a", // 9
   "#9e3a1c", // 10 — dark orange-brown
 ];
-const DIV_RED_TEAL = ["#8dcfda","#4ab8cc","#0ca1c4","#08829c","#055e71"];
+// Income quintile: light → dark ramp of the page blue (SimPaths logo #6095DA),
+// lightened with white for the low end and darkened with black for the high end.
+const DIV_RED_TEAL = ["#c6d8f1","#93b7e6","#6095DA","#4d77ae","#3a5983"];
 
 // ── Education: indigo ramp ────────────────────────────────────────────────────
 // Evenly spaced from light to dark (lightness ≈ 80 / 55 / 17), so Medium and
@@ -267,55 +269,56 @@ const HEALTH_DIV = ["#055e71","#0ca1c4","#7ab8b0","#ffb0ab","#ff5d51"];
 //                  Excellent  VeryGood   Good      Fair     Poor
 
 // ── Employment/Activity status — explicit per-value colours ──────────────────
-// Employed=green, Not employed=red, Retired=purple, Student=indigo (edu blue)
+// Colours from the SimPaths logo: Employed=blue, Not employed=red-orange,
+// Student=purple, Retired=magenta
 const EMPLOYMENT_COLOURS = {
   // Display labels (from pre-agg CSV)
-  "employed or self employed":  "#22a87b",
-  "employed or self-employed":  "#22a87b",
-  "self employed":              "#22a87b",
-  "self-employed":              "#22a87b",
-  "employed":                   "#22a87b",
-  "not employed":               "#ff5d51",
-  "not-employed":               "#ff5d51",
-  "unemployed":                 "#ff5d51",
-  "student":                    "#4767f5",
-  "in education":               "#4767f5",
-  "retired":                    "#621670",
+  "employed or self employed":  "#6095da",
+  "employed or self-employed":  "#6095da",
+  "self employed":              "#6095da",
+  "self-employed":              "#6095da",
+  "employed":                   "#6095da",
+  "not employed":               "#db4a42",
+  "not-employed":               "#db4a42",
+  "unemployed":                 "#db4a42",
+  "student":                    "#7c36a6",
+  "in education":               "#7c36a6",
+  "retired":                    "#b9318a",
   // Raw SimPaths Java enum values (from local upload before recode)
-  "employedorselfemployed":     "#22a87b",
-  "selfemployed":               "#22a87b",
-  "notemployed":                "#ff5d51",
-  "unemployedbenefits":         "#ff5d51",
-  "student_enum":               "#4767f5",
+  "employedorselfemployed":     "#6095da",
+  "selfemployed":               "#6095da",
+  "notemployed":                "#db4a42",
+  "unemployedbenefits":         "#db4a42",
+  "student_enum":               "#7c36a6",
   // Numeric codes (1-4) in case raw integers pass through
-  "1":                          "#22a87b",
-  "2":                          "#ff5d51",
-  "3":                          "#621670",
-  "4":                          "#4767f5",
+  "1":                          "#6095da",
+  "2":                          "#db4a42",
+  "3":                          "#b9318a",
+  "4":                          "#7c36a6",
 };
 
 // ── Ethnicity — explicit per-value colours ────────────────────────────────────
-// White/Asian/Black/Mixed keep their natural BRAND_QUAL positions;
-// Other → purple; Missing → grey
 const ETHNICITY_COLOURS = {
-  "white":   "#0ca1c4",  // teal   (BRAND_QUAL[1])
-  "asian":   "#778ffb",  // indigo (BRAND_QUAL[2])
-  "black":   "#22a87b",  // green  (BRAND_QUAL[3])
-  "mixed":   "#14687c",  // teal-green
-  "other":   "#621670",  // purple
+  // Colours from the SimPaths logo, ordered so neighbouring groups differ most.
+  "white":   "#6095da",  // logo blue
+  "asian":   "#db4a42",  // logo red-orange
+  "black":   "#7c36a6",  // logo purple
+  "mixed":   "#d23a5f",  // logo raspberry
+  "other":   "#5f67ca",  // logo periwinkle
   "missing": "#b0aaa4",  // grey
 };
 
-// ── Household type — purple × coral-red bivariate (Option 1) ─────────────────
-// Couple axis = purple (#621670), Single axis = coral-red (#ff5d51)
-// Children shifts toward the saturated/dark end of each axis.
+// ── Household type — logo purple × logo red-orange (bivariate) ─────────────
+// Couple axis = SimPaths logo purple (#7c36a6), Single axis = logo red-orange
+// (#db4a42). With children = full colour; no children = the same colour with
+// 50% white.
 const HOUSEHOLD_COLOURS = {
-  "couple with children": "#621670",  // full purple
-  "couple, no children":  "#c99dd1",  // light purple
-  "couple no children":   "#c99dd1",  // alternate label
-  "single with children": "#cc2d22",  // dark coral-red
-  "single, no children":  "#ffb0ab",  // light coral
-  "single no children":   "#ffb0ab",  // alternate label
+  "couple with children": "#7c36a6",  // logo purple
+  "couple, no children":  "#be9ad2",  // light purple
+  "couple no children":   "#be9ad2",  // alternate label
+  "single with children": "#db4a42",  // logo red-orange
+  "single, no children":  "#eda4a0",  // light red-orange
+  "single no children":   "#eda4a0",  // alternate label
   "missing":              "#8a8480",  // grey for null/unclassified
   "null":                 "#8a8480",
 };
@@ -332,8 +335,8 @@ const VARIABLE_PALETTE_REF = {
   "number of children": SEQ_CHILDREN,
 };
 
-// Binary variables — distinctive coral/teal pair, both clearly visible on white
-const BINARY_PAIR = ["#ff5d51","#0ca1c4"];
+// Binary variables — coral and the page blue (SimPaths logo #6095DA)
+const BINARY_PAIR = ["#ff5d51","#6095DA"];
 // Warm mid-grey for "In Education" (not cold, not too light)
 const EDU_GREY = "#8a8078";
 

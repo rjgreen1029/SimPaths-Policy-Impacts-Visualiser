@@ -44,7 +44,7 @@ Licensed under the [European Union Public Licence v. 1.2](#licence) (EUPL-1.2).
 - Drag up or down on a line chart to zoom its y-axis; drag on the population pyramid to zoom into an age range.
 - Population pyramid by single year of age (0–99, 100+); **Population size** (number of simulated people) as its own variable.
 - Two data sources: the bundled default dataset, or your own local SimPaths output folder — nothing is uploaded.
-- Export any chart as PNG and its data as CSV.
+- Export any chart as PNG and its data as an .xlsx workbook (with an About sheet explaining the columns).
 - Plain-language help: a "Key terms" section on the Dataset tab, and an ⓘ next to "benefit unit" in variable descriptions.
 - Responsive layout from mobile to wide desktop screens.
 
@@ -70,6 +70,8 @@ src/
 ├── StaticPage.js          # Shows the public/*.html pages inside an app tab
 ├── InfoPages.js           # Dataset (incl. Key terms) and More Resources tabs
 ├── ScenarioGraphic.js     # Diagram of the default education scenario
+├── datasetExport.js       # .xlsx downloads (full dataset and each chart): columns, About sheet, blanking
+├── xlsxWriter.js          # Small dependency-free .xlsx writer used by datasetExport.js
 ├── reportWebVitals.js     # Create React App performance hook (imported by index.js)
 └── index.css              # Global styles
 
@@ -159,6 +161,8 @@ The rules are written out in full in [`docs/aggregation-spec.md`](docs/aggregati
 
 Runs are processed one at a time, so only one run's data is in memory at once.
 
+**The first simulated year is dropped.** It is the starting population, before the model has run a step or any policy starts, so it is left out of the output — in the dashboard's own aggregation (`finaliseAggregation` in `parseCore.js`) and in the R script (v20 onwards).
+
 ### Missing values (−9)
 
 - **Numeric variables:** −9 is left out of the mean (never treated as 0). The share missing is shown in tooltips, not plotted.
@@ -171,7 +175,7 @@ An estimate is shown only if **every run** has at least **20 people** behind it 
 
 ## The R pre-aggregation script
 
-`validation/r/SimPathsAggFaster_v19.Rmd` produces the default CSV from SimPaths output, with exactly the same rows and values as the dashboard's own aggregation (checked by the [validation](#validation) tests). Set `data_root` (the folder containing `Baseline` and scenario folders) and `OUTPUT_DIR` near the top, then knit or run it. It processes several runs at once — one per CPU core; lower `N_WORKERS` if memory runs short. Needs `data.table` and `future.apply`.
+`SimPathsAggFaster_v20.Rmd` produces the default CSV from SimPaths output, with exactly the same rows and values as the dashboard's own aggregation (checked by the [validation](#validation) tests). Set `data_root` (the folder containing `Baseline` and scenario folders) and `OUTPUT_DIR` near the top, then knit or run it. It processes several runs at once — one per CPU core; lower `N_WORKERS` if memory runs short. Needs `data.table` and `future.apply`. v20 drops the first simulated year, as the dashboard does.
 
 ## Dashboard views & controls
 
@@ -186,7 +190,9 @@ The **Visualiser** tab holds the introduction (with "The default view" and "Limi
 - **Δ Baseline → Scenario** — all enabled scenarios on one chart; click a year for that year's values.
 - **Population Pyramid** — single years of age; drag up/down to zoom into an age range.
 - **Hourly Earnings** — also as a binned distribution.
-- Every chart has **⤢ Full screen**, **↓ PNG** and **↓ CSV**.
+- Every chart has **⤢ Full screen**, **↓ PNG** and **↓ XLSX**. The .xlsx has an **About** sheet (the chart, each column, and why some cells are blank) and a **Data** sheet with the estimates behind the chart, for the scenarios shown. Like the full-dataset download, it leaves out `module`, `total_sample`, `min_sample` and `paired_n_runs` and blanks estimates based on fewer than 20 people. The Baseline → Scenario chart exports the difference, its 95% interval and each side's sample size.
+- **↓ Download full dataset (.xlsx)** (next to the data source) downloads every aggregated estimate currently loaded — preloaded or your own — as an .xlsx workbook. Its first sheet, **About**, explains each column and why some cells are blank; the second, **Data**, holds the estimates. Estimates based on fewer than 20 people in a model run are left blank, together with their intervals and differences. The download leaves out `module`, `total_sample`, `min_sample` and `paired_n_runs`. The .xlsx is written in the browser by `src/datasetExport.js` and `src/xlsxWriter.js` (no extra dependency).
+- **Benefit-unit variables** (Income Quintile, Household Type, Equivalised yearly disposable income, Amount of benefits received per month, Provided care) show a short note explaining that they count people, not benefit units.
 
 ## Multi-scenario support
 
@@ -243,6 +249,7 @@ If you change an aggregation rule, change it in both `parseCore.js` and the R sc
 - A 95% interval needs at least 2 runs (or 2 matched pairs for differences); with a single run the tooltip says so. Intervals from only a few runs are less reliable.
 - −9 is treated as missing everywhere; a variable that uses −9 as a real value would be wrongly excluded.
 - Benefit-unit variables (including Provided care and Income Quintile) are given to every person in the benefit unit, so their shares are shares of people, not of benefit units — e.g. income quintiles are not 20% each when counted by person.
+- The first simulated year (the starting population) is not shown.
 - Baseline → Scenario differences are modelled policy effects, not observed outcomes.
 - "Visualise Your Own Data" needs a Chromium-based browser.
 

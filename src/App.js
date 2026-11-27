@@ -20,11 +20,13 @@ import * as d3 from "d3";
 import { csvParse } from "./csvParse.js";
 import FolderStructureHelp from "./FolderStructureHelp";
 import AggregateDataPanel from "./AggregateDataPanel";
+import { downloadWorkbook } from "./datasetExport";
 import { normaliseAggregateRows, comparisonLabel, sourceText, ComparisonNamesContext } from "./aggregateDataSource";
 import DashboardSection from "./DashboardSection";
 import ScenarioGraphic from "./ScenarioGraphic";
 import StaticPage from "./StaticPage";
-import { DatasetPage, ResourcesPage, BENEFIT_UNIT_DEFINITION } from "./InfoPages";
+import { DatasetPage, ResourcesPage } from "./InfoPages";
+import { VARIABLE_DESCRIPTIONS, BENEFIT_UNIT_NOTES, BENEFIT_UNIT_DEFINITION } from "./variableInfo";
 import { parseCsvRow, titleCase } from "./useAggregatedData";
 import { parseLocalFolder } from "./localFolderParser";
 
@@ -76,37 +78,6 @@ const DOMAIN_BLURBS = {
   "Health": "Disability, wellbeing, life satisfaction",
 };
 
-/** Tooltip/help text shown alongside each variable in the sidebar variable picker. Exported so DashboardSection (or any other consumer) can reuse the same descriptions. */
-export const VARIABLE_DESCRIPTIONS = {
-  "Highest Level of Education":           "Highest qualification attained. High education (degree), medium education (Other higher degree, A-level, GCSE etc.), and low education (other qualification, no qualification).",
-  "Ethnicity":                            "Self-identified ethnic group classification.",
-  "Partnership status":                   "Whether an individual is single or partnered.",
-  "Population size":                      "Number of people in the simulated population. Averaged across model runs; stratify to see the number in each group.",
-  "Population Pyramid":                   "Age structure of the simulated population, split by gender. Each bar shows that age band and gender as a share of the total population (males on the right, females on the left); all bars together add up to 100%.",
-  //"Number of children":                   "Count of dependent children in the household.", // temporarily disabled
-   "Household Type":                       "Benefit unit composition (e.g., single adult, couple with/without children).", // temporarily disabled — still works as a stratifier
-  "Employment status":                    "Current labour market status (e.g., employed, unemployed, retired, student).",
-  "Hours worked":                         "Usual number of paid working hours per week.",
-  "Income Quintile":                      "Benefit unit position in the population income distribution split into five equal groups (from lowest (1) to highest (5)).",
-  "Universal Credit Benefits Flag":       "Whether the benefit unit receives Universal Credit.",
-  "Financial distress flag":              "Indicator of reported difficulty in meeting basic financial commitments.",
-  "Equivalised yearly disposable income": "Annual income after taxes and transfers, in GBP (£).",
-  "Gross personal employment income":     "Earnings from employment before tax and deductions.",
-  "Personal private pension income" :     "Gross personal private pension income", 
-  "Hourly earnings": "Potential hourly earnings",// temporarily disabled
-   "Capital Income":                       "Income from assets such as savings, investments, or property.", // temporarily disabled
-  "Amount of benefits received per month":"Monthly monetary value of welfare benefits received, in GBP (£).",
-  "Disability Status":                    "Whether the individual reports a limiting long-term illness or disability.",
-  // "Self-Rated Health":                 "Individual's own assessment of overall health (from excellent to poor).",
-  // "Psychological distress flag":          "Indicator of clinically relevant mental distress.", // temporarily disabled
-  "Mental Component Summary (MCS)":       "Mental Component Summary: summary score of mental health-related quality of life (from 0–100).",
-  "Physical Component Summary (PCS)":     "Physical Component Summary: summary score of physical health-related quality of life (from 0–100).",
-  "Life Satisfaction Score":              "Overall life satisfaction measure (from 0–10).",
-  "Psychological distress score":         "Subjective wellbeing (GHQ): Scale 0 (the least distressed) to 12 (the most distressed)",
-  "Subjective wellbeing (GHQ)":           "Self-reported wellbeing measure summing values from the General Health Questionnaire from 0 (indicating the least amount of distress) to 36 (indicating the greatest amount of distress).",
-  "Provided care":                        "Whether someone in the benefit unit provides social care to someone else.",
-  "Received care":                        "Whether the individual receives social care whether informal (e.g. from family or friends), formal (paid) care, or mixed.",
-};
 
 /** Adds a small ⓘ after the first "benefit unit" in a description; hovering
  *  (or focusing) it shows what a benefit unit is. */
@@ -116,10 +87,41 @@ function withBenefitUnitInfo(text) {
   const end = m.index + m[0].length;
   return (<>
     {text.slice(0, end)}
-    <span tabIndex={0} role="note" title={`Benefit unit: ${BENEFIT_UNIT_DEFINITION}`} aria-label={`Benefit unit: ${BENEFIT_UNIT_DEFINITION}`}
-      style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 15, height: 15, margin: "0 2px 0 4px", borderRadius: "50%", border: "1px solid #14687c", color: "#14687c", fontSize: 10, fontStyle: "normal", fontWeight: 700, cursor: "help", verticalAlign: "1px" }}>i</span>
+    <InfoTip label="Benefit unit" text={BENEFIT_UNIT_DEFINITION}/>
     {text.slice(end)}
   </>);
+}
+
+/** Small circled "i" that shows a definition straight away on hover, keyboard
+ *  focus or tap (the browser's own title tooltip is slow and unreliable). */
+function InfoTip({ label, text }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span style={{ position: "relative", display: "inline-block", verticalAlign: "1px" }}
+      onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+      <span tabIndex={0} role="button" aria-label={`What is a ${label.toLowerCase()}?`} aria-expanded={open}
+        onFocus={() => setOpen(true)} onBlur={() => setOpen(false)} onClick={() => setOpen(o => !o)}
+        style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 15, height: 15, margin: "0 2px 0 4px", borderRadius: "50%", border: "1.5px solid #6095DA", color: "#1d2d41", fontSize: 10, fontStyle: "normal", fontWeight: 700, cursor: "help" }}>i</span>
+      {open && (
+        <span role="tooltip"
+          style={{ position: "absolute", left: "50%", top: "calc(100% + 6px)", transform: "translateX(-50%)", zIndex: 50, width: 280, padding: "10px 12px", background: "rgba(15,23,42,0.95)", color: "#f8fafc", borderRadius: 8, fontSize: 12.5, fontStyle: "normal", lineHeight: 1.5, boxShadow: "0 4px 16px rgba(96,149,218,0.4)", whiteSpace: "normal" }}>
+          <strong>{label}:</strong> {text}
+        </span>
+      )}
+    </span>
+  );
+}
+
+
+/** The full-dataset download: an .xlsx workbook with an "About" sheet first,
+ *  then every aggregated estimate currently loaded (see datasetExport.js). */
+function downloadFullDataset(rows, names, shownLabel) {
+  return downloadWorkbook(rows, r => comparisonLabel(r.scenario, names), {
+    filename: "SimPaths_aggregated_outputs.xlsx",
+    title: "SimPaths Policy Impacts Visualiser — aggregated outputs",
+    info: [["Data", shownLabel]],
+    notes: ["The Data sheet holds every aggregated estimate in the visualiser. Each row is one estimate (a mean or a proportion) for one year, scenario, variable and population group, averaged across several SimPaths model runs."],
+  });
 }
 
 /**
@@ -314,12 +316,26 @@ function App({ dataSource } = {}) {
   // (interpreting-results.html / citation.html) — if you change these, update
   // all four places to keep the "in progress" gate, dashboard, and standalone
   // docs pages visually consistent.
-  const BG       = "#f7f3ed";
-  const BG_DARK  = "#fcfaf5";
-  const BG_PANEL = "#f7f3ed";
-  const TEAL     = "#14687c";
-  const AQUA = "#0f93a1";
-  const CORAL    = "#ff6e51";
+  // SimPaths-style look: white page, pale blue header/footer, a PMH → SimPaths
+  // gradient stripe, blue for things you click and orange for what you're
+  // looking at. Chart colours are set separately (useAggregatedData.js).
+  const BG       = "#ffffff";
+  const BG_DARK  = "#ffffff";
+  const BG_PANEL = "#d4e2f3";   // hairlines and card outlines (pale SimPaths blue)
+  // Header and footer: pale SimPaths blue with dark navy text and a thin
+  // blue line. BLUE is the SimPaths logo blue (#6095DA). It is too light for
+  // text (3.1:1 on white), so it is used for fills, pills, underlines, borders
+  // and charts, and the text with it is navy (TEAL below, 13:1 on white).
+  const HEAD_BG   = "#f4f8fd";  // header/footer background
+  const HEAD_LINE = "#d4e2f3";  // hairline under the header / above the footer
+  const HEAD_INK  = "#1d2d41";  // text on the pale blue (13:1)
+  const TAB_BLUE  = "#4d77ae";  // logo blue #6095DA + 20% black: active tab pill (white text on it 4.6:1)
+  // Ribbon under the header and above the footer: Policy Modelling for Health's
+  // gradient (yellow → coral) running into SimPaths' (pink → plum → blue).
+  const STRIPE    = "linear-gradient(90deg,#f0cc60 0%,#f0b454 14%,#f09054 28%,#fc6048 42%,#D23A5F 56%,#972A6C 70%,#7C36A6 84%,#6095DA 100%)";
+  const TEAL     = "#1d2d41";   // text that used to be teal: navy
+  const AQUA = "#6095DA";        // SimPaths logo blue (decoration only, not text)
+  const CORAL    = "#ff5d51";
   const INDIGO   = "#5975f8";
   const DOMAIN_COLORS = { "Demographics": TEAL, "Activity status": AQUA, "Income": CORAL, "Health": INDIGO };
   const TEXT_DARK = "#1e293b";
@@ -327,8 +343,25 @@ function App({ dataSource } = {}) {
   const linkBtnStyle = { color: AQUA, textDecoration: "none", fontSize: "14px", padding: "10px 14px", background: `${AQUA}10`, borderRadius: "6px", border: `1px solid ${AQUA}30`, transition: "all 0.2s", display: "inline-flex", alignItems: "center", fontWeight: 500 };
   // Compact pill variant used inline next to the "Explore changes across..." text
   const smallLinkStyle = { color: AQUA, textDecoration: "none", fontSize: "12px", padding: "5px 10px", background: `${AQUA}10`, borderRadius: "6px", border: `1px solid ${AQUA}30`, transition: "all 0.2s", display: "inline-flex", alignItems: "center", fontWeight: 500, whiteSpace: "nowrap" };
+  // "Increased Education vs Baseline" — the scenarios in the data on show.
+  const shownScenarios = useMemo(() => {
+    const roles = [...new Set(displayedRows.map(r => r.scenario))].filter(r => r && r !== "baseline");
+    if (!roles.length) return "";
+    const names = hasDataSource ? dataSource.names : undefined;
+    return `${roles.map(r => comparisonLabel(r, names)).join(", ")} vs ${comparisonLabel("baseline", names)}`;
+  }, [displayedRows, hasDataSource, dataSource]);
+  const shownLabel = `${hasDataSource ? "Connected data" : isUsingDefault ? "Preloaded data" : "Your data"}${shownScenarios ? `: ${shownScenarios}` : ""}`;
+  const downloadButton = displayedRows.length > 0 && (<>
+    <button type="button" onClick={() => downloadFullDataset(displayedRows, hasDataSource ? dataSource.names : undefined, shownLabel)}
+      title="Every aggregated estimate currently loaded, as an .xlsx file whose first sheet explains each column. Estimates based on fewer than 20 people in a model run are left blank."
+      style={{ alignSelf: "flex-start", padding: "6px 12px", borderRadius: 6, border: `1px solid ${AQUA}`, background: "#fff", color: TEAL, fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
+      ↓ Download full dataset (.xlsx)
+    </button>
+  </>);
+  // Connect Data: stack the two panels on narrow screens.
+  const stackConnect = windowWidth < 800;
   // Home page drop-down sections (both start closed).
-  const [homeOpen, setHomeOpen] = useState({ scenario: false, limits: false });
+  const [homeOpen, setHomeOpen] = useState({ howto: false, scenario: false, limits: false });
   const toggleHomeSection = key => setHomeOpen(o => ({ ...o, [key]: !o[key] }));
   /** "The default view: education policy scenario" drop-down, in the intro
    *  card on the Home page. */
@@ -337,7 +370,6 @@ function App({ dataSource } = {}) {
     style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: `1px solid ${BG_PANEL}`, padding: "8px 2px", margin: "2px 0 6px", cursor: "pointer", fontFamily: "inherit" }}>
     <span style={{ fontSize: 13, color: TEAL, display: "inline-block", transition: "transform 0.2s", transform: homeOpen[key] ? "rotate(90deg)" : "rotate(0deg)" }}>▶</span>
     <span style={{ fontSize: "clamp(18px, 2.4vw, 21px)", fontWeight: 700, color: TEAL, letterSpacing: "-0.2px" }}>{hasDataSource ? "About this experiment" : "The default view: education policy scenario"}</span>
-    <span style={{ marginLeft: "auto", fontSize: 12.5, color: TEXT_MID, fontWeight: 500 }}>{homeOpen[key] ? "Hide" : "Show"}</span>
   </button>
   {homeOpen[key] && (<div id={`home-${key}`}>
   <div style={{ background: `${AQUA}08`, border: `1px solid ${AQUA}20`, borderRadius: "8px", padding: isMobile ? "16px" : "18px", marginBottom: "18px", borderLeft: `4px solid ${AQUA}` }}>
@@ -371,7 +403,7 @@ function App({ dataSource } = {}) {
   if (windowWidth < MIN_WIDTH) {
     return (
       <div style={{
-        fontFamily: "Work Sans, sans-serif",
+        fontFamily: "Inter, system-ui, sans-serif",
         minHeight: "100vh",
         background: BG,
         color: TEXT_DARK,
@@ -387,7 +419,7 @@ function App({ dataSource } = {}) {
           padding: "40px",
           maxWidth: "500px",
           textAlign: "center",
-          boxShadow: "0 4px 6px rgba(0,0,0,0.1)"
+          boxShadow: "0 4px 6px rgba(96,149,218,0.16)"
         }}>
           <h1 style={{ color: CORAL, fontSize: "28px", margin: "0 0 16px" }}>Screen Too Small</h1>
           <p style={{ fontSize: "16px", color: TEXT_MID, lineHeight: "1.6", margin: "0 0 20px" }}>
@@ -403,143 +435,77 @@ function App({ dataSource } = {}) {
 
   return (
     <ComparisonNamesContext.Provider value={hasDataSource ? dataSource.names || {} : {}}>
-    <div style={{ fontFamily: "Work Sans, sans-serif", minHeight: "100vh", background: BG, color: TEXT_DARK, display: "flex", flexDirection: "column", gap: 30 }}>
+    <div style={{ fontFamily: "Inter, system-ui, sans-serif", minHeight: "100vh", background: BG, color: TEXT_DARK, display: "flex", flexDirection: "column", gap: 30 }}>
       
-     {/* Header + Title Banner */}
-<div
-  style={{
-    background: BG_DARK,          // header: light background, coral title (tabs below are coral)
-    padding: isMobile ? "12px 16px" : "12px 48px",
-    display: "flex",
-    alignItems: "center",
-    gap: isMobile ? 14 : 24,
-  }}
->
-  {/* Main title */}
-  <p
-    style={{
-      color: CORAL,
-      margin: 0,
-      fontSize: "clamp(20px, 4.5vw, 36px)",
-      fontWeight: 600,
-      lineHeight: 1.2,
-      flex: 1,
-    }}
-  >
-    SimPaths Policy Impacts Visualiser
-  </p>
-  {hasDataSource && dataSource.navigation}
-
-      {/* Logos + SimPaths branding */}
-      <div
-        style={{
-          background: "#fff",
-          borderRadius: "10px",
-          padding: isMobile ? "6px 8px" : "7px 12px",
-          display: "flex",
-          alignItems: "center",
-          gap: isMobile ? "8px" : "12px",
-          flexShrink: 0,
-          boxShadow: "0 1px 3px rgba(0,0,0,0.12)",
-        }}
-      >
-        {/* Partner logo */}
-        <img
-          src={`${process.env.PUBLIC_URL}/SimPaths-logo-transparent.png`}
-          alt="SimPaths logo"
-          style={{
-            width: isMobile ? "55px" : "75px",
-            maxWidth: "75px",
-            maxHeight: "45px",
-            height: "auto",
-            display: "block",
-            objectFit: "contain",
-          }}
-        />
-
-        {/* SimPaths text */}
-        <div
-          style={{
-            fontFamily: "Arial, Helvetica, sans-serif",
-            textAlign: "left",
-            lineHeight: 1.05,
-          }}
-        >
-          <div
-            style={{
-              fontSize: isMobile ? "16px" : "20px",
-              fontWeight: 700,
-              color: "#333",
-            }}
-          >
-            SimPaths
-          </div>
-
-          <div
-            style={{
-              fontSize: isMobile ? "6px" : "8px",
-              fontWeight: 600,
-              letterSpacing: "0.6px",
-              color: "#666",
-              marginTop: "3px",
-              whiteSpace: "nowrap",
-            }}
-          >
-            LIFE COURSE MICROSIMULATION
-          </div>
+      {/* ── Header: pale blue bar with the SimPaths logo, title and tabs ── */}
+      <header style={{ background: HEAD_BG }}>
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: isMobile ? "8px 14px" : "10px 24px", padding: isMobile ? "10px 16px" : "10px 48px", minHeight: 60, boxSizing: "border-box" }}>
+          <img src={`${process.env.PUBLIC_URL}/SimPaths-logo-transparent.png`} alt="SimPaths logo"
+            style={{ height: isMobile ? 26 : 32, width: "auto", display: "block" }} />
+          <p style={{ margin: 0, color: HEAD_INK, fontSize: isMobile ? 16 : 18, lineHeight: 1.2, display: "flex", alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ fontWeight: 700 }}>SimPaths</span>{" "}<span style={{ fontWeight: 500, color: HEAD_INK, borderLeft: `1px solid ${HEAD_LINE}`, paddingLeft: 10, marginLeft: 10 }}>Policy Impacts Visualiser</span>
+          </p>
+          {hasDataSource && dataSource.navigation}
+          <nav aria-label="Site sections" style={{ marginLeft: isMobile ? 0 : "auto", maxWidth: "100%" }}>
+            <div role="tablist" style={{ display: "flex", alignItems: "center", gap: isMobile ? 2 : 4, overflowX: "auto", whiteSpace: "nowrap", scrollbarWidth: "thin" }}>
+              {TABS.map(t => {
+                const active = tab === t.id;
+                return (
+                  <a key={t.id} role="tab" aria-selected={active} aria-current={active ? "page" : undefined}
+                    href={`#/${t.id}`}
+                    onClick={e => { e.preventDefault(); navigate(t.id); }}
+                    style={{ display: "inline-block", padding: isMobile ? "6px 11px" : "7px 13px", borderRadius: 999, fontSize: isMobile ? 13 : 14, fontWeight: active ? 650 : 500, color: active ? "#ffffff" : HEAD_INK, background: active ? TAB_BLUE : "transparent", textDecoration: "none" }}>
+                    {t.label}
+                  </a>
+                );
+              })}
+            </div>
+          </nav>
         </div>
-      </div>
-    </div>
-
-      {/* ── Top navigation tabs ─────────────────────────────────────────── */}
-      <nav aria-label="Site sections" style={{ background: CORAL, marginTop: -30 }}>
-        <div role="tablist" style={{ display: "flex", alignItems: "center", gap: isMobile ? 2 : 6, padding: isMobile ? "7px 8px" : "7px 40px", overflowX: "auto", whiteSpace: "nowrap", scrollbarWidth: "thin" }}>
-          {TABS.map(t => {
-            const active = tab === t.id;
-            return (
-              <a key={t.id} role="tab" aria-selected={active} aria-current={active ? "page" : undefined}
-                href={`#/${t.id}`}
-                onClick={e => { e.preventDefault(); navigate(t.id); }}
-                style={{ display: "inline-block", padding: isMobile ? "6px 11px" : "6px 15px", borderRadius: 999, fontSize: isMobile ? 13 : 14, fontWeight: active ? 700 : 500, color: active ? CORAL : "rgba(255,255,255,0.92)", background: active ? "#fff" : "transparent", textDecoration: "none" }}>
-                {t.label}
-              </a>
-            );
-          })}
-        </div>
-      </nav>
+        <div aria-hidden="true" style={{ height: 4, background: STRIPE }} />
+      </header>
 
       {/* Main Content Container */}
       <div style={{ padding: isMobile ? "10px 16px" : "10px 48px", display: "flex", flexDirection: "column", gap: isMobile ? 20 : 30 }}>
         
        {tab === "home" && (<>
        {/* Intro Card */}
-<div style={{ background: BG_DARK, border: `0.5px solid ${BG_PANEL}`, borderRadius: "12px", padding: isMobile ? "22px 20px 10px" : "32px 40px 14px", boxShadow: "0 2px 8px rgba(0,0,0,0.08)" }}>
+<div style={{ background: BG_DARK, padding: isMobile ? "4px 0 0" : "8px 0 0" }}>
 
   {/* Two-column row: text left, links right */}
   <div style={{ display: "flex", gap: "40px", alignItems: "flex-start", flexWrap: windowWidth < 900 ? "wrap" : "nowrap", marginBottom: "24px" }}>
 
     {/* Left: tagline + description */}
     <div style={{ flex: 1, minWidth: 0 }}>
-      <p style={{ margin: "0 0 14px", fontSize: "clamp(18px, 2.6vw, 24px)", fontWeight: 700, color: TEAL, letterSpacing: "-0.3px", lineHeight: 1.3 }}>
+      <p style={{ margin: "0 0 14px", fontSize: "clamp(22px, 3vw, 31px)", fontWeight: 650, color: TEXT_DARK, letterSpacing: "-0.03em", lineHeight: 1.2 }}>
         Explore how different policies could shape outcomes across the UK.
       </p>
-      <p style={{ margin: "0 0 10px", fontSize: "clamp(14px, 2vw, 16px)", color: TEXT_DARK, lineHeight: 1.6 }}>
-        Visualise the projected impact of a policy scenario on a simulated UK population, broken down by variable, year, and population subgroup. 
-              </p>
-      <p style={{ margin: "0 0 14px", lineHeight: 1.8, color: TEXT_DARK, fontSize: "clamp(14px, 2vw, 16px)" }}>
-        This tool visualises outputs from <a href="https://simpaths.org/" target="_blank" rel="noopener noreferrer" style={{ color: AQUA, textDecoration: "none", borderBottom: `2px solid ${AQUA}`, paddingBottom: "2px", transition: "opacity 0.2s" }}>SimPaths</a>, an open-source, dynamic microsimulation model developed by the Centre for Microsimulation and Policy Analysis (<a href="https://www.microsimulation.ac.uk/" target="_blank" rel="noopener noreferrer" style={{ color: AQUA, textDecoration: "none", borderBottom: `2px solid ${AQUA}`, paddingBottom: "2px", transition: "opacity 0.2s" }}>CeMPA</a>) at the University of Essex. The Policy Impacts Visualiser was built by researchers at the University of Glasgow as part of the <a href="https://www.phiuk.org/policy-modelling-for-health" target="_blank" rel="noopener noreferrer" style={{ color: AQUA, textDecoration: "none", borderBottom: `2px solid ${AQUA}`, paddingBottom: "2px", transition: "opacity 0.2s" }}>Policy Modelling for Health</a> (funded by UKRI) research group.
-      </p>
-      <p style={{ margin: 0, lineHeight: 1.8, color: TEXT_DARK, fontSize: "clamp(14px, 2vw, 16px)" }}>
-      SimPaths simulates the life-course trajectories of a population — how demographics, employment, income, wealth, health, and other variables change over time — and how those trajectories may change under a simulated a policy scenario (e.g., an increase in the minimum wage). 
-      This visualiser lets you explore those simulated outcomes interactively: pick a variable, stratify it by age, gender, region and more, and compare Baseline data against Scenario data over time, at a single point in time, or as the difference between the two. 
-      For the example shown here, if you had simulated an increase in the proportion of young people in education, you could ask: how does mental health change by 2050 for this scenario vs a baseline simulation, and are the effects different across age groups? 
-      To explore this, select Mental Component Summary score as the variable, stratify the results by age and compare the Baseline and Scenario over time.
-      
+      <p style={{ margin: "0 0 10px", lineHeight: 1.8, color: TEXT_DARK, fontSize: "clamp(14px, 2vw, 16px)" }}>
+        This tool visualises outputs from <a href="https://simpaths.org/" target="_blank" rel="noopener noreferrer" style={{ color: TEAL, textDecoration: "none", borderBottom: `2px solid ${AQUA}`, paddingBottom: "1px", transition: "opacity 0.2s" }}>SimPaths</a>, an open-source, dynamic microsimulation model developed by the Centre for Microsimulation and Policy Analysis (<a href="https://www.microsimulation.ac.uk/" target="_blank" rel="noopener noreferrer" style={{ color: TEAL, textDecoration: "none", borderBottom: `2px solid ${AQUA}`, paddingBottom: "1px", transition: "opacity 0.2s" }}>CeMPA</a>) at the University of Essex. The Policy Impacts Visualiser was built by researchers at the University of Glasgow as part of the <a href="https://www.phiuk.org/policy-modelling-for-health" target="_blank" rel="noopener noreferrer" style={{ color: TEAL, textDecoration: "none", borderBottom: `2px solid ${AQUA}`, paddingBottom: "1px", transition: "opacity 0.2s" }}>Policy Modelling for Health</a> (funded by UKRI) research group.
+        Use it to view the projected impact of a policy scenario on a simulated UK population, broken down by variable, year, and population subgroup.
+        {!hasDataSource && isUsingDefault && <> The example loaded here compares a <strong>Baseline</strong> with an <strong>Increased Education</strong> scenario, in which 5% more 16–29 year olds are in education from 2025. You can also load your own SimPaths data into the visualiser.</>}
       </p>
     </div>
 
 
   </div>
+
+  {/* How to use — drop-down section */}
+  <button type="button" onClick={() => toggleHomeSection("howto")} aria-expanded={!!homeOpen.howto} aria-controls="home-howto"
+    style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: `1px solid ${BG_PANEL}`, padding: "8px 2px", margin: "2px 0 6px", cursor: "pointer", fontFamily: "inherit" }}>
+    <span style={{ fontSize: 13, color: TEAL, display: "inline-block", transition: "transform 0.2s", transform: homeOpen.howto ? "rotate(90deg)" : "rotate(0deg)" }}>▶</span>
+    <span style={{ fontSize: "clamp(18px, 2.4vw, 21px)", fontWeight: 700, color: TEAL, letterSpacing: "-0.2px" }}>How to use the visualiser</span>
+  </button>
+  {homeOpen.howto && (<div id="home-howto" style={{ marginBottom: 12 }}>
+    <p style={{ margin: "4px 0 10px", lineHeight: 1.7, color: TEXT_DARK, fontSize: "clamp(14px, 2vw, 15.5px)" }}>
+      SimPaths simulates the life-course trajectories of a population — how demographics, employment, income, wealth, health, and other variables change over time — and how those trajectories may change under a simulated policy scenario (e.g., an increase in the minimum wage).
+      This visualiser lets you explore those simulated outcomes interactively: pick a variable, stratify it by age, gender, region and more, and compare Baseline data against Scenario data over time, at a single point in time, or as the difference between the two.
+    </p>
+    <p style={{ margin: "0 0 10px", lineHeight: 1.7, color: TEXT_DARK, fontSize: "clamp(14px, 2vw, 15.5px)" }}>
+      For the example shown here, if you had simulated an increase in the proportion of young people in education, you could ask: how does mental health change by 2050 for this scenario vs a baseline simulation, and are the effects different across age groups?
+      To explore this, select Mental Component Summary score as the variable, stratify the results by age and compare the Baseline and Scenario over time.
+    </p>
+  </div>)}
 
   {/* Default view (education scenario) — drop-down section */}
   {renderDefaultViewSection("scenario")}
@@ -550,7 +516,6 @@ function App({ dataSource } = {}) {
     style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", background: "none", border: "none", borderBottom: `1px solid ${BG_PANEL}`, padding: "8px 2px", margin: "2px 0 6px", cursor: "pointer", fontFamily: "inherit" }}>
     <span style={{ fontSize: 13, color: TEAL, display: "inline-block", transition: "transform 0.2s", transform: homeOpen.limits ? "rotate(90deg)" : "rotate(0deg)" }}>▶</span>
     <span style={{ fontSize: "clamp(18px, 2.4vw, 21px)", fontWeight: 700, color: TEAL, letterSpacing: "-0.2px" }}>Limitations &amp; interpretation</span>
-    <span style={{ marginLeft: "auto", fontSize: 12.5, color: TEXT_MID, fontWeight: 500 }}>{homeOpen.limits ? "Hide" : "Show"}</span>
   </button>
   {homeOpen.limits && (<div id="home-limits" style={{ marginBottom: 12 }}>
   <div id="interpreting-results" style={{ background: "#fff0ee", border: `1px solid #e07060`, borderRadius: "8px", padding: isMobile ? "14px 16px" : "16px 20px", borderLeft: `4px solid #d04030` }}>
@@ -567,47 +532,56 @@ function App({ dataSource } = {}) {
 
         {/* ── Visualiser (same page, below the intro) ── */}
         {/* Connect Data — full width, above the variable list and charts.
-            Row 1: heading + "Visualise Locally Saved Data" button + what's loaded.
-            Row 2: folder instructions and privacy note. */}
-        <div ref={connectDataRef} style={{ background: BG_DARK, border: `1px solid ${BG_PANEL}`, padding: isMobile ? 16 : "18px 24px", borderRadius: 12, boxShadow: "0 1px 2px rgba(0,0,0,0.04)", scrollMarginTop: 12 }}>
-          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: isMobile ? "10px 14px" : "10px 20px", marginBottom: 10 }}>
-            <h3 style={{ margin: 0, fontSize: "clamp(17px, 2.2vw, 20px)", fontWeight: 700, color: TEAL, letterSpacing: "-0.2px", borderBottom: `3px solid ${CORAL}`, paddingBottom: 3 }}>
-              Connect Data
-            </h3>
-            {hasDataSource ? <AggregateDataPanel source={dataSource} error={connectedData.error} rowCount={displayedRows.length} /> : <>
-            <button onClick={handleSelectFolder} disabled={isProcessing} style={{ padding: "8px 18px", borderRadius: 6, border: `1px solid ${AQUA}`, background: AQUA, color: BG_DARK, fontWeight: 600, fontSize: 15, cursor: isProcessing ? "default" : "pointer", width: isMobile ? "100%" : "auto" }}>
-              {isProcessing ? "Aggregating data..." : "Visualise Locally Saved Data"}
-            </button>
-            <div style={{
-              fontSize: 12,
-              color: defaultLoadFailed ? "#b91c1c" : isUsingDefault ? TEXT_MID : "#166534",
-              padding: defaultLoadFailed || !isUsingDefault ? "3px 8px" : 0,
-              borderRadius: 4,
-              background: defaultLoadFailed ? "#fee2e2" : isUsingDefault ? "transparent" : "#dcfce7",
-              fontWeight: 500,
-              display: "inline-flex", alignItems: "center", gap: 10,
-            }}>
-              {defaultLoadFailed
-                ? "Preloaded data failed to load"
-                : isUsingDefault ? "Currently displaying: preloaded data" : "Currently displaying: user uploaded data"}
-              {defaultLoadFailed && (
-                <span style={{ cursor: "pointer", color: TEAL, fontWeight: "bold", textDecoration: "underline" }} onClick={loadDefaultDataset}>↻ Retry</span>
-              )}
-              {!isUsingDefault && (
-                <span title="Go back to the preloaded data" style={{ cursor: "pointer", color: "#b91c1c", fontWeight: "bold" }} onClick={loadDefaultDataset}>✕</span>
-              )}
+            Left: load your own data. Right: what is currently shown, with the
+            full-dataset download. The two stack on narrow screens. */}
+        <div ref={connectDataRef} style={{ background: BG_DARK, border: `1px solid ${BG_PANEL}`, padding: isMobile ? 16 : "18px 24px", borderRadius: 6, scrollMarginTop: 12 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "stretch", gap: stackConnect ? 18 : 28 }}>
+            {/* Left: load your own data */}
+            <div style={{ flex: "1 1 420px", minWidth: 0 }}>
+              <h3 style={{ display: "inline-block", margin: "0 0 12px", fontSize: 17, fontWeight: 650, color: TEXT_DARK, letterSpacing: "-0.01em", borderBottom: `3px solid ${CORAL}`, paddingBottom: 3 }}>
+                Connect data
+              </h3>
+              {hasDataSource ? <>
+                <AggregateDataPanel source={dataSource} error={connectedData.error} rowCount={displayedRows.length} />
+                <p style={{ margin: "8px 0 0", fontSize: 11.5, color: TEAL, lineHeight: 1.5, fontStyle: "italic" }}>Connected results are supplied by the host service.</p>
+              </> : <>
+                <p style={{ margin: "0 0 10px", fontSize: 14, color: TEXT_DARK, lineHeight: 1.55 }}>
+                  Explore your own SimPaths output: choose a folder containing a <strong>Baseline</strong> folder and one or more <strong>Scenario</strong> folders of runs.{" "}
+                  <FolderStructureHelp />
+                </p>
+                <button onClick={handleSelectFolder} disabled={isProcessing} style={{ padding: "8px 20px", borderRadius: 4, border: `1px solid ${CORAL}`, background: CORAL, color: "#fff", fontWeight: 700, fontSize: 19, cursor: isProcessing ? "default" : "pointer", width: isMobile ? "100%" : "auto", fontFamily: "inherit" }}>
+                  {isProcessing ? "Aggregating data..." : "Visualise Locally Saved Data"}
+                </button>
+                <p style={{ margin: "6px 0 0", fontSize: 11.5, color: TEAL, lineHeight: 1.5, fontStyle: "italic" }}>
+                  Files are processed entirely in your browser — nothing is uploaded.
+                </p>
+              </>}
+              {statusMessage && <p style={{ fontSize: 11, color: "#c2410c", margin: "6px 0 0", fontStyle: "italic", lineHeight: 1.4 }}>{statusMessage}</p>}
             </div>
-            </>}
-          </div>
 
-          <p style={{ margin: "0 0 4px", fontSize: 13, color: TEXT_DARK }}>
-            Select parent folder with runs organised into <strong>Baseline</strong> and <strong>Scenario</strong> subfolders.{" "}
-            <FolderStructureHelp />
-          </p>
-          <p style={{ margin: 0, fontSize: 11, color: TEAL, lineHeight: 1.5, fontStyle: "italic" }}>
-            {hasDataSource && "Connected results are supplied by the host service. "}Locally selected files are processed entirely in your browser.
-          </p>
-          {statusMessage && <p style={{ fontSize: 11, color: "#c2410c", margin: "6px 0 0", fontStyle: "italic", lineHeight: 1.4 }}>{statusMessage}</p>}
+            {/* Right: what is currently shown, and its download */}
+            <div style={{ flex: stackConnect ? "1 1 100%" : "0 1 330px", display: "flex", flexDirection: "column", justifyContent: "center", gap: 6,
+              ...(stackConnect ? { borderTop: "1px solid #e5ded3", paddingTop: 14 } : { borderLeft: "1px solid #e5ded3", paddingLeft: 28 }) }}>
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: TEXT_MID }}>Data shown</div>
+              {defaultLoadFailed && !hasDataSource ? (
+                <div style={{ fontSize: 14, color: "#b91c1c", fontWeight: 600 }}>
+                  Preloaded data failed to load.{" "}
+                  <button type="button" onClick={loadDefaultDataset} style={{ background: "none", border: "none", padding: 0, color: TEAL, fontWeight: 700, textDecoration: "underline", cursor: "pointer", fontSize: 14, fontFamily: "inherit" }}>↻ Retry</button>
+                </div>
+              ) : (<>
+                <div style={{ fontSize: 15, color: TEXT_DARK, fontWeight: 600 }}>
+                  {hasDataSource ? "Connected data" : isUsingDefault ? "Preloaded data" : "Your data"}
+                </div>
+                {shownScenarios && <div style={{ fontSize: 12.5, color: TEXT_MID, lineHeight: 1.45 }}>{shownScenarios}</div>}
+                {!hasDataSource && !isUsingDefault && (
+                  <button type="button" onClick={loadDefaultDataset} style={{ alignSelf: "flex-start", background: "none", border: "none", padding: 0, color: TEAL, fontWeight: 600, textDecoration: "underline", cursor: "pointer", fontSize: 12.5, fontFamily: "inherit" }}>
+                    ← Back to the preloaded data
+                  </button>
+                )}
+                {downloadButton && <div style={{ marginTop: 4, display: "flex", flexDirection: "column" }}>{downloadButton}</div>}
+              </>)}
+            </div>
+          </div>
         </div>
 
         {/* Workspace Operations */}
@@ -617,17 +591,15 @@ function App({ dataSource } = {}) {
           <div style={{ width: "300px", flexShrink: 0, display: "flex", flexDirection: "column", gap: 20, minWidth: windowWidth < 1200 ? "100%" : "300px" }}>
             
             {/* Explore Variables Card */}
-            <div style={{ background: BG_DARK, border: `1px solid ${BG_PANEL}`, padding: "16px 20px", borderRadius: 12, boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
-              <div style={{ background: CORAL, borderRadius: 8, padding: "10px 14px", marginBottom: 12 }}>
-                <h3 style={{ margin: 0, fontSize: 15, textTransform: "uppercase", letterSpacing: "0.05em", color: "#fff", fontWeight: 700 }}>Explore Variables</h3>
-              </div>
+            <div style={{ background: BG_DARK, border: `1px solid ${BG_PANEL}`, padding: "16px 20px", borderRadius: 6 }}>
+              <h3 style={{ display: "inline-block", margin: "0 0 14px 4px", fontSize: 17, fontWeight: 650, color: TEXT_DARK, letterSpacing: "-0.01em", borderBottom: `3px solid ${CORAL}`, paddingBottom: 3 }}>Explore variables</h3>
               {Object.entries(DOMAIN_SECTIONS).map(([domain, vars]) => {
                 const isOpen = !!openDomains[domain];
                 return (
                   <div key={domain} style={{ marginBottom: 6 }}>
-                    <button onClick={() => toggleDomain(domain)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", background: isOpen ? `${TEAL}18` : "transparent", border: "none", borderRadius: 6, padding: "7px 10px", cursor: "pointer", marginBottom: 2 }}>
+                    <button onClick={() => toggleDomain(domain)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", background: isOpen ? `${AQUA}26` : "transparent", border: "none", borderRadius: 6, padding: "7px 10px", cursor: "pointer", marginBottom: 2 }}>
                       <span style={{ fontSize: 11, fontWeight: 700, color: isOpen ? TEAL : "#64748b", textTransform: "uppercase", letterSpacing: "0.04em" }}>{domain}</span>
-                      <span style={{ fontSize: 10, color: isOpen ? TEAL : "#94a3b8", transform: isOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s", display: "inline-block" }}>▼</span>
+                      <span style={{ fontSize: 10, color: isOpen ? TEAL : "#64748b", transform: isOpen ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s", display: "inline-block" }}>▼</span>
                     </button>
 
                     {isOpen && (
@@ -636,7 +608,7 @@ function App({ dataSource } = {}) {
                           <button key={v} onClick={() => setActiveVariable(v)}
                             onMouseEnter={() => hintVariable(v)} onFocus={() => hintVariable(v)}
                             onMouseLeave={cancelHint} onBlur={cancelHint}
-                            style={{ display: "block", width: "100%", textAlign: "left", background: activeVariable === v ? `${CORAL}18` : "transparent", border: "none", fontSize: 13, padding: "6px 10px", borderRadius: 6, cursor: "pointer", marginBottom: 2, color: activeVariable === v ? CORAL : TEXT_MID, fontWeight: activeVariable === v ? 600 : 400, outline: "none" }}>
+                            style={{ display: "block", width: "100%", textAlign: "left", background: activeVariable === v ? `${CORAL}1f` : "transparent", border: "none", borderLeft: `3px solid ${activeVariable === v ? CORAL : "transparent"}`, fontSize: 13, padding: "6px 10px", borderRadius: "0 6px 6px 0", cursor: "pointer", marginBottom: 2, color: activeVariable === v ? TEXT_DARK : TEXT_MID, fontWeight: activeVariable === v ? 650 : 400, outline: "none", fontFamily: "inherit" }}>
                             {titleCase(v)}
                           </button>
                         ))}
@@ -649,10 +621,8 @@ function App({ dataSource } = {}) {
           </div>
 
           {/* Main Visualization */}
-          <div ref={mainVizRef} style={{ flex: 1, background: BG_DARK, border: `1px solid ${BG_PANEL}`, borderRadius: 12, padding: isMobile ? "16px" : "30px", boxShadow: "0 1px 2px rgba(0,0,0,0.04)", minWidth: windowWidth < 1200 ? "100%" : "auto" }}>
-            <div style={{ background: CORAL, borderRadius: 8, padding: isMobile ? "10px 14px" : "12px 20px", marginBottom: 14 }}>
-              <h2 style={{ margin: 0, fontSize: "clamp(18px, 2.8vw, 22px)", color: "#fff", fontWeight: 800, letterSpacing: "-0.2px" }}>{titleCase(activeVariable)}</h2>
-            </div>
+          <div ref={mainVizRef} style={{ flex: 1, background: BG_DARK, border: `1px solid ${BG_PANEL}`, borderRadius: 6, padding: isMobile ? "16px" : "30px", minWidth: windowWidth < 1200 ? "100%" : "auto", boxSizing: "border-box" }}>
+            <h2 style={{ margin: "0 0 8px", fontSize: "clamp(22px, 3vw, 30px)", color: CORAL, fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.2 }}>{titleCase(activeVariable)}</h2>
             {VARIABLE_DESCRIPTIONS[activeVariable] && (
               <p style={{ margin: "0 0 6px", fontSize: "clamp(12px, 1.5vw, 13px)", color: TEXT_MID, fontStyle: "italic", lineHeight: 1.5 }}>
                 {withBenefitUnitInfo(VARIABLE_DESCRIPTIONS[activeVariable])}
@@ -770,6 +740,11 @@ function App({ dataSource } = {}) {
   
               </p>
             )}
+            {BENEFIT_UNIT_NOTES[activeVariable] && (
+              <p style={{ margin: "0 0 8px", padding: "7px 10px", fontSize: "clamp(12px, 1.5vw, 13px)", color: TEXT_MID, lineHeight: 1.5, background: `${AQUA}1a`, borderLeft: `3px solid ${AQUA}`, borderRadius: "0 4px 4px 0" }}>
+                <strong style={{ color: TEXT_DARK }}>Benefit-unit variable.</strong> {BENEFIT_UNIT_NOTES[activeVariable]}
+              </p>
+            )}
             <p style={{ margin: "0 0 20px", fontSize: "clamp(12px, 1.5vw, 13px)", color: "#64748b" }}>
               {hasDataSource && dataSource.showDelta === false ? "Explore the available results for the selected configurations." : hasDataSource
                 ? <>Compare <strong>{comparisonLabel("baseline", dataSource.names)}</strong> with the selected alternative scenarios.</>
@@ -799,54 +774,56 @@ function App({ dataSource } = {}) {
         {tab === "resources" && <ResourcesPage />}
       </div>
 
-      {/* Closing Banner */}
-      <div style={{ background: CORAL, padding: isMobile ? "24px 20px" : "28px 48px" }}>
+      {/* Closing Banner — gradient ribbon, then pale blue like the header */}
+      <footer>
+      <div aria-hidden="true" style={{ height: 4, background: STRIPE }} />
+      <div style={{ background: HEAD_BG, padding: isMobile ? "24px 20px" : "28px 48px" }}>
         <div style={{ display: "flex", gap: "40px", alignItems: "flex-start", flexWrap: windowWidth < 1024 ? "wrap" : "nowrap" }}>
 
           {/* LEFT: Credit Text */}
           <div style={{ flex: 1, minWidth: "260px" }}>
-            <p style={{ color: "#fdfdfd", margin: "0 0 14px", fontSize: "clamp(15px, 2.2vw, 18px)", fontWeight: 500, letterSpacing: "-0.2px", opacity: 0.95 }}>
+            <p style={{ color: HEAD_INK, margin: "0 0 14px", fontSize: "clamp(15px, 2.2vw, 18px)", fontWeight: 500, letterSpacing: "-0.2px", opacity: 1 }}>
               Credit &amp; Citation
             </p>
 
             {/* Citation Box */}
-            <div id="citation" style={{ background: "rgba(255, 255, 255, 0.12)", border: "1px solid rgba(255, 255, 255, 0.2)", borderRadius: "8px", padding: "12px 14px", marginBottom: "14px" }}>
-              <p style={{ fontSize: "11px", color: "rgba(255, 255, 255, 0.75)", margin: "0 0 6px", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 500 }}>
+            <div id="citation" style={{ background: "#ffffff", border: `1px solid ${HEAD_LINE}`, borderRadius: "8px", padding: "12px 14px", marginBottom: "14px" }}>
+              <p style={{ fontSize: "11px", color: HEAD_INK, margin: "0 0 6px", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600 }}>
                 Cite this dashboard:
               </p>
-              <a href="https://doi.org/ADD-DOI" target="_blank" rel="noopener noreferrer" style={{ color: "#fdfdfd", fontSize: "14px", fontWeight: 500, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "6px", borderBottom: "1.5px solid rgba(255, 255, 255, 0.3)", paddingBottom: "2px" }}>
+              <a href="https://doi.org/ADD-DOI" target="_blank" rel="noopener noreferrer" style={{ color: HEAD_INK, fontSize: "14px", fontWeight: 500, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "6px", borderBottom: `1.5px solid ${AQUA}`, paddingBottom: "2px" }}>
                 DOI ↗
               </a>
             </div>
 
             {/* Description */}
-            <p style={{ color: "#fdfdfd", margin: "0 0 10px", fontSize: "13px", lineHeight: "1.6", opacity: 0.9, fontWeight: 400 }}>
+            <p style={{ color: HEAD_INK, margin: "0 0 10px", fontSize: "13px", lineHeight: "1.6", opacity: 1, fontWeight: 400 }}>
               This tool visualises outputs from the SimPaths microsimulation model using data from Understanding Society: the UK Household Longitudinal Study.
             </p>
 
-            <p style={{ color: "#fdfdfd", margin: "0 0 14px", fontSize: "11px", lineHeight: "1.6", opacity: 0.8, fontWeight: 400 }}>
+            <p style={{ color: HEAD_INK, margin: "0 0 14px", fontSize: "11px", lineHeight: "1.6", opacity: 1, fontWeight: 400 }}>
               We acknowledge the contributions of researchers, data providers, and funders supporting this work. Results are modelled estimates and should not be interpreted as forecasts or official statistics.
             </p>
 
-            <p style={{ color: "#fdfdfd", margin: "0 0 14px", fontSize: "11px", lineHeight: "1.6", opacity: 0.8, fontWeight: 400 }}>
+            <p style={{ color: HEAD_INK, margin: "0 0 14px", fontSize: "11px", lineHeight: "1.6", opacity: 1, fontWeight: 400 }}>
               The SimPaths Policy Impacts Visualiser is open-source software, licensed under the European Union Public Licence v. 1.2 (EUPL-1.2).
             </p>
 
             {/* Links */}
             <div style={{ display: "flex", gap: "18px", flexWrap: "wrap" }}>
-              <a href="https://github.com/simpaths/SimPaths/blob/main/license.txt" target="_blank" rel="noopener noreferrer" style={{ color: "#fdfdfd", fontSize: "12px", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px", borderBottom: "1px solid rgba(255, 255, 255, 0.35)", paddingBottom: "2px", fontWeight: 400, opacity: 0.9 }}>
+              <a href="https://github.com/simpaths/SimPaths/blob/main/license.txt" target="_blank" rel="noopener noreferrer" style={{ color: HEAD_INK, fontSize: "12px", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: "4px", borderBottom: `1px solid ${TAB_BLUE}`, paddingBottom: "2px", fontWeight: 400, opacity: 1 }}>
                 License (EUPL-1.2)
               </a>
             </div>
           </div>
 
           {/* RIGHT: Feedback — prominent, replaces the old logo slot */}
-          <div style={{ width: windowWidth < 1024 ? "100%" : "300px", boxSizing: "border-box", flexShrink: 0, background: "rgba(255, 255, 255, 0.14)", border: "1px solid rgba(255, 255, 255, 0.25)", borderRadius: "10px", padding: "18px 20px" }}>
-            <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: 700, color: "#fdfdfd" }}>Feedback</h3>
-            <p style={{ margin: "0 0 14px", fontSize: "13px", lineHeight: 1.5, color: "#fdfdfd", opacity: 0.9 }}>
+          <div style={{ width: windowWidth < 1024 ? "100%" : "300px", boxSizing: "border-box", flexShrink: 0, background: "#ffffff", border: `1px solid ${HEAD_LINE}`, borderRadius: "10px", padding: "18px 20px" }}>
+            <h3 style={{ margin: "0 0 6px", fontSize: "15px", fontWeight: 700, color: HEAD_INK }}>Feedback</h3>
+            <p style={{ margin: "0 0 14px", fontSize: "13px", lineHeight: 1.5, color: HEAD_INK }}>
               We're happy to receive feedback about the dashboard — let us know what's working, what isn't, or what you'd like to see.
             </p>
-            <a href="mailto:healthmod@glasgow.ac.uk?subject=SimPaths%20Data%20Visualiser" style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "6px", width: "100%", boxSizing: "border-box", padding: "10px 16px", borderRadius: "6px", background: "#fdfdfd", color: CORAL, fontWeight: 700, fontSize: "14px", textDecoration: "none" }}>
+            <a href="mailto:healthmod@glasgow.ac.uk?subject=SimPaths%20Data%20Visualiser" style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "6px", width: "100%", boxSizing: "border-box", padding: "10px 16px", borderRadius: "4px", background: CORAL, color: "#fff", fontWeight: 700, fontSize: "19px", textDecoration: "none" }}>
               Send Feedback
             </a>
           </div>
@@ -854,6 +831,7 @@ function App({ dataSource } = {}) {
           
         </div>
       </div>
+      </footer>
     </div>
     </ComparisonNamesContext.Provider>
   );

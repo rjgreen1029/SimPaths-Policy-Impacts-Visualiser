@@ -79,7 +79,7 @@ test('the maintained charts load only the selected variable and breakdown; contr
  expect(await screen.findByRole('alert')).toHaveTextContent('original owner');
  expect(container.querySelector('svg path[fill="none"][stroke-dasharray]')).toBeNull();
  expect(screen.getByRole('combobox')).toHaveValue('Region');
- expect(screen.queryByRole('button',{name:'↓ CSV'})).toBeNull();
+ expect(screen.queryByRole('button',{name:'↓ XLSX'})).toBeNull();
 });
 test('twelve alternatives remain selectable together without a two-scenario restriction',async()=>{
  const scenarios=Array.from({length:12},(_,i)=>'scenario_'+(i+1));
@@ -109,7 +109,7 @@ test('wage histograms request only bins and returning to levels restores the exi
  fireEvent.click(screen.getByRole('button',{name:/Binned distribution/i}));
  await waitFor(()=>expect(s.load.mock.calls.at(-1)[0]).toEqual({...selection,variable:'Hourly earnings',kind:'wage_bin'}));
  await waitFor(()=>expect(screen.queryByText('Loading chart data…')).toBeNull());
- expect(screen.getByRole('button',{name:'↓ CSV'})).toBeInTheDocument();
+ expect(screen.getByRole('button',{name:'↓ XLSX'})).toBeInTheDocument();
  await waitFor(()=>expect(container.querySelector('svg rect[opacity="0.82"]')).not.toBeNull());
  fireEvent.click(screen.getByRole('button',{name:'〜 Line'}));
  await waitFor(()=>expect(s.load.mock.calls.at(-1)[0].kind).toBe('levels'));
@@ -125,5 +125,5 @@ test('the population pyramid requests only Age/Gender bins and preserves its yea
  await waitFor(()=>expect(container.querySelector('svg rect[opacity="0.88"]')).not.toBeNull());
  expect(screen.getByRole('button',{name:'2070',exact:true})).toBeInTheDocument();
  expect(screen.getByRole('button',{name:'Scenario: 1',exact:true})).toBeInTheDocument();
- expect(screen.getByRole('button',{name:'↓ CSV'})).toBeInTheDocument();
+ expect(screen.getByRole('button',{name:'↓ XLSX'})).toBeInTheDocument();
 });

@@ -1146,10 +1146,17 @@ export function finaliseAggregation(grouped) {
     baseOk.set(nonKey, g.minN >= MIN_RUN_SAMPLE && g.count >= runsPerScenario.get("baseline"));
   }
 
+  // The first simulated year is the starting population, before the model has
+  // run a step (and before any policy starts), so it is left out of the output.
+  // The R pre-aggregation script drops it too.
+  let firstYear = Infinity;
+  for (const g of grouped.values()) { const y = +g.year; if (y < firstYear) firstYear = y; }
+
   const finalRows = [];
   for (const [key, g] of grouped) {
     const { year, scenario, variable, variable_value, stratifier,
             stratifier_value, metric_type, count, mean, M2, totalN, minN, runVals } = g;
+    if (+year === firstYear) { g.runVals = null; continue; }
 
     const n_runs       = count;
     const variance     = n_runs > 1 ? M2 / (n_runs - 1) : 0;
